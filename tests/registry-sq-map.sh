@@ -8,6 +8,23 @@
 #                  that every hypatia/ci_failure_triage id there has a row
 #                  (the reverse direction: a triage rule Hypatia adds must be
 #                  mapped, or listed as `unmapped` until the squabbler owner rules)
+#   HYPATIA_PRAXIS_SOURCE=1  HYPATIA_PRAXIS is a change's own registry (Hypatia's
+#                  CI, scripts/check-sq-map.sh), not a pinned commit's. The praxis
+#                  column records the registry at this repository's pin, so a
+#                  change that adds or removes a rule disagrees with it by design:
+#                  a column mismatch is then a WARN, not a FAIL. A missing row
+#                  still fails (the reverse direction is unchanged).
+#
+# A PENDING row is `unmapped` with praxis `absent`: a triage rule on its way.
+# It is how a new rule lands without either repository merging red. The row is
+# added here first, `absent`, which passes against the pinned registry; then the
+# Hypatia change that adds the rule passes, because its registry holds the id
+# and the row exists; then, when the pin moves past it, the column is flipped to
+# `present`. Until the flip a pending row whose id the registry holds is a WARN,
+# never a FAIL. Without HYPATIA_PRAXIS_SOURCE, mapped and hypatia-only rows keep
+# strict equality, and so does an `unmapped` row that says `present`: at a pin
+# move a removed rule, or a mapped row whose rule has arrived, fails until the
+# column is set (or the row dropped) in the same change as the pin.
 #
 # The kernel-reason rows are checked against src/Proven/Lock/Judge.idr when it
 # exists. A cross-check whose input is named but missing is NOT RUN (exit 2),
@@ -35,7 +52,6 @@ done < <(awk -F'\t' '
   $1 != "-" && $3 == "hypatia-only" && $2 != "hypatia-only" { print "row " NR+1 ": hypatia-only row names " $2 }
   $1 != "-" && $3 == "unmapped" && $2 != "unassigned" { print "row " NR+1 ": an unmapped row must say unassigned, not " $2 }
   $1 != "-" && $3 == "unmapped" && $1 !~ /^hypatia\/ci_failure_triage\// { print "row " NR+1 ": only a ci_failure_triage id may be unmapped, not " $1 }
-  $1 != "-" && $3 == "unmapped" && $4 != "present" { print "row " NR+1 ": an unmapped row must be present in the registry (else drop it)" }
   $1 != "-" && $3 != "mapped" && $3 != "hypatia-only" && $3 != "unmapped" { print "row " NR+1 ": an A5 row must be mapped, hypatia-only or unmapped, not " $3 }
   $1 != "-" && $4 != "present" && $4 != "absent" { print "row " NR+1 ": praxis must be present or absent" }
   $1 == "-" && $3 != "squabbler-only" && $3 != "kernel-reason" { print "row " NR+1 ": a row without an A5 id must be squabbler-only or kernel-reason" }
@@ -66,14 +82,28 @@ fi
 
 if [[ -n ${HYPATIA_PRAXIS:-} ]]; then
   [[ -f $HYPATIA_PRAXIS ]] || { echo "HYPATIA_PRAXIS=$HYPATIA_PRAXIS missing; NOT RUN" >&2; exit 2; }
+  source_side=${HYPATIA_PRAXIS_SOURCE:-}
+  [[ -z $source_side || $source_side == 1 ]] || { echo "HYPATIA_PRAXIS_SOURCE must be 1 or unset, not $source_side; NOT RUN" >&2; exit 2; }
   # `|| true`: under pipefail a grep with no match would end the script with
   # exit 1 and no message; an empty registry is NOT RUN, said just below.
   registry=$({ grep -oE 'hypatia/[a-z0-9_]+/[A-Za-z0-9_]+' "$HYPATIA_PRAXIS" || true; } | sort -u)
   [[ -n $registry ]] || { echo "no A5 ids read from $HYPATIA_PRAXIS; NOT RUN" >&2; exit 2; }
-  while IFS=$'\t' read -r a5 _ _ praxis _; do
+  while IFS=$'\t' read -r a5 _ status praxis _; do
     [[ $a5 == - ]] && continue
     if grep -qxF -- "$a5" <<<"$registry"; then actual=present; else actual=absent; fi
-    [[ $actual == "$praxis" ]] || bad "$a5: praxis column says $praxis, registry says $actual"
+    if [[ $status == unmapped && $praxis == absent ]]; then
+      # A pending row: never a FAIL, whichever way the registry stands.
+      if [[ $actual == absent ]]; then echo "WARN pending row $a5: not in this registry yet"
+      elif [[ $source_side == 1 ]]; then echo "pending row $a5 lands with this change; flip its praxis column to present when the pin moves past it"
+      else echo "WARN pending row $a5 is in the registry now: flip its praxis column to present"; fi
+      continue
+    fi
+    [[ $actual == "$praxis" ]] && continue
+    if [[ $source_side == 1 ]]; then
+      echo "WARN $a5: praxis column says $praxis, this change's registry says $actual; set the column when the pin moves past it"
+    else
+      bad "$a5: praxis column says $praxis, registry says $actual"
+    fi
   done <<<"$rows"
   # Reverse: every triage id in the registry has a row, and so do the ADR 0004
   # mappings Hypatia emits from another module. Without this a rule Hypatia
