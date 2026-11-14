@@ -1,5 +1,5 @@
-# proven-cicd: proven-lock-gate@0.3.0 sha256:ea41d07c292dd3f443a23f97c16e7cef051668eefc52cb5cb0757a346435b0ef
 # SPDX-License-Identifier: MPL-2.0
+# proven-cicd: proven-lock-gate@0.3.0 sha256:d94add93bfa6cf1cf54fbe1416ca100c66fbb4785fe728375e4ec58d3f145b5d
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-lock-gate.yml.
 # Do not edit by hand. A changed body fails this gate as drift. The applier
 # moves the pinned suite SHA. The line after each `proven-cicd:local-next`
@@ -94,7 +94,7 @@ jobs:
           # This copy needs a suite at least as new as itself (0.3.0 needs the
           # vendored runtime): a pin older than the copy is its own class, so the
           # fix is plain (move the pin), not a generic refusal.
-          mine=$(sed -n '1s/^# proven-cicd: proven-lock-gate@\([0-9]*\.[0-9]*\.[0-9]*\) .*/\1/p' "$GITHUB_WORKSPACE/.github/workflows/proven-lock-gate.yml")
+          mine=$(sed -n '1,2s/^# proven-cicd: proven-lock-gate@\([0-9]*\.[0-9]*\.[0-9]*\) .*/\1/p' "$GITHUB_WORKSPACE/.github/workflows/proven-lock-gate.yml")
           [[ -n $mine ]] || fail suite "this copy has no proven-lock-gate stamp"
           theirs=$(jq -r '[.artifacts[] | select(.artifact == "proven-lock-gate") | .version][0] // empty' "$suite/proven/manifest.json" 2>/dev/null || true)
           [[ -n $theirs && $(printf '%s\n' "$theirs" "$mine" | sort -V | head -n 1) == "$mine" ]] ||

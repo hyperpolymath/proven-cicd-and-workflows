@@ -76,7 +76,7 @@ if [[ -n $stamped ]]; then
 fi
 version=
 [[ -n $stamped && -f $workspace/$stamped ]] &&
-  version=$(head -n 1 "$workspace/$stamped" | sed -n 's/^# proven-cicd: [^@]*@\([^ ]*\) .*/\1/p')
+  version=$(head -n 2 "$workspace/$stamped" | sed -n 's/^# proven-cicd: [^@]*@\([^ ]*\) .*/\1/p')
 
 cov=$workspace/.proven-coverage
 # Only the collector-owned directory is removed; a consumer's own cov/ is never touched.
