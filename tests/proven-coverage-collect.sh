@@ -114,13 +114,13 @@ bash "$driver" collect "$tmp/ws" "$stamped" >"$tmp/out" 2>&1 || true
 [[ $(cat "$tmp/ws/cov/keep.txt" 2>/dev/null) == keep && -d $tmp/ws/.proven-coverage ]] && ok "a consumer's cov/keep.txt survives a run" || bad "consumer cov/ was touched"
 mkws; : > "$tmp/ws/mix.exs"; mkdir -p "$tmp/ws/cover"
 echo stale > "$tmp/ws/cover/raw.coverdata"; echo stale > "$tmp/ws/cover/proven.coverdata"
-cat > "$tmp/stub/mix" <<'STUB'
+cat > "$tmp/stub/mix" <<'MIX'
 #!/usr/bin/env bash
 echo "mix $*" >> "$STUB_LOG"
 [[ $1 == run && ${*: -1} == --tools-version ]] && { echo 0.0.0; exit 0; }
 [[ $1 == test ]] && exit 2
 exit 0
-STUB
+MIX
 chmod +x "$tmp/stub/mix"
 rc=0; STUB_LOG="$tmp/mix.log" PATH="$tmp/stub:$PATH" bash "$driver" collect "$tmp/ws" "$stamped" >"$tmp/out" 2>&1 || rc=$?
 [[ $rc == 0 && ! -e $tmp/ws/.proven-coverage/raw/elixir.lcov && ! -e $tmp/ws/.proven-coverage/proven/elixir.lcov ]] &&
