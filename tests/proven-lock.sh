@@ -77,28 +77,50 @@ done
 
 [[ $count -gt 0 ]] || { echo "FAIL: no fixture cases found" >&2; exit 1; }
 
-# --relock is a fixed point: with every managed entry replaced by its relocked
-# entry, no edge reason remains, and relocking again changes nothing.
-relock_fixed() { # CASE_ROOT
-  local args=("$1") r1 r2 out
-  "$repo/scripts/extract-lock-facts.sh" "${args[@]}" > "$tmp/facts.json" 2>/dev/null || return 0
+# --relock is edge-exact and never makes a lock worse (advisor review): with
+# every managed entry replaced by its relocked entry,
+#   * no edge reason remains (MissingTransitiveEdge, BlindEmptyEntry, StaleRef);
+#   * a CONSISTENT lock stays CONSISTENT;
+#   * any reason that is new is a DanglingRecord or UnusedRecord on a key that
+#     relock added to or removed from an entry;
+#   * `needs_records` names exactly the relocked keys that no record keys.
+# Relock reads only the graph and the record keys (relockIgnoresEntries), so a
+# second relock is not compared here: that comparison could not fail.
+relock_ok() { # CASE_ROOT
+  local r1 out0 out1 v0 v1 diffkeys newr needs want
+  "$repo/scripts/extract-lock-facts.sh" "$1" > "$tmp/facts.json" 2>/dev/null || return 0
   r1=$("$verdict" --relock "$tmp/facts.json" 2>/dev/null) || return 0   # refusals are NOT RUN cases
   jq --argjson r "$(jq -s . <<<"$r1")" '.entries |= map(.path as $p | ($r[] | select(.workflow == $p and .managed) | .keys) as $k | .keys = $k)' \
     "$tmp/facts.json" > "$tmp/relocked.json"
   # Capture first: under pipefail the verdict's exit 1 would mask grep's match.
-  out=$("$verdict" "$tmp/relocked.json" 2>/dev/null) || true
-  if grep -qE '^REASON	(MissingTransitiveEdge|BlindEmptyEntry|StaleRef)	' <<<"$out"; then
+  out0=$("$verdict" "$tmp/facts.json" 2>/dev/null) || true
+  out1=$("$verdict" "$tmp/relocked.json" 2>/dev/null) || true
+  v0=$(head -n 1 <<<"$out0"); v1=$(head -n 1 <<<"$out1")
+  if grep -qE '^REASON	(MissingTransitiveEdge|BlindEmptyEntry|StaleRef)	' <<<"$out1"; then
     echo "an edge reason survives relock"; return 1
   fi
-  r2=$("$verdict" --relock "$tmp/relocked.json" 2>/dev/null) || { echo "relock of a relocked lock refused"; return 1; }
-  [[ $r1 == "$r2" ]] || { echo "relock is not idempotent"; return 1; }
+  [[ $v0 != CONSISTENT || $v1 == CONSISTENT ]] || { echo "relock turned a CONSISTENT lock $v1: $(grep '^REASON' <<<"$out1" | tr '\t\n' ' ;')"; return 1; }
+  diffkeys=$(jq -rn --slurpfile a "$tmp/facts.json" --slurpfile b "$tmp/relocked.json" \
+    '[$a[0].entries[].keys[]] as $x | [$b[0].entries[].keys[]] as $y | (($x - $y) + ($y - $x)) | unique[]')
+  newr=$(comm -13 <(grep '^REASON' <<<"$out0" | LC_ALL=C sort) <(grep '^REASON' <<<"$out1" | LC_ALL=C sort))
+  while IFS=$'\t' read -r _ reason key _; do
+    [[ -n $reason ]] || continue
+    case $reason in
+      DanglingRecord|UnusedRecord) grep -qxF -- "$key" <<<"$diffkeys" || { echo "new $reason on $key, which relock did not change"; return 1; } ;;
+      *) echo "relock introduced $reason $key"; return 1 ;;
+    esac
+  done <<<"$newr"
+  needs=$(jq -r 'select(.managed) | .needs_records[]' <<<"$r1" | LC_ALL=C sort -u)
+  want=$(jq -rn --slurpfile f "$tmp/facts.json" --argjson r "$(jq -s . <<<"$r1")" \
+    '[$f[0].records[].key] as $k | [$r[] | select(.managed) | .keys[] | select(. as $x | $k | index($x) | not)] | unique[]')
+  [[ $needs == "$want" ]] || { echo "needs_records [$needs] is not the unkeyed relocked keys [$want]"; return 1; }
 }
 for dir in "$fixtures"/*/; do
   name=$(basename "$dir")
   [[ -d $dir/repo && -f $dir/expected ]] || continue
   rm -rf -- "$tmp/case"; cp -R "$dir/repo" "$tmp/case"
   [[ -d $tmp/case/dot-github ]] && mv "$tmp/case/dot-github" "$tmp/case/.github"
-  if why=$(relock_fixed "$tmp/case"); then echo "ok relock $name"; else echo "FAIL relock $name: $why"; fail=1; fi
+  if why=$(relock_ok "$tmp/case"); then echo "ok relock $name"; else echo "FAIL relock $name: $why"; fail=1; fi
 done
 
 # --json (the squabbler executor contract) must agree with the text verdict on

@@ -12,8 +12,9 @@
 # an existing Idris2 checkout is used instead, and it must be at that commit.
 #
 # Trusted base of the resulting binary, stated so a green is not over-read:
-# the two named axioms in src/Proven/Lock/Axioms.idr, the Idris2 compiler that
-# generated the C, the RefC runtime, gcc and libgmp.
+# the two named axioms in src/Proven/Lock/Axioms.idr; the facts decoder and IO
+# in src/Proven/Lock/Main.idr (covering, not total, unproven); the Idris2
+# compiler that generated the C; the RefC runtime; gcc and libgmp.
 #
 # Exit: 0 built; 2 NOT RUN (missing gcc or gmp.h, wrong runtime commit, compile
 # failed); 3 NOT RUN because the Idris2 runtime could not be fetched or checked

@@ -8,6 +8,10 @@
 |||   2  NOT_RUN (unreadable or malformed facts, unresolved composite,
 |||      closure that did not stabilise, or an empty lock)
 ||| Malformed input is never read as an empty, and so passing, repository.
+|||
+||| Trusted, not proved: this module's facts decoder and its IO are `covering`,
+||| not total, and no theorem covers them. They sit between the bash extractor
+||| and the judge; the fixture corpus and the JSON agreement test exercise them.
 module Proven.Lock.Main
 
 import Assurance.GitHub
@@ -170,8 +174,11 @@ report Json f (Inconsistent whys unjudged) = do
   exitWith (ExitFailure 1)
 report mode f (NotRun whys) = notRun mode whys
 
-||| One certified entry per workflow: {workflow, managed, keys} or
-||| {workflow, managed, refused}. Exit 0 when every entry is certified, 2 if any
+||| One certified entry per workflow: {workflow, managed, keys, needs_records}
+||| or {workflow, managed, refused}. `keys` is edge-exact; `needs_records` lists
+||| the keys in it that no lock record keys yet (relock never invents a record),
+||| so a writer knows which records to resolve before the lock can judge
+||| CONSISTENT. Exit 0 when every entry is certified, 2 if any
 ||| is refused: a partial relock is never written as if it were whole.
 covering
 relock : String -> IO ()
@@ -188,12 +195,12 @@ relock file = do
     managedJson : Facts -> Workflow -> String
     managedJson f w = if isManaged f w then "true" else "false"
     one : Facts -> Workflow -> IO Bool
-    one f w = case relockEntry (composites f) w of
+    one f w = case relockEntry (composites f) (recordKeys f) w of
       Left why => do
         putStrLn ("{\"workflow\":" ++ jsonString (path w) ++ ",\"managed\":" ++ managedJson f w ++ ",\"refused\":" ++ jsonString why ++ "}")
         pure True
       Right (e ** _) => do
-        putStrLn ("{\"workflow\":" ++ jsonString (path w) ++ ",\"managed\":" ++ managedJson f w ++ ",\"keys\":" ++ jsonList e ++ "}")
+        putStrLn ("{\"workflow\":" ++ jsonString (path w) ++ ",\"managed\":" ++ managedJson f w ++ ",\"keys\":" ++ jsonList e ++ ",\"needs_records\":" ++ jsonList (filter (\k => not (elem k (recordKeys f))) e) ++ "}")
         pure False
 
 covering

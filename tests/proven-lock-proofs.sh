@@ -90,6 +90,10 @@ reject counterfeitEmptyLockPasses \
   'Refl'
 # Relock cannot be made to drop the composite-reached key.
 reject counterfeitRelockDropsKey \
-  '(case relockEntry Controls.probe Controls.wf of { Right (e ** _) => e; Left _ => [] }) = [Controls.checkoutKey]' \
+  '(case relockEntry Controls.probe [Controls.checkoutKey, Controls.leafKey] Controls.wf of { Right (e ** _) => e; Left _ => [] }) = [Controls.checkoutKey]' \
+  'Refl'
+# Relock cannot be made to list a job-level call that has no record.
+reject counterfeitRelockListsUnrecordedCall \
+  '(case relockEntry Controls.probe [] Controls.wfCall of { Right (e ** _) => e; Left _ => [] }) = [Controls.checkoutKey, Controls.leafKey, Controls.calleeKey]' \
   'Refl'
 echo "proven-lock-proofs: all controls held"
