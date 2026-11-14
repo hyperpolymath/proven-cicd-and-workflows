@@ -14,7 +14,7 @@ bad() { echo "FAIL $1"; fail=1; }
 while IFS= read -r row; do bad "malformed row (need 6 non-empty tab fields): $row"; done < <(
     tail -n +2 "$policy" | awk -F'\t' 'NF != 6 || $1 == "" || $2 == "" || $3 == "" || $4 == "" || $5 == "" || $6 == "" { print }')
 
-declare -A seen
+declare -A seen=()   # set -u: an empty population (no rerun or noise rows) must not be unbound
 # `|| [[ -n $a5 ]]`: read returns non-zero at EOF, which would skip a final row with no newline.
 while IFS=$'\t' read -r a5 sq max scope referral source || [[ -n $a5 ]]; do
     [[ -n $a5 && -n $sq && -n $max && -n $scope && -n $referral && -n $source ]] || continue

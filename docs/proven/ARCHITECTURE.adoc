@@ -275,8 +275,11 @@ Each policy below becomes registry rules with fixtures, one PR per topic:
   `tests/retry-policy.sh` takes the id pairing from `sq-map.tsv`, and fails if a
   mapped rerun or noise row has no policy row. Dispatch and meaning stay with
   the squabbler and Hypatia (R1); this table records the cap, it does not
-  dispatch. Not covered yet: 403 rate limits on a step other than setup-bun,
-  and the Dependabot "behind main" case (CASE-030).
+  dispatch. `api_rate_limit` is covered (`SQ-RUN-01`, one rerun); when the failed
+  step is setup-bun the squabbler applies `SQ-PIN-03`, the root-cause fix, first,
+  and that rule is squabbler-only, so it has no row here. Not covered yet: the
+  Dependabot "behind main" case (CASE-030), and `SQ-RUN-02` and `SQ-NOI-03`,
+  which are squabbler-only and whose meaning is not in this repository.
 * *Concurrency.* WF021 wins over WH007, and publishers never set
   `cancel-in-progress`.
 * *Toolchain pins in one file:* OTP 27.3.4.19 (R2), Bun 1.4.2, Nickel 1.18.0

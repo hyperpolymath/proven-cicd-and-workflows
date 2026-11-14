@@ -22,4 +22,13 @@ mk; sed -i 's/\(merge_ref_race\tSQ-NOI-02\t0\tjob\t\)no/\1yes/' "$pol"; expect_f
 mk; sed -i 's/^\(hypatia\/ci_failure_triage\/api_rate_limit\tSQ-RUN-01\t1\tjob\tno\t\).*/\1/' "$pol"; expect_fail "empty source field"
 mk; printf 'hypatia/ci_failure_triage/not_a_rule\tSQ-RUN-01\t2\tjob\tno\tx' >> "$pol"; expect_fail "final row with no trailing newline is still checked"
 mk; printf 'hypatia/ci_failure_triage/new_flaky\tSQ-RUN-01\tmapped\tpresent\tx\n' >> "$map"; expect_fail "new rerun-class map row without a policy row"
+# An empty population (header-only policy, no mapped rerun or noise rows) is valid and must
+# conform cleanly: no shell error, exit 0, and the conformance line.
+expect_clean() {
+  local what=$1 want=$2 out rc=0
+  out=$(bash "$here/tests/retry-policy.sh" "$t/r" 2>&1) || rc=$?
+  [[ $rc -eq 0 && $out == *"$want"* && $out != *"unbound"* && $out != *"line "* ]] && echo "ok: $what" || { echo "FAILED: $what (rc=$rc: $out)"; fails=1; }
+}
+mk; head -n 1 "$pol" > "$t/h" && mv "$t/h" "$pol"; grep -v -E 'SQ-(RUN|NOI)-' "$map" > "$t/m" && mv "$t/m" "$map"
+expect_clean "an empty population conforms cleanly" "0 rows conform"
 exit $fails
