@@ -25,6 +25,26 @@ hypatia/ci_failure_triage/secret_or_variable_missing	SQ-OWN-02	mapped	present	AD
 hypatia/ci_failure_triage/sonar_not_authorized	SQ-OWN-15	mapped	present	ADR0004 mapping table: owner
 hypatia/ci_failure_triage/token_invalid	SQ-OWN-09	mapped	present	ADR0004 mapping table: owner
 hypatia/ci_failure_triage/uuid_conformance	SQ-OWN-14	mapped	present	ADR0004 mapping table: owner
+hypatia/ci_failure_triage/actions_lock_tag_keyed	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/codeql_no_source	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/codeql_setup_conflict	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/compile_error	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/dependency_advisory	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/format_diff	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/github_state_unreadable	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/process_segfault	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/required_check_never_reported	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/review_quota_exhausted	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/review_rate_limited	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/rollup_cascade	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/runtime_exception	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/security_findings_reported	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/ssh_key_secret_empty	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/test_failure	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/toolchain_segfault	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/unrecognized_failure	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/upstream_artifact_missing	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
+hypatia/ci_failure_triage/workflow_startup_failure	unassigned	unmapped	present	in the praxis registry, not in ADR0004 mapping table; SQ rule is the squabbler owner's decision
 -	SQ-CODE-01	squabbler-only	-	first-line-rules.tsv
 -	SQ-CODE-02	squabbler-only	-	first-line-rules.tsv
 -	SQ-CODE-03	squabbler-only	-	first-line-rules.tsv

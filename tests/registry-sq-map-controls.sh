@@ -30,4 +30,14 @@ cp "$map" "$tmp/map.tsv"; expect 'a table/map mismatch fails' 1 SQUABBLER_RULES=
 cp "$map" "$tmp/map.tsv"; expect 'a named but missing table is NOT RUN' 2 SQUABBLER_RULES="$tmp/absent.tsv"
 printf 'hypatia/ci_failure_triage/pages_not_enabled\n' > "$tmp/praxis.deed"
 cp "$map" "$tmp/map.tsv"; expect 'a praxis column that disagrees with the registry fails' 1 HYPATIA_PRAXIS="$tmp/praxis.deed"
+# Reverse direction: a triage id the registry holds but the map lacks fails,
+# and so does dropping one of the unmapped rows.
+grep -oE 'hypatia/[a-z0-9_]+/[A-Za-z0-9_]+' "$map" | sort -u > "$tmp/praxis-all.deed"
+cp "$map" "$tmp/map.tsv"; expect 'the committed map conforms to a registry of its own ids' 0 HYPATIA_PRAXIS="$tmp/praxis-all.deed"
+{ cat "$tmp/praxis-all.deed"; echo hypatia/ci_failure_triage/brand_new_rule; } > "$tmp/praxis-new.deed"
+cp "$map" "$tmp/map.tsv"; expect 'a triage id the registry adds but the map lacks fails' 1 HYPATIA_PRAXIS="$tmp/praxis-new.deed"
+awk -F'\t' 'BEGIN{OFS="\t"} $3=="unmapped" && !done {done=1; next} {print}' "$map" > "$tmp/map.tsv"
+expect 'dropping an unmapped row fails the reverse check' 1 HYPATIA_PRAXIS="$tmp/praxis-all.deed"
+cp "$map" "$tmp/map.tsv"; printf 'hypatia/ci_failure_triage/zz\tSQ-LOCK-02\tunmapped\tabsent\tnote\n' >> "$tmp/map.tsv"
+expect 'an unmapped row that names an SQ id fails' 1
 head -n 1 "$map" > "$tmp/map.tsv"; expect 'an empty map is NOT RUN' 2

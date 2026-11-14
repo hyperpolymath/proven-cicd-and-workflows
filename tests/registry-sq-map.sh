@@ -4,7 +4,10 @@
 # A5 rule ids and squabbler rule ids. The squabbler and Hypatia can both run it.
 #
 #   SQUABBLER_RULES=<first-line-rules.tsv>   also check the map against the table
-#   HYPATIA_PRAXIS=<hypatia_rules_praxis.deed> also check the praxis column
+#   HYPATIA_PRAXIS=<hypatia_rules_praxis.deed> also check the praxis column, and
+#                  that every hypatia/ci_failure_triage id there has a row
+#                  (the reverse direction: a triage rule Hypatia adds must be
+#                  mapped, or listed as `unmapped` until the squabbler owner rules)
 #
 # The kernel-reason rows are checked against src/Proven/Lock/Judge.idr when it
 # exists. A cross-check whose input is named but missing is NOT RUN (exit 2),
@@ -27,10 +30,11 @@ while IFS= read -r line; do
 done < <(awk -F'\t' '
   NF != 5 { print "row " NR+1 ": " NF " fields, want 5"; next }
   $1 != "-" && $1 !~ /^hypatia\/[a-z0-9_]+\/[A-Za-z0-9_]+$/ { print "row " NR+1 ": a5_id " $1 " is not hypatia/<module>/<name>" }
-  $2 != "hypatia-only" && !($2 == "unassigned" && $3 == "kernel-reason") && $2 !~ /^SQ-[A-Z]+-[0-9][0-9]$/ { print "row " NR+1 ": sq_id " $2 " is not SQ-<FAMILY>-NN or hypatia-only" }
+  $2 != "hypatia-only" && !($2 == "unassigned" && ($3 == "kernel-reason" || $3 == "unmapped")) && $2 !~ /^SQ-[A-Z]+-[0-9][0-9]$/ { print "row " NR+1 ": sq_id " $2 " is not SQ-<FAMILY>-NN or hypatia-only" }
   $1 != "-" && $3 == "mapped" && $2 == "hypatia-only" { print "row " NR+1 ": mapped row has no SQ id" }
   $1 != "-" && $3 == "hypatia-only" && $2 != "hypatia-only" { print "row " NR+1 ": hypatia-only row names " $2 }
-  $1 != "-" && $3 != "mapped" && $3 != "hypatia-only" { print "row " NR+1 ": an A5 row must be mapped or hypatia-only, not " $3 }
+  $1 != "-" && $3 == "unmapped" && $2 != "unassigned" { print "row " NR+1 ": an unmapped row must say unassigned, not " $2 }
+  $1 != "-" && $3 != "mapped" && $3 != "hypatia-only" && $3 != "unmapped" { print "row " NR+1 ": an A5 row must be mapped, hypatia-only or unmapped, not " $3 }
   $1 != "-" && $4 != "present" && $4 != "absent" { print "row " NR+1 ": praxis must be present or absent" }
   $1 == "-" && $3 != "squabbler-only" && $3 != "kernel-reason" { print "row " NR+1 ": a row without an A5 id must be squabbler-only or kernel-reason" }
   $1 == "-" && $4 != "-" { print "row " NR+1 ": praxis must be - when there is no A5 id" }
@@ -67,7 +71,14 @@ if [[ -n ${HYPATIA_PRAXIS:-} ]]; then
     if grep -qxF -- "$a5" <<<"$registry"; then actual=present; else actual=absent; fi
     [[ $actual == "$praxis" ]] || bad "$a5: praxis column says $praxis, registry says $actual"
   done <<<"$rows"
-  echo "checked against $(wc -l <<<"$registry") praxis ids"
+  # Reverse: every triage id in the registry has a row. Without this a rule
+  # Hypatia adds stays out of the map and the test still passes.
+  triage=$(grep -E '^hypatia/ci_failure_triage/' <<<"$registry" || true)
+  if [[ -n $triage ]]; then
+    missing=$(comm -23 <(echo "$triage") <(awk -F'\t' '$1 != "-" {print $1}' <<<"$rows" | sort -u))
+    [[ -z $missing ]] || bad "triage ids in the registry with no row (map them, or list them unmapped): $(tr '\n' ' ' <<<"$missing")"
+  fi
+  echo "checked against $(wc -l <<<"$registry") praxis ids ($(grep -c . <<<"$triage" || true) triage ids, both directions)"
 fi
 
 judge=$root/src/Proven/Lock/Judge.idr
@@ -81,7 +92,9 @@ if [[ -f $judge ]]; then
   [[ $emitted == "$listed" ]] || bad "kernel-reason rows differ from the reasons the kernel emits: $(diff <(echo "$emitted") <(echo "$listed") | tr '\n' ' ')"
 fi
 
-unassigned=$(awk -F'\t' '$2=="unassigned"{print $5}' <<<"$rows" | tr '\n' ' ')
+unassigned=$(awk -F'\t' '$2=="unassigned" && $3=="kernel-reason"{print $5}' <<<"$rows" | tr '\n' ' ')
 [[ -z $unassigned ]] || echo "WARN kernel reasons with no agreed SQ rule: $unassigned"
+unmapped=$(awk -F'\t' '$3=="unmapped"{print $1}' <<<"$rows")
+[[ -z $unmapped ]] || echo "WARN $(grep -c . <<<"$unmapped") triage ids have no SQ rule yet (the squabbler owner's decision): $(sed 's#^hypatia/ci_failure_triage/##' <<<"$unmapped" | tr '\n' ' ')"
 [[ $fail == 0 ]] && echo "registry-sq-map: $(wc -l <<<"$rows") rows conform"
 exit "$fail"

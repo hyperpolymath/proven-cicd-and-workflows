@@ -14,7 +14,7 @@ Tab-separated: `a5_id`, `sq_id`, `status`, `praxis`, `note`.
 
 [cols="1,4"]
 |===
-| `status` | `mapped`: the A5 id maps to exactly one SQ id. `hypatia-only`: no squabbler rule. `squabbler-only`: an SQ id with no A5 id (`a5_id` is `-`). `kernel-reason`: a lock-kernel reason (named in `note`) and the SQ rule it serves (`a5_id` is `-`).
+| `status` | `mapped`: the A5 id maps to exactly one SQ id. `hypatia-only`: no squabbler rule. `unmapped`: a triage id in Hypatia's registry that ADR 0004 does not map yet (`sq_id` is `unassigned`); which SQ rule it gets is the squabbler owner's decision. `squabbler-only`: an SQ id with no A5 id (`a5_id` is `-`). `kernel-reason`: a lock-kernel reason (named in `note`) and the SQ rule it serves (`a5_id` is `-`).
 | `praxis` | `present` or `absent`: whether the A5 id is in Hypatia's `hypatia_rules_praxis.deed`. `-` for rows with no A5 id.
 |===
 
@@ -23,10 +23,10 @@ Tab-separated: `a5_id`, `sq_id`, `status`, `praxis`, `note`.
 `tests/registry-sq-map.sh` enforces these rules, and both the squabbler and
 Hypatia can run it:
 
-* Every A5 id appears once and maps to exactly one SQ id, or to `hypatia-only`.
+* Every A5 id appears once and maps to exactly one SQ id, or to `hypatia-only`, or is listed `unmapped` (printed as a warning).
 * An SQ id may appear on several rows.
 * Every SQ id in the squabbler table is in the map, and the map names no SQ id the table lacks (given `SQUABBLER_RULES`).
-* The `praxis` column matches the registry (given `HYPATIA_PRAXIS`).
+* The `praxis` column matches the registry, and every `hypatia/ci_failure_triage` id in the registry has a row (given `HYPATIA_PRAXIS`). Without the second half a rule Hypatia adds would stay out of the map and the test would still pass.
 * Every `kernel-reason` row names a reason the lock kernel emits (given the kernel source).
 
 The rules allow `squabbler-only` and `hypatia-only` rows, so the test can pass
@@ -36,12 +36,14 @@ rules have no Hypatia id.
 == Sources and open findings
 
 * `cicd-squabbler` at `09e6790`: `crates/squabble-core/data/first-line-rules.tsv`, which holds 45 SQ ids, and ADR 0004, section "Mapping to Hypatia's `ci_failure_triage` ids".
-* `hypatia` at `cd2a713`: `hypatia_rules_praxis.deed`, which the test reads as 427 praxis ids. CI fetches it at this pinned commit; move the pin whenever the registry changes.
+* `hypatia` at `cd2a713`: `hypatia_rules_praxis.deed`, which the test reads as 427 praxis ids. On a push or pull request CI checks it out at this pinned commit (git verifies the content); move the pin whenever the registry changes. A weekly scheduled run (and a manual dispatch) checks against Hypatia's default branch instead, so drift after the pin shows within a week.
 * ADR 0004 names the triage ids without a module. They are written here as `hypatia/ci_failure_triage/<name>`, after `lib/rules/ci_failure_triage.ex`.
 * *Resolved finding:* the 26 A5 ids were once absent from the praxis registry, because the generator was not re-run after hypatia#1064. hypatia#1075 regenerated it, and all 26 are now `present`. Two of them, `actions_lock_stale` and `mirror_without_visibility_guard`, are emitted by `workflow_audit` rather than `ci_failure_triage`, so their A5 ids use that module.
 * `api_rate_limit` maps to SQ-RUN-01, the generic rate-limit rerun, as the squabbler owner ruled on 2026-11-13. SQ-PIN-03, the setup-bun root-cause fix, takes precedence when the failed step is setup-bun. The note records that precedence, and SQ-PIN-03 is `squabbler-only`.
 * `generated_file_stale`: ADR 0004 gives no squabbler rule, only a referral, so the row is `hypatia-only`.
 * The kernel reason `Illegal` (`../`, job-level `$/`) has no squabbler rule, on purpose: it is a referral. The squabbler owner declined to put an unproven repair at the first line while the `$/` measurement is disputed. The row says `unassigned`, which is allowed only for kernel-reason rows and printed as a warning, until the owner rules.
 
-Row counts: 25 `mapped`, 1 `hypatia-only`, 23 `squabbler-only` and 17
-`kernel-reason`, 66 in all.
+* 20 triage ids in the registry had no row: ADR 0004 does not map them. They are listed `unmapped` until the squabbler owner rules: `actions_lock_tag_keyed`, `codeql_no_source`, `codeql_setup_conflict`, `compile_error`, `dependency_advisory`, `format_diff`, `github_state_unreadable`, `process_segfault`, `required_check_never_reported`, `review_quota_exhausted`, `review_rate_limited`, `rollup_cascade`, `runtime_exception`, `security_findings_reported`, `ssh_key_secret_empty`, `test_failure`, `toolchain_segfault`, `unrecognized_failure`, `upstream_artifact_missing`, `workflow_startup_failure`.
+
+Row counts: 25 `mapped`, 1 `hypatia-only`, 20 `unmapped`, 23 `squabbler-only` and 17
+`kernel-reason`, 86 in all.
