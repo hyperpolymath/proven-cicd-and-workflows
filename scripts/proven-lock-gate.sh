@@ -17,8 +17,9 @@
 #   consistent        exit 0
 #   defect            exit 1: the lock is inconsistent (findings above)
 #   drift             exit 1: the stamped copy was edited (REFER, never auto-fixed)
-#   not_run:<why>     exit 2: no verdict. <why> is toolchain, build or selftest,
-#                     or extract. The job fails: NOT RUN is never a pass.
+#   not_run:<why>     exit 2: no verdict. <why> is stamp, toolchain, runtime (the
+#                     Idris2 RefC runtime could not be fetched), build,
+#                     selftest, extract or verdict. The job fails: NOT RUN is never a pass.
 # A report record (proven-cicd/run-report/v1) is appended to
 # $RUNNER_TEMP/proven-lock-report.jsonl when RUNNER_TEMP is set.
 set -euo pipefail
@@ -82,7 +83,12 @@ fi
 # 3. build
 build_args=("$tmp/verdict")
 [[ -n ${PROVEN_IDRIS2_SOURCE_DIR:-} ]] && build_args+=(--runtime "$PROVEN_IDRIS2_SOURCE_DIR")
-bash "$suite/scripts/build-proven-lock.sh" "${build_args[@]}" || finish 2 not_run:build not_run
+rc=0; bash "$suite/scripts/build-proven-lock.sh" "${build_args[@]}" || rc=$?
+case $rc in
+  0) ;;
+  3) finish 2 not_run:runtime not_run ;;
+  *) finish 2 not_run:build not_run ;;
+esac
 verdict=$tmp/verdict
 
 # 4. self-test: the fresh binary must give the known answers before its
