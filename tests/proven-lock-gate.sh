@@ -8,7 +8,8 @@
 #   gate      consistent -> 0; lock defect -> 1; drifted copy -> 1 (drift)
 #   selftest  a suite whose shipped C always says CONSISTENT -> 2 (not_run:selftest)
 #   pin       a malformed pinned SHA -> 2 (not_run:pin), before any fetch
-#   classes   identity (another repository), identity-unreadable (an outage),
+#   classes   identity (another repository, or the same one under another owner),
+#             identity-unreadable (an outage),
 #             fetch-missing (no retry), fetch (transient), checkout and suite
 #             each fail the job with their own class
 #   offline   the build uses the vendored RefC runtime: with git and curl
@@ -99,13 +100,17 @@ rc=0; out=$(env -i PATH="$PATH" PROVEN_SHA=not-a-sha RUNNER_TEMP="$tmp/rt" bash 
 stubs=$tmp/stubs; mkdir -p "$stubs"
 # curl stub: honours -o FILE and -w '%{http_code}' as the template uses them.
 # STUB_CURL_FAIL makes it unreachable; STUB_HTTP sets the status (default 200);
-# STUB_ID the id in the body.
+# STUB_ID the id in the body; STUB_OWNER_ID and STUB_OWNER_LOGIN the owner in
+# the body (default hyperpolymath, 6759885). STUB_NAME is the repository name the
+# reply carries, so a rename is a reply under another name with the same ids.
 cat > "$stubs/curl" <<'CURLSH'
 #!/usr/bin/env bash
 [[ -n ${STUB_CURL_FAIL:-} ]] && exit 7
 out=/dev/stdout w=""
 while [[ $# -gt 0 ]]; do case $1 in -o) out=$2; shift ;; -w) w=$2; shift ;; esac; shift; done
-printf '{"id": %s, "full_name": "hyperpolymath/proven-cicd-and-workflows"}\n' "${STUB_ID:-1326697643}" > "$out"
+printf '{"id": %s, "full_name": "%s/%s", "owner": {"login": "%s", "id": %s}}\n' \
+  "${STUB_ID:-1326697643}" "${STUB_OWNER_LOGIN:-hyperpolymath}" "${STUB_NAME:-proven-cicd-and-workflows}" \
+  "${STUB_OWNER_LOGIN:-hyperpolymath}" "${STUB_OWNER_ID:-6759885}" > "$out"
 [[ -n $w ]] && printf '%s' "${STUB_HTTP:-200}"
 exit 0
 CURLSH
@@ -155,6 +160,13 @@ run_gate_script 2 not_run:identity-unreadable 'an unreadable repository id is a 
 run_gate_script 2 not_run:identity-unreadable 'a reply with no id is unreadable, not a mismatch' "$good" STUB_ID=null
 run_gate_script 2 not_run:identity 'a repository name that no longer exists (404) is identity, not a re-run' "$good" STUB_HTTP=404
 run_gate_script 2 not_run:identity-unreadable 'a rate-limited API (403) is a re-run' "$good" STUB_HTTP=403
+# A transfer keeps the repository id and GitHub redirects the old name to it, so
+# the reply has the pinned id under another owner: the owner id refuses it.
+run_gate_script 2 not_run:identity 'a transferred repository (same id, another owner) is refused' "$good" STUB_OWNER_ID=424242 STUB_OWNER_LOGIN=someone-else
+run_gate_script 2 not_run:identity 'a transfer is refused on the owner id even when the login reads hyperpolymath' "$good" STUB_OWNER_ID=424242
+run_gate_script 0 consistent 'the pinned owner (6759885) with the pinned id passes' "$good" STUB_OWNER_ID=6759885 STUB_OWNER_LOGIN=hyperpolymath
+run_gate_script 0 consistent 'a rename within hyperpolymath (same ids, another name) passes' "$good" STUB_NAME=proven-cicd
+run_gate_script 2 not_run:identity-unreadable 'a reply with no owner id is unreadable, not a transfer' "$good" STUB_OWNER_ID=null
 run_gate_script 2 not_run:fetch-missing 'a pinned commit the suite lacks is fetch-missing, not a transient fetch' 1111111111111111111111111111111111111111
 run_gate_script 2 not_run:checkout 'a failed checkout has its own class' "$good" STUB_CHECKOUT_FAIL=1
 partial=$(fake_suite "$tmp/fake-partial" dist/proven-lock/proven-lock-verdict.c); remote_from "$tmp/fake-partial"
