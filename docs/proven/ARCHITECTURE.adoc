@@ -217,6 +217,10 @@ Each policy below becomes registry rules with fixtures, one PR per topic:
   `cancel-in-progress`.
 * *Toolchain pins in one file:* OTP 27.3.4.19 (R2), Bun 1.4.2, Nickel 1.18.0
   and yq v4.53.3.
+  The file is `proven/pins/toolchain.tsv`. `tests/toolchain-pins.sh` checks its
+  shape and that every stamped template that sets a pinned tool's env var uses
+  the pinned version; `tests/toolchain-pins-controls.sh` has five mutants. It
+  does not yet check consumer repositories: that is the applier's job.
 * *Dependabot versus the lock.* A bump must regenerate the lock in the same PR,
   or it is referred.
 * *Hooks.*
