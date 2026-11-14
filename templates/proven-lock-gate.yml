@@ -1,4 +1,4 @@
-# proven-cicd: proven-lock-gate@0.3.0 sha256:6998a36457f65dc14e98501ba97f262e09fff8702e7f7b716b622bb4ac0bf979
+# proven-cicd: proven-lock-gate@0.3.0 sha256:ea41d07c292dd3f443a23f97c16e7cef051668eefc52cb5cb0757a346435b0ef
 # SPDX-License-Identifier: MPL-2.0
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-lock-gate.yml.
 # Do not edit by hand. A changed body fails this gate as drift. The applier
@@ -12,7 +12,8 @@
 # a verdict. Every way the gate can fail before its verdict has its own class:
 #   not_run:pin            PROVEN_SHA is not a 40-hex commit
 #   not_run:identity       the suite repository is not the one this gate pins
-#                          (repository id 1326697643): refer, never re-run
+#                          (repository id 1326697643, after following a rename),
+#                          or the name no longer exists: refer, never re-run
 #   not_run:identity-unreadable  the repository id could not be read (API outage
 #                          or rate limit): a re-run
 #   not_run:fetch-missing  the pinned commit does not exist in the suite (persistent)
@@ -58,9 +59,18 @@ jobs:
           # transferred or recreated repository under the same name is refused.
           # Two classes: an id that cannot be read is an availability failure (a
           # re-run); an id that differs is a different repository (refer).
-          meta=$(curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
-                   "https://api.github.com/repos/$repo") || fail identity-unreadable "could not read the id of $repo"
-          id=$(jq -r '.id // empty' <<<"$meta" 2>/dev/null) || fail identity-unreadable "the reply for $repo is not JSON"
+          # A rename answers 301: follow it (-L) and judge the id it leads to. A
+          # name that no longer exists (404, 410) is permanent, so it is identity;
+          # any other non-200 (403, 429, 5xx) is availability, a re-run.
+          code=$(curl -sS -L --retry 3 -o "$RUNNER_TEMP/proven-repo.json" -w '%{http_code}' \
+                   -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$repo") ||
+            fail identity-unreadable "could not reach the API for $repo"
+          case $code in
+            200) ;;
+            404|410) fail identity "$repo does not exist (HTTP $code)" ;;
+            *) fail identity-unreadable "the API answered HTTP $code for $repo" ;;
+          esac
+          id=$(jq -r '.id // empty' "$RUNNER_TEMP/proven-repo.json" 2>/dev/null) || fail identity-unreadable "the reply for $repo is not JSON"
           [[ $id =~ ^[0-9]+$ ]] || fail identity-unreadable "the reply for $repo has no id"
           [[ $id == 1326697643 ]] || fail identity "$repo has id '$id', not 1326697643"
           suite="$RUNNER_TEMP/proven-suite"

@@ -41,6 +41,9 @@ check() {
   local hist
   hist=$(jq -r '.artifacts[] | .artifact as $a | .version as $v | .sha256 as $h |
       if (.history | type) != "array" or (.history | length) == 0 then "\($a)\tno history"
+      elif any(.history[]; (type != "object") or ((.version | type) != "string") or ((.sha256 | type) != "string")
+               or ((.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) | not) or ((.sha256 | test("^[0-9a-f]{64}$")) | not)
+               or ((has("defect") and ((.defect | type) != "string")))) then "\($a)\ta history entry is not {version: MAJOR.MINOR.PATCH, sha256: 64-hex}"
       elif (.history | last) != {version: $v, sha256: $h} and ((.history | last) | del(.defect)) != {version: $v, sha256: $h} then "\($a)\thistory does not end with the current version and sha256"
       elif ([.history[] | [.version, .sha256]] | length) != ([.history[] | [.version, .sha256]] | unique | length) then "\($a)\thistory repeats an entry"
       else empty end' "$m" 2>/dev/null) || { echo "FAIL an artifact history is malformed"; fail=1; }
@@ -162,6 +165,10 @@ fresh; edit_json '(.artifacts[0].history) |= [.[0], (.[0] | .sha256 = ("1" * 64)
 refuse 'a version naming two bodies with no recorded defect' 1
 fresh; edit_json 'del(.artifacts[0].history)'
 refuse 'missing history' 1
+fresh; edit_json '.artifacts[0].history[1].sha256 = "not-a-sha"'
+refuse 'a middle history entry with a malformed sha256' 1
+fresh; edit_json '.artifacts[0].history[0].version = "0.1"'
+refuse 'a middle history entry with a malformed version' 1
 fresh; rm "$tmp/r/proven/manifest.json"
 refuse 'manifest missing' 2
-echo "proven-manifest: manifest conforms (installed copy may lag, to a published version); 17 mutants refused"
+echo "proven-manifest: manifest conforms (installed copy may lag, to a published version); 19 mutants refused"

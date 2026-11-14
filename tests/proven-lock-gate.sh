@@ -60,7 +60,18 @@ rc=0; out=$(env -i PATH="$PATH" PROVEN_SHA=not-a-sha RUNNER_TEMP="$tmp/rt" bash 
 # github.com URL to it, curl and sleep are stubs, and a git wrapper can fail the
 # checkout. Nothing here touches the network.
 stubs=$tmp/stubs; mkdir -p "$stubs"
-printf '#!/usr/bin/env bash\n[[ -n ${STUB_CURL_FAIL:-} ]] && exit 22\nprintf '"'"'{"id": %%s, "full_name": "hyperpolymath/proven-cicd-and-workflows"}\\n'"'"' "${STUB_ID:-1326697643}"\n' > "$stubs/curl"
+# curl stub: honours -o FILE and -w '%{http_code}' as the template uses them.
+# STUB_CURL_FAIL makes it unreachable; STUB_HTTP sets the status (default 200);
+# STUB_ID the id in the body.
+cat > "$stubs/curl" <<'STUB'
+#!/usr/bin/env bash
+[[ -n ${STUB_CURL_FAIL:-} ]] && exit 7
+out=/dev/stdout w=""
+while [[ $# -gt 0 ]]; do case $1 in -o) out=$2; shift ;; -w) w=$2; shift ;; esac; shift; done
+printf '{"id": %s, "full_name": "hyperpolymath/proven-cicd-and-workflows"}\n' "${STUB_ID:-1326697643}" > "$out"
+[[ -n $w ]] && printf '%s' "${STUB_HTTP:-200}"
+exit 0
+STUB
 printf '#!/usr/bin/env bash\nexit 0\n' > "$stubs/sleep"
 realgit=$(command -v git)
 printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ $a == checkout && -n ${STUB_CHECKOUT_FAIL:-} ]] && exit 128; done\nexec %q "$@"\n' "$realgit" > "$stubs/git"
@@ -105,6 +116,8 @@ run_gate_script 0 consistent 'a verified suite at the pinned commit runs the gat
 run_gate_script 2 not_run:identity 'a suite repository with another id is refused' "$good" STUB_ID=42
 run_gate_script 2 not_run:identity-unreadable 'an unreadable repository id is a re-run, not a different repository' "$good" STUB_CURL_FAIL=1
 run_gate_script 2 not_run:identity-unreadable 'a reply with no id is unreadable, not a mismatch' "$good" STUB_ID=null
+run_gate_script 2 not_run:identity 'a repository name that no longer exists (404) is identity, not a re-run' "$good" STUB_HTTP=404
+run_gate_script 2 not_run:identity-unreadable 'a rate-limited API (403) is a re-run' "$good" STUB_HTTP=403
 run_gate_script 2 not_run:fetch-missing 'a pinned commit the suite lacks is fetch-missing, not a transient fetch' 1111111111111111111111111111111111111111
 run_gate_script 2 not_run:checkout 'a failed checkout has its own class' "$good" STUB_CHECKOUT_FAIL=1
 partial=$(fake_suite "$tmp/fake-partial" dist/proven-lock/proven-lock-verdict.c); remote_from "$tmp/fake-partial"

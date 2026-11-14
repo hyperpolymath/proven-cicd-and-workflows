@@ -59,7 +59,9 @@ printf 'X' | dd of="$tmp/planted/refc/runtime.c" bs=1 seek=0 conv=notrunc status
 if (cd "$tmp/planted" && sha256sum --quiet -c SHA256SUMS) >/dev/null 2>&1; then bad 'control: a one-byte change passed the sums'
 else ok 'control: a one-byte change fails the sums'; fi
 
-# --- 2. upstream
+# --- 2. upstream. A defect found offline is reported as a defect: an upstream
+# outage after it must not turn exit 1 into NOT RUN.
+[[ $fail == 0 ]] || { echo "proven-lock-runtime-vendor: offline checks failed; upstream comparison skipped" >&2; exit 1; }
 up=${UPSTREAM_DIR:-}
 if [[ -z $up ]]; then
   command -v git >/dev/null || { echo "proven-lock-runtime-vendor: git missing; upstream check NOT RUN" >&2; exit 2; }
