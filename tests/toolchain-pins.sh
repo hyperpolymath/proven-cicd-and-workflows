@@ -16,7 +16,8 @@ header=$(head -1 "$pins")
 while IFS= read -r bad_row; do bad "malformed row (need 5 non-empty tab fields): $bad_row"; done < <(
     tail -n +2 "$pins" | awk -F'\t' 'NF != 5 || $1 == "" || $2 == "" || $3 == "" || $4 == "" || $5 == "" { print }')
 declare -A ver env
-while IFS=$'\t' read -r tool version envvar source note; do
+# `|| [[ -n $tool ]]`: read returns non-zero at EOF, which would skip a final row with no newline.
+while IFS=$'\t' read -r tool version envvar source note || [[ -n $tool ]]; do
     [[ -n $tool && -n $version && -n $envvar && -n $source && -n $note ]] || continue
     [[ -n ${ver[$tool]:-} ]] && bad "duplicate tool $tool"
     [[ $version =~ ^v?[0-9]+(\.[0-9]+){1,3}$ ]] || bad "$tool: version '$version' is not an exact version"
