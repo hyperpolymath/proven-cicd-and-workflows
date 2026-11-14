@@ -63,7 +63,7 @@ stubs=$tmp/stubs; mkdir -p "$stubs"
 # curl stub: honours -o FILE and -w '%{http_code}' as the template uses them.
 # STUB_CURL_FAIL makes it unreachable; STUB_HTTP sets the status (default 200);
 # STUB_ID the id in the body.
-cat > "$stubs/curl" <<'STUB'
+cat > "$stubs/curl" <<'CURLSH'
 #!/usr/bin/env bash
 [[ -n ${STUB_CURL_FAIL:-} ]] && exit 7
 out=/dev/stdout w=""
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do case $1 in -o) out=$2; shift ;; -w) w=$2; shift ;; esac
 printf '{"id": %s, "full_name": "hyperpolymath/proven-cicd-and-workflows"}\n' "${STUB_ID:-1326697643}" > "$out"
 [[ -n $w ]] && printf '%s' "${STUB_HTTP:-200}"
 exit 0
-STUB
+CURLSH
 printf '#!/usr/bin/env bash\nexit 0\n' > "$stubs/sleep"
 realgit=$(command -v git)
 printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ $a == checkout && -n ${STUB_CHECKOUT_FAIL:-} ]] && exit 128; done\nexec %q "$@"\n' "$realgit" > "$stubs/git"
