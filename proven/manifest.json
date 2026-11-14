@@ -3,8 +3,8 @@
   "artifacts": [
     {
       "artifact": "proven-lock-gate",
-      "version": "0.1.0",
-      "sha256": "c185121117c95de439cf060b510b0117aef2b11ed33927269a27aab58ac04466",
+      "version": "0.2.0",
+      "sha256": "a4bab5af357d4538c95b3509ad5909e5ba631dc08975b185e578f62edc69c2fc",
       "template": "templates/proven-lock-gate.yml",
       "install_path": ".github/workflows/proven-lock-gate.yml"
     }
