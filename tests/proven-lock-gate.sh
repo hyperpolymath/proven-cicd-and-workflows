@@ -87,6 +87,22 @@ coe=$(yq '[.. | select(has("continue-on-error"))] | length' "$template")
 [[ $(yq -o json -I 0 '.permissions' "$template") == '{"contents":"read"}' ]] && ok 'token is read-only' || bad 'permissions are not exactly contents: read'
 [[ $(yq '[.jobs[] | select(has("name") | not)] | length' "$template") == 0 ]] && ok 'every job has an explicit name (stable required context)' || bad 'a job has no explicit name'
 [[ $(yq '[.jobs[] | select(has("timeout-minutes") | not)] | length' "$template") == 0 ]] && ok 'every job has a timeout' || bad 'a job has no timeout'
+# Every curl call is HTTPS only, redirects included (SonarCloud githubactions:S6506):
+# -L follows a rename's redirect, and the token must never follow one to http://.
+https_only() { # FILE -> exit 0 when every non-comment curl call carries both flags
+  local calls bad_calls
+  calls=$(grep -E '(^|[^[:alnum:]_-])curl[[:space:]]' "$1" | grep -vE '^[[:space:]]*#')
+  [[ -n $calls ]] || return 2
+  bad_calls=$(grep -vF -- "--proto '=https'" <<<"$calls"; grep -vF -- "--proto-redir '=https'" <<<"$calls")
+  [[ -z $bad_calls ]]
+}
+https_only "$template" && ok 'every curl call is HTTPS only, redirects included' || bad 'a curl call lacks --proto =https or --proto-redir =https'
+for flag in "--proto-redir '=https' " "--proto '=https' "; do
+  sed "s/ $flag/ /" "$template" > "$tmp/plain.yml"
+  if cmp -s "$template" "$tmp/plain.yml"; then bad "control: removing $flag changed nothing"
+  elif https_only "$tmp/plain.yml"; then bad "control: a curl without $flag passed"
+  else ok "control: a curl without ${flag% } is refused"; fi
+done
 
 # --- pin refusal, from the template's own run script
 yq '.jobs.proven-lock.steps[1].run' "$template" > "$tmp/run.sh"
