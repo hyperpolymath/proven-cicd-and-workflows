@@ -398,16 +398,20 @@ isConsistent _ = False
 -- Relock: the certified entry for a workflow
 
 ||| What a workflow's entry should be: the keys it reaches by steps, followed
-||| by the job-level calls it makes, which an entry may list. Returned only
-||| together with an `EdgesExact` certificate for exactly that list, so relock
-||| soundness holds by construction: a relocked entry that the judge would
-||| reject cannot be returned. Fuel bounds only the search.
+||| by the job-level calls it makes that the lock already keys a record for
+||| (`keyed`). An entry may list a job-level call or omit it (standards#968),
+||| so a call with no record is left out rather than listed as a dangling key.
+||| Returned only together with an `EdgesExact` certificate for exactly that
+||| list: relock is EDGE-EXACT by construction. It is not a claim that the
+||| whole lock judges CONSISTENT: a key reached by steps that no record keys is
+||| still listed, and the judge reports it as DanglingRecord until a record is
+||| added (relock never invents one). Fuel bounds only the search.
 public export
-relockEntry : (g : List (String, Node)) -> (w : Workflow) ->
+relockEntry : (g : List (String, Node)) -> (keyed : List String) -> (w : Workflow) ->
               Either String (e : List String ** EdgesExact g (node w) (jobCalls w) e)
-relockEntry g w =
+relockEntry g keyed w =
   let (vs, ss) = walk g (node w)
-      e = ss ++ filter (\k => not (elem k ss)) (dedup (jobCalls w))
+      e = ss ++ filter (\k => not (elem k ss) && elem k keyed) (dedup (jobCalls w))
    in case filter (\c => not (has (resolve c g))) vs of
         (c :: _) => Left ("composite metadata missing: " ++ c)
         [] => case decClosed g vs ss of
@@ -420,10 +424,18 @@ relockEntry g w =
                 Nothing => Left "no reach proof for a relocked key"
                 Just ok => Right (e ** exact cl nin sub ok)
 
-||| Relock ignores the entries it replaces: it depends only on the workflow
-||| graph, so relocking a relocked lock gives the same entries (idempotence).
+||| The record keys relock consults: every key the lock has a record for.
+public export
+recordKeys : Facts -> List String
+recordKeys f = map key (records f)
+
+||| Relock is a function of the workflow graph and the record keys alone: the
+||| entries it replaces do not reach it. (This is not file-level idempotence of
+||| the written lock, records and ordering included; that belongs to whichever
+||| tool writes the lock, and is not proved here.)
 public export
 relockIgnoresEntries : (f : Facts) -> (es : List Entry) -> (w : Workflow) ->
-  relockEntry (composites f) w =
-  relockEntry (composites (MkFacts (composites f) (workflows f) es (records f) (illegal f) (oracle f))) w
+  relockEntry (composites f) (recordKeys f) w =
+  relockEntry (composites (MkFacts (composites f) (workflows f) es (records f) (illegal f) (oracle f)))
+              (recordKeys (MkFacts (composites f) (workflows f) es (records f) (illegal f) (oracle f))) w
 relockIgnoresEntries f es w = Refl
