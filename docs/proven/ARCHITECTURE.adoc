@@ -168,9 +168,18 @@ and nothing changes between relock and check. The four properties to prove:
   reported in `needs_records`, because relock never invents a record. A
   job-level call with no record is left out (an entry may omit it), so relock
   never turns a `consistent` lock into one with a `DanglingRecord`.
-  `tests/proven-lock.sh` checks on every fixture that a `consistent` lock
-  stays `consistent` under relock, and that otherwise the only new reasons
-  are `DanglingRecord` or `UnusedRecord` on keys relock added or removed.
+  `--relock` also ends with one `unused_records` line: the records nothing
+  names once the entries are replaced. A relock with `needs_records` or
+  `unused_records` non-empty is *not yet a consistent lock*: the SQ-LOCK-02
+  fix (regenerate the lock) must add the needed records and drop the unused
+  ones before it claims a fix. Tested, not proven: `tests/proven-lock.sh`
+  checks on every fixture that a `consistent` lock stays `consistent` under
+  relock; that otherwise every new reason is a `DanglingRecord` on a key
+  `needs_records` names, or an `UnusedRecord`; that the judge's
+  `UnusedRecord` keys equal `unused_records` exactly; and both lists against
+  an independent computation. A fixture relock or the extractor refuses is a
+  pinned skip, never a pass, and four planted defects in the relock output
+  must each be refused, so the check cannot go soft unseen.
 . *Relock reads the graph alone.* Relock is a function of the workflow graph
   and the record keys; the entries it replaces never reach it
   (`relockIgnoresEntries`, by `Refl`). File-level idempotence of a written
