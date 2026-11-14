@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: CC-BY-SA-4.0
 = Proven coverage collector
 
-Artifact: `proven-coverage-collect@0.1.0`. Status: shadow only.
+Artifact: `proven-coverage-collect@0.1.1`. Status: shadow only.
 
 This is the third increment of Hypatia's proven-coverage design
 (`hypatia/docs/design/proven-coverage.adoc`, sections 3.1, 4, 6 and 8.4). It
 ships as a stamped inline copy, the same way as `proven-lock-gate`. The stamp,
-drift and BEHIND rules are in `ARCHITECTURE.adoc` in this directory.
+drift and BEHIND rules are in `ARCHITECTURE.adoc` in this directory. The stamp
+is on line 2, under the SPDX line on line 1.
 
 == What it does
 

@@ -20,6 +20,14 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 command -v jq >/dev/null || { echo "proven-manifest: jq missing; NOT RUN" >&2; exit 2; }
 
+# stamp_of FILE: the stamp line, from line 2 (current layout) or line 1 (legacy
+# layout, an installed copy that has not been re-stamped); empty when neither.
+stamp_of() {
+  local l1 l2; l1=$(sed -n 1p "$1"); l2=$(sed -n 2p "$1")
+  if [[ $l1 == '# proven-cicd: '* ]]; then printf '%s\n' "$l1"
+  elif [[ $l1 == '# SPDX-License-Identifier: '* && $l2 == '# proven-cicd: '* ]]; then printf '%s\n' "$l2"; fi
+}
+
 # check DIR: conformance of DIR's manifest against DIR's files. Prints one FAIL
 # line per broken rule; returns 0, 1, or 2 when there is nothing to judge.
 check() {
@@ -43,7 +51,7 @@ check() {
       { echo "FAIL $artifact template $template missing or outside templates/"; fail=1; continue; }
     [[ $install =~ ^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$ ]] || { echo "FAIL $artifact install_path $install"; fail=1; }
     local want="# proven-cicd: $artifact@$version sha256:$sha"
-    [[ $(head -n 1 "$dir/$template") == "$want" ]] ||
+    [[ $(sed -n 2p "$dir/$template") == "$want" ]] ||
       { echo "FAIL $template stamp line is not the manifest's: $want"; fail=1; }
     bash "$dir/scripts/proven-stamp.sh" check "$dir/$template" >/dev/null 2>&1 ||
       { echo "FAIL $template body does not match its stamp"; fail=1; }
@@ -51,7 +59,7 @@ check() {
   # Every stamped file here is listed; an installed copy is not ahead.
   local f first name ver
   while IFS= read -r f; do
-    first=$(head -n 1 "$f")
+    first=$(stamp_of "$f")
     name=${first#'# proven-cicd: '}; name=${name%%@*}
     ver=${first#*@}; ver=${ver%% *}
     grep -qxF "$name" <(cut -f1 <<<"$rows") || { echo "FAIL ${f#"$dir/"} names $name, which the manifest does not list"; fail=1; continue; }
@@ -62,7 +70,7 @@ check() {
       bash "$dir/scripts/proven-stamp.sh" check "$f" >/dev/null 2>&1 || { echo "FAIL ${f#"$dir/"} drifted from its stamp"; fail=1; }
     fi
   done < <(grep -rlE '^# proven-cicd: ' "$dir/templates" "$dir/.github/workflows" 2>/dev/null |
-           while IFS= read -r p; do head -n 1 "$p" | grep -q '^# proven-cicd: ' && printf '%s\n' "$p"; done)
+           while IFS= read -r p; do [[ -n $(stamp_of "$p") ]] && printf '%s\n' "$p"; done)
   return "$fail"
 }
 
@@ -116,7 +124,7 @@ fresh; edit_json 'del(.artifacts[0].install_path)'
 refuse 'missing field' 1
 fresh; edit_json '.artifacts = []'
 refuse 'empty artifacts list' 1
-fresh; sed '1s/proven-lock-gate@/unlisted-gate@/' "$tmp/r/templates/proven-lock-gate.yml" > "$tmp/r/templates/unlisted.yml"
+fresh; sed '2s/proven-lock-gate@/unlisted-gate@/' "$tmp/r/templates/proven-lock-gate.yml" > "$tmp/r/templates/unlisted.yml"
 refuse 'stamped template the manifest does not list' 1
 fresh; sed -i '1s/@0\.1\.0 /@9.9.9 /' "$tmp/r/.github/workflows/proven-lock-gate.yml"
 refuse 'installed copy AHEAD of the manifest' 1
