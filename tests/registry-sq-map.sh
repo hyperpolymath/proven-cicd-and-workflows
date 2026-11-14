@@ -66,7 +66,9 @@ fi
 
 if [[ -n ${HYPATIA_PRAXIS:-} ]]; then
   [[ -f $HYPATIA_PRAXIS ]] || { echo "HYPATIA_PRAXIS=$HYPATIA_PRAXIS missing; NOT RUN" >&2; exit 2; }
-  registry=$(grep -oE 'hypatia/[a-z0-9_]+/[A-Za-z0-9_]+' "$HYPATIA_PRAXIS" | sort -u)
+  # `|| true`: under pipefail a grep with no match would end the script with
+  # exit 1 and no message; an empty registry is NOT RUN, said just below.
+  registry=$({ grep -oE 'hypatia/[a-z0-9_]+/[A-Za-z0-9_]+' "$HYPATIA_PRAXIS" || true; } | sort -u)
   [[ -n $registry ]] || { echo "no A5 ids read from $HYPATIA_PRAXIS; NOT RUN" >&2; exit 2; }
   while IFS=$'\t' read -r a5 _ _ praxis _; do
     [[ $a5 == - ]] && continue
