@@ -18,6 +18,7 @@ mk; sed -i "s/\"$otp\"/\"$other\"/" "$tpl"; expect_fail "template drifted from t
 mk; sed -i "s/\"$otp\"/'$otp'/" "$tpl"; expect_pass "single-quoted equal value"
 mk; sed -i "s/\"$otp\"/\"${otp%.*}. ${otp##*.}\"/" "$tpl"; expect_fail "internal space in the value"
 mk; sed -i "s/PROVEN_COV_OTP_VERSION: \"$otp\"/'PROVEN_COV_OTP_VERSION': \"$other\"/" "$tpl"; expect_fail "quoted-key drift"
+mk; sed -i "s/\"$otp\"/\"$otp\\\\n\"/" "$tpl"; expect_fail "trailing newline in the value"
 mk; sed -i "s/^otp\t$otp/otp\t$other/" "$pins"; expect_fail "pin moved, template not"
 mk; sed -i '/^bun\t/d' "$pins"; expect_fail "required tool removed"
 mk; sed -i "s/^yq\t$yq_v/yq\tlatest/" "$pins"; expect_fail "inexact version"

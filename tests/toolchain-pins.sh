@@ -33,13 +33,14 @@ for tool in "${!ver[@]}"; do
     [[ $var == - ]] && continue
     seen=0
     for f in "$root"/templates/*.yml; do
-        vals=$(VAR=$var yq -r '.. | select(tag == "!!map") | to_entries | .[] | select(.key == strenv(VAR)) | .value' "$f") \
+        # Compare inside yq: shell command substitution would strip a trailing newline from the value.
+        rows=$(VAR=$var PIN=${ver[$tool]} yq -r '.. | select(tag == "!!map") | to_entries | .[] | select(.key == strenv(VAR)) | [(.value == strenv(PIN)), (.value | @json)] | @tsv' "$f") \
             || { bad "$(basename "$f"): does not parse"; continue; }
-        [[ -n $vals ]] || continue
-        while IFS= read -r val; do
+        [[ -n $rows ]] || continue
+        while IFS=$'\t' read -r same shown; do
             seen=1
-            [[ $val == "${ver[$tool]}" ]] || bad "$(basename "$f"): $var is '$val', pin is '${ver[$tool]}'"
-        done <<< "$vals"
+            [[ $same == true ]] || bad "$(basename "$f"): $var is $shown, pin is '${ver[$tool]}'"
+        done <<< "$rows"
     done
     [[ $seen -eq 1 ]] || bad "no template sets $var, so the $tool pin is unchecked"
 done
