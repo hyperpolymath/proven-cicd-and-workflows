@@ -1,4 +1,4 @@
-# proven-cicd: proven-coverage-collect@0.1.0 sha256:e005c690c335807476df786a746567a6a8119234f4b6f54ff8198f9faf533110
+# proven-cicd: proven-coverage-collect@0.1.0 sha256:0f3e695362fe661ca1daaaa850720e685748e684181793aab47597c23795a354
 # SPDX-License-Identifier: MPL-2.0
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-coverage-collect.yml.
 # Do not edit by hand. A changed body fails as drift. The applier moves the
@@ -100,6 +100,7 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: proven-coverage
-          path: cov/
+          path: .proven-coverage/
           retention-days: 14
+          include-hidden-files: true
           if-no-files-found: ignore

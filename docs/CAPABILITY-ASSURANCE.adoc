@@ -3,7 +3,7 @@
 = Capability Assurance Matrix
 :toc:
 
-Evidence and limits for all 33 existing actions. No new runtime policy is introduced.
+Evidence and limits for all 33 capabilities (32 composite actions and 1 stamped template). No new runtime policy is introduced.
 
 Inspected source: `cd313201ee1e3a73ce9c32d155690c082a94eda6`. This inventory links control sources, not fresh execution results. A file existing does not prove its tests passed or cover every claim. Unlisted evidence means not assessed here, not that evidence cannot exist.
 
@@ -460,7 +460,7 @@ No independent assurance verdict; retain the catalogue limitation.
 
 *Control evidence:* Not established in this pass.
 
-Shadow collector: it never judges a coverage number. Its stamp, manifest entry, exit codes and Rust, Mix and JS fixture runs are checked by tests/proven-coverage-collect.sh; Hypatia judges the reports.
+Added after the inspected source revision, so no control source was inspected for this row: control evidence is not established here. Shadow collector: it never judges a coverage number; Hypatia judges.
 
 *Consumer proof:* no receipt indexed here.
 

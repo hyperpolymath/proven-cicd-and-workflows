@@ -11,7 +11,7 @@
     {
       "artifact": "proven-coverage-collect",
       "version": "0.1.0",
-      "sha256": "e005c690c335807476df786a746567a6a8119234f4b6f54ff8198f9faf533110",
+      "sha256": "0f3e695362fe661ca1daaaa850720e685748e684181793aab47597c23795a354",
       "template": "templates/proven-coverage-collect.yml",
       "install_path": ".github/workflows/proven-coverage-collect.yml"
     }

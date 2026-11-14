@@ -24,8 +24,8 @@ all tests. The proven run executes a subset. Hypatia compares them.
 | Language | Detected by | Raw run | Proven run
 
 | Rust | `Cargo.toml` at the root
-| `cargo llvm-cov --json` to `cov/raw/llvm.json`
-| Same, with the test-name filter (default `prop_`) to `cov/proven/llvm.json`
+| `cargo llvm-cov --json` to `.proven-coverage/raw/llvm.json`
+| Same, with the test-name filter (default `prop_`) to `.proven-coverage/proven/llvm.json`
 
 | Elixir | `mix.exs` at the root
 | `mix test --cover --export-coverage raw`
@@ -54,10 +54,11 @@ Every report has a sidecar `<report>.meta.json` with schema
 
 == What it uploads
 
-One artifact named `proven-coverage`, kept for 14 days. It holds the `cov/`
-tree: the reports, the sidecars, `cov/collect-report.json`
+One artifact named `proven-coverage`, kept for 14 days. It holds the collector-owned
+`.proven-coverage/` tree (hidden files are included). The collector removes and
+recreates only that directory, never a consumer's own `cov/`. The tree holds: the reports, the sidecars, `.proven-coverage/collect-report.json`
 (`proven-cicd/coverage-collect-report/v1`, one row per language with its status
-and the reason a report is missing) and `cov/summary.md`. The job summary shows
+and the reason a report is missing) and `.proven-coverage/summary.md`. The job summary shows
 the same table. It has no percentages.
 
 == Shadow rules (design section 8.4)

@@ -83,9 +83,9 @@ stamped=.github/workflows/proven-coverage-collect.yml
 
 mkws
 expect_rc 'a repo with none of the languages exits 0' 0 bash "$driver" collect "$tmp/ws" "$stamped"
-[[ $(last) == PROVEN_COVERAGE_CLASS=nothing_to_collect ]] && grep -qi 'nothing to collect' "$tmp/ws/cov/summary.md" && grep -qi 'nothing to collect' "$tmp/out" &&
+[[ $(last) == PROVEN_COVERAGE_CLASS=nothing_to_collect ]] && grep -qi 'nothing to collect' "$tmp/ws/.proven-coverage/summary.md" && grep -qi 'nothing to collect' "$tmp/out" &&
   ok 'it says "nothing to collect"' || bad "no 'nothing to collect' summary: $(last)"
-[[ $(jq '.languages | length' "$tmp/ws/cov/collect-report.json") == 0 ]] && ok 'collect-report.json lists no language' || bad 'collect-report.json is wrong'
+[[ $(jq '.languages | length' "$tmp/ws/.proven-coverage/collect-report.json") == 0 ]] && ok 'collect-report.json lists no language' || bad 'collect-report.json is wrong'
 [[ $(bash "$driver" detect "$tmp/ws" | tr '\n' ' ') == 'rust=false elixir=false js=false ' ]] && ok 'detect finds nothing' || bad 'detect on an empty repo'
 
 expect_rc 'a missing workspace is exit 2' 2 bash "$driver" collect "$tmp/absent"
@@ -103,10 +103,31 @@ chmod +x "$tmp/stub/cargo"
 rc=0; PATH="$tmp/stub:$PATH" bash "$driver" collect "$tmp/ws" "$stamped" >"$tmp/out" 2>&1 || rc=$?
 [[ $rc == 0 && $(last) == PROVEN_COVERAGE_CLASS=collected ]] && ok 'a failing tool run still exits 0' || bad "failing tool: $rc/$(last)"
 jq -e '.languages[0] | .language == "rust" and .status == "partial" and .raw == null and .proven == null and (.reason | test("exited 101"))' \
-  "$tmp/ws/cov/collect-report.json" >/dev/null && grep -q '| rust | no | no | ' "$tmp/ws/cov/summary.md" && ok 'the missing reports and the reason are in the summary' || bad 'failing-tool summary'
-[[ ! -e $tmp/ws/cov/raw/llvm.json ]] && ok 'no report is left behind by a failed run' || bad 'a partial report was left behind'
+  "$tmp/ws/.proven-coverage/collect-report.json" >/dev/null && grep -q '| rust | no | no | ' "$tmp/ws/.proven-coverage/summary.md" && ok 'the missing reports and the reason are in the summary' || bad 'failing-tool summary'
+[[ ! -e $tmp/ws/.proven-coverage/raw/llvm.json ]] && ok 'no report is left behind by a failed run' || bad 'a partial report was left behind'
 rc=0; PATH="/usr/bin:/bin" bash "$driver" collect "$tmp/ws" "$stamped" >"$tmp/out" 2>&1 || rc=$?
-[[ $rc == 0 ]] && grep -q 'cargo-llvm-cov is not installed' "$tmp/ws/cov/summary.md" && ok 'an unmeasurable language is reported, not failed' || bad "no cargo: $rc"
+[[ $rc == 0 ]] && grep -q 'cargo-llvm-cov is not installed' "$tmp/ws/.proven-coverage/summary.md" && ok 'an unmeasurable language is reported, not failed' || bad "no cargo: $rc"
+
+# a consumer's own cov/ survives, and a stale Elixir export is never converted
+mkws; mkdir -p "$tmp/ws/cov"; echo keep > "$tmp/ws/cov/keep.txt"
+bash "$driver" collect "$tmp/ws" "$stamped" >"$tmp/out" 2>&1 || true
+[[ $(cat "$tmp/ws/cov/keep.txt" 2>/dev/null) == keep && -d $tmp/ws/.proven-coverage ]] && ok "a consumer's cov/keep.txt survives a run" || bad "consumer cov/ was touched"
+mkws; : > "$tmp/ws/mix.exs"; mkdir -p "$tmp/ws/cover"
+echo stale > "$tmp/ws/cover/raw.coverdata"; echo stale > "$tmp/ws/cover/proven.coverdata"
+cat > "$tmp/stub/mix" <<'STUB'
+#!/usr/bin/env bash
+echo "mix $*" >> "$STUB_LOG"
+[[ $1 == run && ${*: -1} == --tools-version ]] && { echo 0.0.0; exit 0; }
+[[ $1 == test ]] && exit 2
+exit 0
+STUB
+chmod +x "$tmp/stub/mix"
+rc=0; STUB_LOG="$tmp/mix.log" PATH="$tmp/stub:$PATH" bash "$driver" collect "$tmp/ws" "$stamped" >"$tmp/out" 2>&1 || rc=$?
+[[ $rc == 0 && ! -e $tmp/ws/.proven-coverage/raw/elixir.lcov && ! -e $tmp/ws/.proven-coverage/proven/elixir.lcov ]] &&
+  ! grep -q 'cover/' "$tmp/mix.log" && [[ ! -e $tmp/ws/cover/raw.coverdata ]] &&
+  jq -e '.languages[0] | .raw == null and .proven == null and (.reason | test("no fresh coverdata"))' "$tmp/ws/.proven-coverage/collect-report.json" >/dev/null &&
+  ok 'a stale coverdata file is deleted, not converted, when mix test fails' || { bad 'stale coverdata was converted or not reported'; cat "$tmp/mix.log"; }
+rm -f "$tmp/stub/mix"
 
 # --- real runs
 sidecar_ok() { # REPORT ROLE TOOL
@@ -122,20 +143,20 @@ real() { # LANG FIXTURE TOOL_NAME REPORT_FILE -> runs the driver, leaves $tmp/ws
   [[ $(last) == PROVEN_COVERAGE_CLASS=collected ]] || { bad "$lang: driver did not finish collected: $(last)"; sed 's/^/    /' "$tmp/out" | tail -20; return 1; }
   local r
   for r in raw proven; do
-    [[ -s $tmp/ws/cov/$r/$file ]] || { bad "$lang: cov/$r/$file missing; $(jq -r '.languages[0].reason' "$tmp/ws/cov/collect-report.json")"; return 1; }
-    sidecar_ok "$tmp/ws/cov/$r/$file" "$r" "$tool" || { bad "$lang: $r sidecar invalid"; return 1; }
+    [[ -s $tmp/ws/.proven-coverage/$r/$file ]] || { bad "$lang: .proven-coverage/$r/$file missing; $(jq -r '.languages[0].reason' "$tmp/ws/.proven-coverage/collect-report.json")"; return 1; }
+    sidecar_ok "$tmp/ws/.proven-coverage/$r/$file" "$r" "$tool" || { bad "$lang: $r sidecar invalid"; return 1; }
   done
   ok "$lang: raw and proven reports and sidecars exist and parse"
-  grep -q "| $lang | yes | yes |" "$tmp/ws/cov/summary.md" && ok "$lang: summary says both reports are present" || bad "$lang: summary row"
+  grep -q "| $lang | yes | yes |" "$tmp/ws/.proven-coverage/summary.md" && ok "$lang: summary says both reports are present" || bad "$lang: summary row"
 }
 lcov_hits() { local f=$1; grep -E '^DA:' "$f" | awk -F'[:,]' '$3 > 0' | wc -l; }
 lcov_ok() { # LANG REPORT_FILE: SF records, DA lines, LF/LH agree, no branch records, proven <= raw
   local lang=$1 file=$2 r f p q
   for r in raw proven; do
-    f=$tmp/ws/cov/$r/$file
+    f=$tmp/ws/.proven-coverage/$r/$file
     grep -q '^SF:' "$f" && grep -q '^DA:' "$f" && grep -q '^end_of_record' "$f" || { bad "$lang $r: not LCOV"; return; }
   done
-  p=$(lcov_hits "$tmp/ws/cov/proven/$file"); q=$(lcov_hits "$tmp/ws/cov/raw/$file")
+  p=$(lcov_hits "$tmp/ws/.proven-coverage/proven/$file"); q=$(lcov_hits "$tmp/ws/.proven-coverage/raw/$file")
   [[ $p -le $q ]] && ok "$lang: proven hit lines <= raw hit lines ($p <= $q)" || bad "$lang: proven above raw"
   [[ $p -lt $q ]] && ok "$lang: the proven subset is strictly smaller here" || bad "$lang: proven run did not narrow"
 }
@@ -143,10 +164,10 @@ lcov_ok() { # LANG REPORT_FILE: SF records, DA lines, LF/LH agree, no branch rec
 PATH="$HOME/.cargo/bin:$PATH"
 if command -v cargo >/dev/null && cargo llvm-cov --version >/dev/null 2>&1; then
   if real rust rust cargo-llvm-cov llvm.json; then
-    for r in raw proven; do jq -e '.data[0].files | length > 0 and (.[0].summary.lines.count > 0)' "$tmp/ws/cov/$r/llvm.json" >/dev/null || bad "rust $r llvm.json has no files"; done
-    [[ $(jq '.data[0].totals.lines.covered' "$tmp/ws/cov/proven/llvm.json") -lt $(jq '.data[0].totals.lines.covered' "$tmp/ws/cov/raw/llvm.json") ]] &&
+    for r in raw proven; do jq -e '.data[0].files | length > 0 and (.[0].summary.lines.count > 0)' "$tmp/ws/.proven-coverage/$r/llvm.json" >/dev/null || bad "rust $r llvm.json has no files"; done
+    [[ $(jq '.data[0].totals.lines.covered' "$tmp/ws/.proven-coverage/proven/llvm.json") -lt $(jq '.data[0].totals.lines.covered' "$tmp/ws/.proven-coverage/raw/llvm.json") ]] &&
       ok 'rust: the prop_ run covers fewer lines than the raw run' || bad 'rust: proven run did not narrow'
-    jq -e '.languages[0].status == "collected"' "$tmp/ws/cov/collect-report.json" >/dev/null && ok 'rust: collect-report.json says collected' || bad 'rust: collect-report'
+    jq -e '.languages[0].status == "collected"' "$tmp/ws/.proven-coverage/collect-report.json" >/dev/null && ok 'rust: collect-report.json says collected' || bad 'rust: collect-report'
   fi
 else skip 'rust: cargo-llvm-cov is not installed'; fi
 
@@ -155,8 +176,8 @@ export ELIXIR_ERL_OPTIONS=${ELIXIR_ERL_OPTIONS:-+fnu}
 if command -v mix >/dev/null && command -v erl >/dev/null; then
   if real elixir mix erlang-cover elixir.lcov; then
     lcov_ok elixir elixir.lcov
-    grep -qE '^(BRDA|BRF|BRH):' "$tmp/ws/cov/raw/elixir.lcov" && bad 'elixir: the converter wrote branch records' || ok 'elixir: lines only (no BRDA/BRF/BRH)'
-    grep -qx 'SF:lib/cov_demo.ex' "$tmp/ws/cov/raw/elixir.lcov" && ok 'elixir: source paths are repo-relative' || bad 'elixir: source path is not repo-relative'
+    grep -qE '^(BRDA|BRF|BRH):' "$tmp/ws/.proven-coverage/raw/elixir.lcov" && bad 'elixir: the converter wrote branch records' || ok 'elixir: lines only (no BRDA/BRF/BRH)'
+    grep -qx 'SF:lib/cov_demo.ex' "$tmp/ws/.proven-coverage/raw/elixir.lcov" && ok 'elixir: source paths are repo-relative' || bad 'elixir: source path is not repo-relative'
   fi
 else skip 'elixir: mix or erl is not installed'; fi
 
@@ -164,7 +185,7 @@ else skip 'elixir: mix or erl is not installed'; fi
 if command -v node >/dev/null && command -v npx >/dev/null; then
   if real js js c8 js.lcov; then
     lcov_ok js js.lcov
-    [[ $(jq -r .tool_version "$tmp/ws/cov/raw/js.lcov.meta.json") == 10.1.3 ]] && ok 'js: c8 10.1.3 is the recorded tool version' || bad 'js: c8 version'
+    [[ $(jq -r .tool_version "$tmp/ws/.proven-coverage/raw/js.lcov.meta.json") == 10.1.3 ]] && ok 'js: c8 10.1.3 is the recorded tool version' || bad 'js: c8 version'
   fi
 else skip 'js: node or npx is not installed'; fi
 

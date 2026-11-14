@@ -16,14 +16,14 @@
 #   detect   print rust=, elixir= and js= (true|false), one per line, for
 #            $GITHUB_OUTPUT. Cheap: Cargo.toml, mix.exs, package.json at the root.
 #   collect  for each detected language, one raw run (all tests) and one proven
-#            run (a subset), writing under WORKSPACE/cov/:
-#              cov/<raw|proven>/llvm.json      Rust, cargo llvm-cov --json
-#              cov/<raw|proven>/elixir.lcov    Elixir, Mix :cover data as LCOV
-#              cov/<raw|proven>/js.lcov        JS, c8 lcovonly
+#            run (a subset), writing under WORKSPACE/.proven-coverage/:
+#              .proven-coverage/<raw|proven>/llvm.json      Rust, cargo llvm-cov --json
+#              .proven-coverage/<raw|proven>/elixir.lcov    Elixir, Mix :cover data as LCOV
+#              .proven-coverage/<raw|proven>/js.lcov        JS, c8 lcovonly
 #              <report>.meta.json              sidecar, schema
 #                                              hypatia.proven-coverage.report-meta/1
-#              cov/collect-report.json         what was collected, and why not
-#              cov/summary.md                  the same, as a table
+#              .proven-coverage/collect-report.json         what was collected, and why not
+#              .proven-coverage/summary.md                  the same, as a table
 #            The summary is also appended to $GITHUB_STEP_SUMMARY when set.
 #
 # Environment. GITHUB_REPOSITORY and GITHUB_SHA are required (the sidecar is
@@ -78,7 +78,8 @@ version=
 [[ -n $stamped && -f $workspace/$stamped ]] &&
   version=$(head -n 1 "$workspace/$stamped" | sed -n 's/^# proven-cicd: [^@]*@\([^ ]*\) .*/\1/p')
 
-cov=$workspace/cov
+cov=$workspace/.proven-coverage
+# Only the collector-owned directory is removed; a consumer's own cov/ is never touched.
 rm -rf -- "$cov"; mkdir -p "$cov/raw" "$cov/proven"
 rows=$(mktemp); trap 'rm -f -- "$rows"' EXIT
 log() { echo "proven-coverage-collect: $*" >&2; }
@@ -111,11 +112,11 @@ collect_rust() {
   [[ $tc == nightly* ]] && args+=(--branch)
   rc=0; (cd "$workspace" && cargo llvm-cov "${args[@]}" --output-path "$cov/raw/llvm.json") >&2 || rc=$?
   if [[ $rc == 0 && -s $cov/raw/llvm.json ]] && jq -e . "$cov/raw/llvm.json" >/dev/null 2>&1; then
-    raw=cov/raw/llvm.json; sidecar "$cov/raw/llvm.json" raw cargo-llvm-cov "$ver"
+    raw=.proven-coverage/raw/llvm.json; sidecar "$cov/raw/llvm.json" raw cargo-llvm-cov "$ver"
   else rm -f "$cov/raw/llvm.json"; note "raw run exited $rc (build or test failure)"; fi
   rc=0; (cd "$workspace" && cargo llvm-cov "${args[@]}" --output-path "$cov/proven/llvm.json" -- "$filter") >&2 || rc=$?
   if [[ $rc == 0 && -s $cov/proven/llvm.json ]] && jq -e . "$cov/proven/llvm.json" >/dev/null 2>&1; then
-    proven=cov/proven/llvm.json; sidecar "$cov/proven/llvm.json" proven cargo-llvm-cov "$ver"
+    proven=.proven-coverage/proven/llvm.json; sidecar "$cov/proven/llvm.json" proven cargo-llvm-cov "$ver"
   else rm -f "$cov/proven/llvm.json"; note "proven run (filter $filter) exited $rc"; fi
   row rust "$([[ -n $raw && -n $proven ]] && echo collected || echo partial)" "$raw" "$proven" "$reasons"
 }
@@ -131,15 +132,18 @@ collect_elixir() {
   for run in raw proven; do
     local only=() out=
     [[ $run == proven ]] && only=(--only proven)
+    # A stale export from an earlier run must never be converted: delete it first,
+    # and convert only a file this invocation created.
+    rm -f -- "$workspace/cover/$run.coverdata"
     rc=0; (cd "$workspace" && MIX_ENV=test mix test --cover "${only[@]}" --export-coverage "$run") >&2 || rc=$?
     if [[ -s $workspace/cover/$run.coverdata ]]; then
       if (cd "$workspace" && MIX_ENV=test mix run --no-start "$conv" "cover/$run.coverdata" "$cov/$run/elixir.lcov") >&2 &&
          grep -q '^SF:' "$cov/$run/elixir.lcov"; then
         sidecar "$cov/$run/elixir.lcov" "$run" erlang-cover "$ver"
-        out=cov/$run/elixir.lcov
+        out=.proven-coverage/$run/elixir.lcov
         [[ $rc == 0 ]] || note "$run: mix test exited $rc (report kept)"
       else note "$run: conversion to LCOV failed"; fi
-    else note "$run: no coverdata (mix test exited $rc)"; fi
+    else note "$run: no fresh coverdata (mix test exited $rc)"; fi
     if [[ $run == raw ]]; then raw=$out; else proven=$out; fi
   done
   row elixir "$([[ -n $raw && -n $proven ]] && echo collected || echo partial)" "$raw" "$proven" "$reasons"
@@ -160,7 +164,7 @@ collect_js() {
     set +f
     if [[ -s $tmp/report/lcov.info ]] && grep -q '^SF:' "$tmp/report/lcov.info"; then
       cp "$tmp/report/lcov.info" "$cov/$run/js.lcov"; sidecar "$cov/$run/js.lcov" "$run" c8 "$c8_version"
-      out=cov/$run/js.lcov
+      out=.proven-coverage/$run/js.lcov
       [[ $rc == 0 ]] || note "$run: node --test exited $rc (report kept)"
     else note "$run: no report (node --test $globs exited $rc)"; fi
     rm -rf -- "$tmp"
