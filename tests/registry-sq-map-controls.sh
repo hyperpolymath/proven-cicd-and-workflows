@@ -46,4 +46,6 @@ cp "$map" "$tmp/map.tsv"; printf 'hypatia/ci_failure_triage/zz\tunassigned\tunma
 expect 'an unmapped row absent from the registry fails' 1
 grep -v '^hypatia/workflow_audit/actions_lock_stale	' "$map" > "$tmp/map.tsv"
 expect 'deleting a workflow_audit ADR mapping fails the reverse check' 1 HYPATIA_PRAXIS="$tmp/praxis-all.deed"
+echo 'no ids here' > "$tmp/empty.deed"
+cp "$map" "$tmp/map.tsv"; expect 'a registry with no A5 ids is NOT RUN, not a failure' 2 HYPATIA_PRAXIS="$tmp/empty.deed"
 head -n 1 "$map" > "$tmp/map.tsv"; expect 'an empty map is NOT RUN' 2
