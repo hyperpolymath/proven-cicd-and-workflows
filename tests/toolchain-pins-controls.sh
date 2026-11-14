@@ -7,12 +7,12 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 tpl=$t/r/templates/proven-coverage-collect.yml pins=$t/r/proven/pins/toolchain.tsv
 mk() { rm -rf "$t/r"; mkdir -p "$t/r/proven/pins" "$t/r/templates"; cp "$here/proven/pins/toolchain.tsv" "$pins"; cp "$here"/templates/*.yml "$t/r/templates/"; }
-pin() { awk -F'\t' -v k="$1" '$1 == k { print $2 }' "$here/proven/pins/toolchain.tsv"; }
+pin() { local tool=$1; awk -F'\t' -v k="$tool" '$1 == k { print $2 }' "$here/proven/pins/toolchain.tsv"; }
 otp=$(pin otp) yq_v=$(pin yq) other=9.9.9
 [[ -n $otp && -n $yq_v && $otp != "$other" && $yq_v != "$other" ]] || { echo "cannot read pins"; exit 2; }
 fails=0
-expect_fail() { bash "$here/tests/toolchain-pins.sh" "$t/r" >/dev/null 2>&1 && { echo "MUTANT SURVIVED: $1"; fails=1; } || echo "ok: $1 rejected"; }
-expect_pass() { bash "$here/tests/toolchain-pins.sh" "$t/r" >/dev/null 2>&1 && echo "ok: $1 accepted" || { echo "WRONGLY REJECTED: $1"; fails=1; }; }
+expect_fail() { local what=$1; bash "$here/tests/toolchain-pins.sh" "$t/r" >/dev/null 2>&1 && { echo "MUTANT SURVIVED: $what"; fails=1; } || echo "ok: $what rejected"; }
+expect_pass() { local what=$1; bash "$here/tests/toolchain-pins.sh" "$t/r" >/dev/null 2>&1 && echo "ok: $what accepted" || { echo "WRONGLY REJECTED: $what"; fails=1; }; }
 mk; expect_pass "good copy"
 mk; sed -i "s/\"$otp\"/\"$other\"/" "$tpl"; expect_fail "template drifted from the OTP pin"
 mk; sed -i "s/\"$otp\"/'$otp'/" "$tpl"; expect_pass "single-quoted equal value"
