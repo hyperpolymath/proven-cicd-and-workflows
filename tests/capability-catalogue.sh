@@ -7,7 +7,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 builder=$ROOT/scripts/build-capability-catalogue.sh
 bash "$builder" --check
-n=$(jq '.capabilities | length' "$ROOT/catalogue/capabilities.json")
+n=$(jq '[.capabilities[] | select(.path | startswith("actions/"))] | length' "$ROOT/catalogue/capabilities.json")
 c=$(jq '.clades | length' "$ROOT/catalogue/capabilities.json")
 grep -Fq "*$n composite actions" "$ROOT/README.adoc"
 grep -Fq "in $c clades*" "$ROOT/README.adoc"
