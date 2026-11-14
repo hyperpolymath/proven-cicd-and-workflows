@@ -10,8 +10,9 @@
 #      consumers' build, and run the whole fixture corpus (tests/proven-lock.sh)
 #      against that binary.
 #
-# IDRIS2_SOURCE_DIR: an Idris2 checkout at the pinned commit to take the RefC
-# runtime from (otherwise the build fetches it). No compiler is NOT RUN (exit 2).
+# The RefC runtime is the vendored copy under dist/proven-lock/runtime (its
+# provenance is tests/proven-lock-runtime-vendor.sh). No compiler is NOT RUN
+# (exit 2).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 command -v idris2 >/dev/null || { echo "proven-lock-dist: idris2 missing; NOT RUN" >&2; exit 2; }
@@ -31,9 +32,7 @@ if ! cmp -s "$tmp/gen/build/exec/proven-lock-verdict.c" dist/proven-lock/proven-
 fi
 echo "ok: the shipped C is byte-identical to the RefC output of src/ at HEAD ($(sha256sum dist/proven-lock/proven-lock-verdict.c | cut -c1-16))"
 
-args=("$tmp/verdict")
-[[ -n ${IDRIS2_SOURCE_DIR:-} ]] && args+=(--runtime "$IDRIS2_SOURCE_DIR")
-rc=0; bash scripts/build-proven-lock.sh "${args[@]}" || rc=$?
+rc=0; bash scripts/build-proven-lock.sh "$tmp/verdict" || rc=$?
 [[ $rc == 0 ]] || { echo "FAIL: the consumers' build of the shipped C did not complete (exit $rc)" >&2; exit 1; }
 
 PROVEN_LOCK_VERDICT="$tmp/verdict" bash tests/proven-lock.sh > "$tmp/corpus.log" 2>&1 || {

@@ -1,4 +1,4 @@
-# proven-cicd: proven-lock-gate@0.2.0 sha256:a4bab5af357d4538c95b3509ad5909e5ba631dc08975b185e578f62edc69c2fc
+# proven-cicd: proven-lock-gate@0.3.0 sha256:e4da5f6ddf2856adaea83703dd217f8b7e122ff919173e616a7c0eb2196ba032
 # SPDX-License-Identifier: MPL-2.0
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-lock-gate.yml.
 # Do not edit by hand. A changed body fails this gate as drift. The applier
@@ -12,14 +12,17 @@
 # a verdict. Every way the gate can fail before its verdict has its own class:
 #   not_run:pin            PROVEN_SHA is not a 40-hex commit
 #   not_run:identity       the suite repository is not the one this gate pins
-#                          (repository id 1326697643), or its id could not be read
+#                          (repository id 1326697643): refer, never re-run
+#   not_run:identity-unreadable  the repository id could not be read (API outage
+#                          or rate limit): a re-run
 #   not_run:fetch-missing  the pinned commit does not exist in the suite (persistent)
 #   not_run:fetch          the suite could not be fetched after retries (transient)
 #   not_run:checkout       the fetched commit could not be checked out
 #   not_run:suite          the checkout is not the pinned commit, is modified, or
-#                          lacks a file the gate runs
-# and the suite's own script adds drift, toolchain, runtime, build, selftest,
-# extract and verdict.
+#                          lacks a file or directory the gate runs
+# and the suite's own script adds drift, toolchain, build, selftest, extract and
+# verdict. The Idris2 RefC runtime is vendored in the suite (dist/), so the build
+# needs no network and has no class of its own for a third-party host.
 name: Proven lock gate
 on:
   pull_request:
@@ -49,8 +52,12 @@ jobs:
           repo=hyperpolymath/proven-cicd-and-workflows
           # The suite is pinned by commit; the id pins the repository itself, so a
           # transferred or recreated repository under the same name is refused.
-          id=$(curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
-                 "https://api.github.com/repos/$repo" | jq -r '.id // empty') || fail identity "could not read the id of $repo"
+          # Two classes: an id that cannot be read is an availability failure (a
+          # re-run); an id that differs is a different repository (refer).
+          meta=$(curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+                   "https://api.github.com/repos/$repo") || fail identity-unreadable "could not read the id of $repo"
+          id=$(jq -r '.id // empty' <<<"$meta" 2>/dev/null) || fail identity-unreadable "the reply for $repo is not JSON"
+          [[ $id =~ ^[0-9]+$ ]] || fail identity-unreadable "the reply for $repo has no id"
           [[ $id == 1326697643 ]] || fail identity "$repo has id '$id', not 1326697643"
           suite="$RUNNER_TEMP/proven-suite"
           git init -q "$suite"
@@ -73,5 +80,8 @@ jobs:
           for f in scripts/proven-lock-gate.sh scripts/proven-stamp.sh scripts/build-proven-lock.sh \
                    scripts/extract-lock-facts.sh dist/proven-lock/proven-lock-verdict.c; do
             [[ -f $suite/$f ]] || fail suite "the suite at $PROVEN_SHA lacks $f"
+          done
+          for d in dist/proven-lock/runtime/refc dist/proven-lock/runtime/c tests/fixtures/proven-lock; do
+            [[ -d $suite/$d ]] || fail suite "the suite at $PROVEN_SHA lacks $d/"
           done
           bash "$suite/scripts/proven-lock-gate.sh" "$GITHUB_WORKSPACE" .github/workflows/proven-lock-gate.yml
