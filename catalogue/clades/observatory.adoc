@@ -83,3 +83,14 @@ Inspect website and well-known/resource conventions.
 *Assurance boundary:* Advisory repository inspection, not a complete standards-conformance audit.
 
 * link:../../actions/www-compliance-check/action.yml[Action definition and inputs]
+
+[[proven-coverage-collect]]
+== Proven coverage collector
+
+*`proven-coverage-collect` · advisory · advisory*
+
+Stamped workflow that collects raw and proven coverage reports (Rust, Elixir, JavaScript) with report-meta sidecars and uploads them as one artifact for Hypatia to judge.
+
+*Assurance boundary:* Shadow only: it collects and never judges a coverage number or fails on one. A language it cannot measure is reported, not failed. No ruleset is changed. Hypatia judges.
+
+* link:../../templates/proven-coverage-collect.yml[Stamped template]

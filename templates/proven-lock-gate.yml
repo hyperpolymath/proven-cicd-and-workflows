@@ -1,4 +1,4 @@
-# proven-cicd: proven-lock-gate@0.1.0 sha256:c185121117c95de439cf060b510b0117aef2b11ed33927269a27aab58ac04466
+# proven-cicd: proven-lock-gate@0.2.0 sha256:a4bab5af357d4538c95b3509ad5909e5ba631dc08975b185e578f62edc69c2fc
 # SPDX-License-Identifier: MPL-2.0
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-lock-gate.yml.
 # Do not edit by hand. A changed body fails this gate as drift. The applier
@@ -9,7 +9,17 @@
 # proven lock kernel. It exits 0 for consistent, 1 for a defect or drift, and 2
 # when it could not run. A run that could not run fails this job: it is never
 # skipped and never continue-on-error, so a required check cannot pass without
-# a verdict.
+# a verdict. Every way the gate can fail before its verdict has its own class:
+#   not_run:pin            PROVEN_SHA is not a 40-hex commit
+#   not_run:identity       the suite repository is not the one this gate pins
+#                          (repository id 1326697643), or its id could not be read
+#   not_run:fetch-missing  the pinned commit does not exist in the suite (persistent)
+#   not_run:fetch          the suite could not be fetched after retries (transient)
+#   not_run:checkout       the fetched commit could not be checked out
+#   not_run:suite          the checkout is not the pinned commit, is modified, or
+#                          lacks a file the gate runs
+# and the suite's own script adds drift, toolchain, runtime, build, selftest,
+# extract and verdict.
 name: Proven lock gate
 on:
   pull_request:
@@ -31,20 +41,37 @@ jobs:
         env:
           # proven-cicd:local-next
           PROVEN_SHA: "0000000000000000000000000000000000000000"
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ $PROVEN_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "PROVEN_LOCK_CLASS=not_run:pin"; exit 2; }
+          fail() { echo "PROVEN_LOCK_CLASS=not_run:$1"; [[ -z ${2:-} ]] || echo "$2" >&2; exit 2; }
+          [[ $PROVEN_SHA =~ ^[0-9a-f]{40}$ ]] || fail pin
+          repo=hyperpolymath/proven-cicd-and-workflows
+          # The suite is pinned by commit; the id pins the repository itself, so a
+          # transferred or recreated repository under the same name is refused.
+          id=$(curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+                 "https://api.github.com/repos/$repo" | jq -r '.id // empty') || fail identity "could not read the id of $repo"
+          [[ $id == 1326697643 ]] || fail identity "$repo has id '$id', not 1326697643"
           suite="$RUNNER_TEMP/proven-suite"
           git init -q "$suite"
-          git -C "$suite" remote add origin https://github.com/hyperpolymath/proven-cicd-and-workflows.git
+          git -C "$suite" remote add origin "https://github.com/$repo.git"
           git -C "$suite" config core.sparseCheckout true
           printf '%s\n' dist/ scripts/ tests/fixtures/proven-lock/ > "$suite/.git/info/sparse-checkout"
           fetched=0
           for delay in 0 10 30; do
             sleep "$delay"
-            if git -C "$suite" fetch -q --depth=1 origin "$PROVEN_SHA"; then fetched=1; break; fi
+            if git -C "$suite" fetch -q --depth=1 origin "$PROVEN_SHA" 2>"$RUNNER_TEMP/proven-fetch.err"; then fetched=1; break; fi
+            # A commit the server does not have will not appear on a retry.
+            if grep -qiE "not our ref|couldn't find remote ref|unadvertised object|no such remote ref" "$RUNNER_TEMP/proven-fetch.err"; then
+              fail fetch-missing "$(cat "$RUNNER_TEMP/proven-fetch.err")"
+            fi
           done
-          [[ $fetched == 1 ]] || { echo "PROVEN_LOCK_CLASS=not_run:fetch"; exit 2; }
-          git -C "$suite" checkout -q --detach FETCH_HEAD
-          [[ $(git -C "$suite" rev-parse HEAD) == "$PROVEN_SHA" ]] || { echo "PROVEN_LOCK_CLASS=not_run:pin"; exit 2; }
+          [[ $fetched == 1 ]] || fail fetch "$(cat "$RUNNER_TEMP/proven-fetch.err")"
+          git -C "$suite" checkout -q --detach FETCH_HEAD || fail checkout
+          [[ $(git -C "$suite" rev-parse HEAD) == "$PROVEN_SHA" ]] || fail suite "checked out $(git -C "$suite" rev-parse HEAD), not $PROVEN_SHA"
+          [[ -z $(git -C "$suite" status --porcelain) ]] || fail suite "the suite checkout is modified"
+          for f in scripts/proven-lock-gate.sh scripts/proven-stamp.sh scripts/build-proven-lock.sh \
+                   scripts/extract-lock-facts.sh dist/proven-lock/proven-lock-verdict.c; do
+            [[ -f $suite/$f ]] || fail suite "the suite at $PROVEN_SHA lacks $f"
+          done
           bash "$suite/scripts/proven-lock-gate.sh" "$GITHUB_WORKSPACE" .github/workflows/proven-lock-gate.yml

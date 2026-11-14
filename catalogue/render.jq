@@ -12,7 +12,7 @@ def card($e; $page): [
   "[[" + $e.id + "]]", "== " + $e.title, "",
   "*`" + $e.id + "` · " + $e.nature + " · " + $e.status + "*", "",
   $e.summary, "", "*Assurance boundary:* " + $e.limitations, "",
-  "* " + link($e.path; "Action definition and inputs"; $page)
+  "* " + link($e.path; (if ($e.path | startswith("templates/")) then "Stamped template" else "Action definition and inputs" end); $page)
 ] + (if $e.workflow then ["* " + link($e.workflow; "Reusable workflow"; $page)] else [] end)
   + (if $e.template then ["* " + link($e.template; "Caller template"; $page)] else [] end) + [""];
 . as $all | .capabilities as $entries |
@@ -25,7 +25,7 @@ def card($e; $page): [
     preamble("The CI/CD Capability Atlas") + [
       ":toclevels: 2", "",
       "*Repository assurance, organised by purpose. Discover by clade; choose by nature; adopt with evidence.*", "",
-      "*\($entries | length) composite actions · \(.clades | length) clades · two independent discovery axes.*", "",
+      "*\([$entries[] | select(.path | startswith("actions/"))] | length) composite actions · \([$entries[] | select(.path | startswith("templates/"))] | length) stamped templates · \(.clades | length) clades · two independent discovery axes.*", "",
       "This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartridge implementation, or a certification scheme. Inspired by BoJ's separation of capability domain from interface/type, it groups existing CI/CD building blocks without moving their paths or changing their behaviour.", "",
       "== Find your route", "",
       "* *Protect credentials:* <<sentinel,Sentinel>> — bounded secret scanning and authoritative result receipts.",
