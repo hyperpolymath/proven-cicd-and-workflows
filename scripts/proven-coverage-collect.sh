@@ -47,7 +47,7 @@ mode=${1:-} workspace=${2:-} stamped=${3:-}
 readonly artifact=proven-coverage-collect
 readonly c8_version=10.1.3
 
-finish() { echo "PROVEN_COVERAGE_CLASS=$1"; exit "$2"; }
+finish() { local class=$1 code=$2; echo "PROVEN_COVERAGE_CLASS=$class"; exit "$code"; }
 
 [[ -d $workspace ]] || { echo "usage: proven-coverage-collect.sh detect|collect WORKSPACE [STAMPED_WORKFLOW]" >&2; finish not_run:usage 2; }
 workspace=$(cd "$workspace" && pwd)
@@ -85,18 +85,21 @@ log() { echo "proven-coverage-collect: $*" >&2; }
 
 # sidecar REPORT ROLE TOOL TOOL_VERSION
 sidecar() {
+  local report=$1 role=$2 tool=$3 ver=$4
   jq -n --arg repo "$GITHUB_REPOSITORY" --arg commit "$GITHUB_SHA" --arg run "$run_id" \
-    --arg role "$2" --arg tool "$3" --arg ver "$4" \
+    --arg role "$role" --arg tool "$tool" --arg ver "$ver" \
     '{schema: "hypatia.proven-coverage.report-meta/1", repo: $repo, commit: $commit,
-      run_id: $run, role: $role, tool: $tool, tool_version: $ver}' > "$1.meta.json"
+      run_id: $run, role: $role, tool: $tool, tool_version: $ver}' > "$report.meta.json"
 }
 # row LANGUAGE STATUS RAW PROVEN REASON  (RAW/PROVEN: report path or empty)
-row() { jq -cn --arg l "$1" --arg s "$2" --arg r "$3" --arg p "$4" --arg why "$5" \
+row() {
+  local lang=$1 status=$2 raw=$3 proven=$4 why=$5
+  jq -cn --arg l "$lang" --arg s "$status" --arg r "$raw" --arg p "$proven" --arg why "$why" \
   '{language: $l, status: $s, raw: (if $r == "" then null else $r end),
     proven: (if $p == "" then null else $p end), reason: (if $why == "" then null else $why end)}' >> "$rows"; }
 
 reasons=
-note() { reasons+="${reasons:+; }$1"; }
+note() { local why=$1; reasons+="${reasons:+; }$why"; }
 
 collect_rust() {
   local tc=${PROVEN_COV_RUST_TOOLCHAIN:-stable} filter=${PROVEN_COV_RUST_PROVEN_FILTER:-prop_}

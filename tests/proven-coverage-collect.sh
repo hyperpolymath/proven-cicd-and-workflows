@@ -110,31 +110,34 @@ rc=0; PATH="/usr/bin:/bin" bash "$driver" collect "$tmp/ws" "$stamped" >"$tmp/ou
 
 # --- real runs
 sidecar_ok() { # REPORT ROLE TOOL
-  jq -e --arg role "$2" --arg tool "$3" --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
+  local report=$1 role=$2 tool=$3
+  jq -e --arg role "$role" --arg tool "$tool" --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
     '.schema == "hypatia.proven-coverage.report-meta/1" and .repo == $repo and .commit == $sha and .run_id == $run
-     and .role == $role and .tool == $tool and (.tool_version | type == "string" and length > 0)' "$1.meta.json" >/dev/null
+     and .role == $role and .tool == $tool and (.tool_version | type == "string" and length > 0)' "$report.meta.json" >/dev/null
 }
 real() { # LANG FIXTURE TOOL_NAME REPORT_FILE -> runs the driver, leaves $tmp/ws
-  mkws; cp -R "$root/tests/fixtures/proven-coverage/$2/." "$tmp/ws/"
+  local lang=$1 fixture=$2 tool=$3 file=$4
+  mkws; cp -R "$root/tests/fixtures/proven-coverage/$fixture/." "$tmp/ws/"
   bash "$driver" collect "$tmp/ws" "$stamped" >"$tmp/out" 2>&1 || true
-  [[ $(last) == PROVEN_COVERAGE_CLASS=collected ]] || { bad "$1: driver did not finish collected: $(last)"; sed 's/^/    /' "$tmp/out" | tail -20; return 1; }
+  [[ $(last) == PROVEN_COVERAGE_CLASS=collected ]] || { bad "$lang: driver did not finish collected: $(last)"; sed 's/^/    /' "$tmp/out" | tail -20; return 1; }
   local r
   for r in raw proven; do
-    [[ -s $tmp/ws/cov/$r/$4 ]] || { bad "$1: cov/$r/$4 missing; $(jq -r '.languages[0].reason' "$tmp/ws/cov/collect-report.json")"; return 1; }
-    sidecar_ok "$tmp/ws/cov/$r/$4" "$r" "$3" || { bad "$1: $r sidecar invalid"; return 1; }
+    [[ -s $tmp/ws/cov/$r/$file ]] || { bad "$lang: cov/$r/$file missing; $(jq -r '.languages[0].reason' "$tmp/ws/cov/collect-report.json")"; return 1; }
+    sidecar_ok "$tmp/ws/cov/$r/$file" "$r" "$tool" || { bad "$lang: $r sidecar invalid"; return 1; }
   done
-  ok "$1: raw and proven reports and sidecars exist and parse"
-  grep -q "| $1 | yes | yes |" "$tmp/ws/cov/summary.md" && ok "$1: summary says both reports are present" || bad "$1: summary row"
+  ok "$lang: raw and proven reports and sidecars exist and parse"
+  grep -q "| $lang | yes | yes |" "$tmp/ws/cov/summary.md" && ok "$lang: summary says both reports are present" || bad "$lang: summary row"
 }
-lcov_hits() { grep -E '^DA:' "$1" | awk -F'[:,]' '$3 > 0' | wc -l; }
+lcov_hits() { local f=$1; grep -E '^DA:' "$f" | awk -F'[:,]' '$3 > 0' | wc -l; }
 lcov_ok() { # LANG REPORT_FILE: SF records, DA lines, LF/LH agree, no branch records, proven <= raw
-  local r f
+  local lang=$1 file=$2 r f p q
   for r in raw proven; do
-    f=$tmp/ws/cov/$r/$2
-    grep -q '^SF:' "$f" && grep -q '^DA:' "$f" && grep -q '^end_of_record' "$f" || { bad "$1 $r: not LCOV"; return; }
+    f=$tmp/ws/cov/$r/$file
+    grep -q '^SF:' "$f" && grep -q '^DA:' "$f" && grep -q '^end_of_record' "$f" || { bad "$lang $r: not LCOV"; return; }
   done
-  [[ $(lcov_hits "$tmp/ws/cov/proven/$2") -le $(lcov_hits "$tmp/ws/cov/raw/$2") ]] && ok "$1: proven hit lines <= raw hit lines ($(lcov_hits "$tmp/ws/cov/proven/$2") <= $(lcov_hits "$tmp/ws/cov/raw/$2"))" || bad "$1: proven above raw"
-  [[ $(lcov_hits "$tmp/ws/cov/proven/$2") -lt $(lcov_hits "$tmp/ws/cov/raw/$2") ]] && ok "$1: the proven subset is strictly smaller here" || bad "$1: proven run did not narrow"
+  p=$(lcov_hits "$tmp/ws/cov/proven/$file"); q=$(lcov_hits "$tmp/ws/cov/raw/$file")
+  [[ $p -le $q ]] && ok "$lang: proven hit lines <= raw hit lines ($p <= $q)" || bad "$lang: proven above raw"
+  [[ $p -lt $q ]] && ok "$lang: the proven subset is strictly smaller here" || bad "$lang: proven run did not narrow"
 }
 
 PATH="$HOME/.cargo/bin:$PATH"
