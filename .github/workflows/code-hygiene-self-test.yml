@@ -136,6 +136,17 @@
           run: "bash tests/registry-sq-map.sh && bash tests/registry-sq-map-controls.sh",
         },
         {
+          # The praxis column against Hypatia's A5 registry, read at a pinned
+          # commit (immutable; move the pin when hypatia_rules_praxis.deed
+          # changes). Without this the column went stale unseen: 24 rows said
+          # absent after hypatia#1075 landed them. A fetch failure fails the
+          # step; the test itself is NOT RUN (exit 2) on an empty registry.
+          env: {
+            HYPATIA_PRAXIS_SHA: "cd2a713cfe9b64871878879611f724b4a9212fb2",
+          },
+          run: "curl -fsSL --retry 3 --retry-delay 10 \"https://raw.githubusercontent.com/hyperpolymath/hypatia/${HYPATIA_PRAXIS_SHA}/hypatia_rules_praxis.deed\" -o \"$RUNNER_TEMP/praxis.deed\" && HYPATIA_PRAXIS=\"$RUNNER_TEMP/praxis.deed\" bash tests/registry-sq-map.sh",
+        },
+        {
           # The published manifest of stamped artifacts, which the applier's
           # BEHIND-CONTENT census reads, agrees with every stamped body.
           run: "bash tests/proven-manifest.sh",
