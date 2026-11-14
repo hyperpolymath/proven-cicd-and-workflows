@@ -251,12 +251,17 @@ For the lock and pin gate, the gate scripts are *vendored and stamped*, not
 checked out at run time. A gate that needs a cross-repository fetch cannot
 report its own dead pin. Heavier suites keep the existing checkout-and-verify
 pattern. The stamped lock gate asserts the suite's repository id
-(1326697643) before it fetches, so a renamed, transferred or recreated
-repository under the same name is caught as well: an id that differs is
-`not_run:identity` (refer), an id that cannot be read is
-`not_run:identity-unreadable` (a re-run). `scripts/verify-suite-checkout.sh`,
-which the heavier suites use, has no such assertion yet; it is still to gain
-one.
+(1326697643) and its owner's account id (6759885, hyperpolymath) before it
+fetches. It follows a rename (`curl -L`) and judges the repository it leads to.
+A recreated repository under the same name has another id. A transferred
+repository keeps its id, and GitHub redirects the old name to it, so the id
+alone would accept a transfer: the owner id is what refuses it (gate 0.3.1). A
+rename within hyperpolymath keeps both ids and passes. An id or owner id that
+differs is `not_run:identity` (refer); one that cannot be read is
+`not_run:identity-unreadable` (a re-run). The owner is pinned by account id,
+not login, because a login can be renamed and re-registered by someone else.
+`scripts/verify-suite-checkout.sh`, which the heavier suites use, has no such
+assertion yet; it is still to gain one.
 
 == Other policy rules
 

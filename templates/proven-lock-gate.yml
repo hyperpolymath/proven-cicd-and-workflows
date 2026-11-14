@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-# proven-cicd: proven-lock-gate@0.3.0 sha256:d94add93bfa6cf1cf54fbe1416ca100c66fbb4785fe728375e4ec58d3f145b5d
+# proven-cicd: proven-lock-gate@0.3.1 sha256:dc54402b1e759cb6db3d4aacbe643ca0708a4e250c156d830e84560af41be5f3
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-lock-gate.yml.
 # Do not edit by hand. A changed body fails this gate as drift. The applier
 # moves the pinned suite SHA. The line after each `proven-cicd:local-next`
@@ -12,10 +12,12 @@
 # a verdict. Every way the gate can fail before its verdict has its own class:
 #   not_run:pin            PROVEN_SHA is not a 40-hex commit
 #   not_run:identity       the suite repository is not the one this gate pins
-#                          (repository id 1326697643, after following a rename),
-#                          or the name no longer exists: refer, never re-run
-#   not_run:identity-unreadable  the repository id could not be read (API outage
-#                          or rate limit): a re-run
+#                          (repository id 1326697643 owned by account id 6759885,
+#                          hyperpolymath, after following a rename), it moved to
+#                          another owner, or the name no longer exists: refer,
+#                          never re-run
+#   not_run:identity-unreadable  the repository or owner id could not be read
+#                          (API outage or rate limit): a re-run
 #   not_run:fetch-missing  the pinned commit does not exist in the suite (persistent)
 #   not_run:fetch          the suite could not be fetched after retries (transient)
 #   not_run:checkout       the fetched commit could not be checked out
@@ -56,7 +58,10 @@ jobs:
           [[ $PROVEN_SHA =~ ^[0-9a-f]{40}$ ]] || fail pin
           repo=hyperpolymath/proven-cicd-and-workflows
           # The suite is pinned by commit; the id pins the repository itself, so a
-          # transferred or recreated repository under the same name is refused.
+          # recreated repository under the same name is refused. A transfer keeps
+          # the repository id and GitHub redirects the old name to it, so the
+          # owner id is pinned as well: a transferred repository is refused, and a
+          # rename within the owner (same repository id, same owner id) passes.
           # Two classes: an id that cannot be read is an availability failure (a
           # re-run); an id that differs is a different repository (refer).
           # A rename answers 301: follow it (-L) and judge the id it leads to. A
@@ -73,6 +78,10 @@ jobs:
           id=$(jq -r '.id // empty' "$RUNNER_TEMP/proven-repo.json" 2>/dev/null) || fail identity-unreadable "the reply for $repo is not JSON"
           [[ $id =~ ^[0-9]+$ ]] || fail identity-unreadable "the reply for $repo has no id"
           [[ $id == 1326697643 ]] || fail identity "$repo has id '$id', not 1326697643"
+          owner=$(jq -r '.owner.id // empty' "$RUNNER_TEMP/proven-repo.json" 2>/dev/null) || fail identity-unreadable "the reply for $repo has a malformed owner"
+          [[ $owner =~ ^[0-9]+$ ]] || fail identity-unreadable "the reply for $repo has no owner id"
+          [[ $owner == 6759885 ]] ||
+            fail identity "$repo (id $id) is owned by account $owner ($(jq -r '.owner.login // "?"' "$RUNNER_TEMP/proven-repo.json" 2>/dev/null)), not 6759885 (hyperpolymath): a transfer"
           suite="$RUNNER_TEMP/proven-suite"
           git init -q "$suite"
           git -C "$suite" remote add origin "https://github.com/$repo.git"
