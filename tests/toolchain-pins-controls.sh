@@ -27,4 +27,5 @@ mk; sed -i "s/^yq\t$yq_v/yq\tlatest/" "$pins"; expect_fail "inexact version"
 mk; printf 'nickel\t1.18.0\t-\tdup\tx\n' >> "$pins"; expect_fail "duplicate tool"
 mk; sed -i 's/^\(otp\t[^\t]*\t\)[^\t]*/\1/' "$pins"; expect_fail "empty env_var field"
 mk; rm "$tpl"; expect_fail "no template sets the pinned var"
+mk; printf 'foo\tlatest\t-\tsrc\tnote' >> "$pins"; expect_fail "unterminated final row with an inexact version is still checked"
 exit $fails
