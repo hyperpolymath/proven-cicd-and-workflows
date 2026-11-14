@@ -35,11 +35,11 @@ expect_rc() { # NAME WANT CMD...
 
 # --- stamp and manifest
 expect_rc 'the template matches its stamp' 0 bash "$stamp" check "$template"
-first=$(head -n 1 "$template")
+first=$(sed -n 2p "$template")
 entry=$(jq -c '.artifacts[] | select(.artifact == "proven-coverage-collect")' "$root/proven/manifest.json")
 [[ -n $entry ]] || bad 'proven/manifest.json has no proven-coverage-collect entry'
-[[ $(jq -r .version <<<"$entry") == 0.1.0 ]] && ok 'manifest version is 0.1.0' || bad 'manifest version is not 0.1.0'
-want="# proven-cicd: proven-coverage-collect@0.1.0 sha256:$(jq -r .sha256 <<<"$entry")"
+[[ $(jq -r .version <<<"$entry") == 0.1.1 ]] && ok 'manifest version is 0.1.1' || bad 'manifest version is not 0.1.1'
+want="# proven-cicd: proven-coverage-collect@0.1.1 sha256:$(jq -r .sha256 <<<"$entry")"
 [[ $first == "$want" ]] && ok "the template's stamp line is the manifest's" || bad "stamp line '$first' is not the manifest's '$want'"
 [[ $(jq -r .sha256 <<<"$entry") == "$(bash "$stamp" hash "$template")" ]] && ok 'manifest sha256 is the template body hash' || bad 'manifest sha256 is not the body hash'
 [[ $(jq -r .template <<<"$entry") == templates/proven-coverage-collect.yml && $(jq -r .install_path <<<"$entry") == .github/workflows/proven-coverage-collect.yml ]] &&

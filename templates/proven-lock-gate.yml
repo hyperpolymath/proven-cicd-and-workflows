@@ -1,5 +1,5 @@
-# proven-cicd: proven-lock-gate@0.2.0 sha256:a4bab5af357d4538c95b3509ad5909e5ba631dc08975b185e578f62edc69c2fc
 # SPDX-License-Identifier: MPL-2.0
+# proven-cicd: proven-lock-gate@0.2.1 sha256:a4bab5af357d4538c95b3509ad5909e5ba631dc08975b185e578f62edc69c2fc
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-lock-gate.yml.
 # Do not edit by hand. A changed body fails this gate as drift. The applier
 # moves the pinned suite SHA. The line after each `proven-cicd:local-next`
