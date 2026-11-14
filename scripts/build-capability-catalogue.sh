@@ -19,7 +19,7 @@ done < <(jq -r '.capabilities[] | (.path, .workflow, .template) | select(. != nu
 for path in "$ROOT"/actions/*/action.yml; do
     [[ ! -f $path ]] || printf '%s\n' "${path#"$ROOT/"}"
 done | LC_ALL=C sort > "$tmp/actual"
-jq -r '.capabilities[].path' "$inventory" | LC_ALL=C sort > "$tmp/declared"
+jq -r '.capabilities[].path | select(startswith("actions/"))' "$inventory" | LC_ALL=C sort > "$tmp/declared"
 cmp -s "$tmp/actual" "$tmp/declared" || { echo 'action inventory drift: every action must appear exactly once' >&2; exit 1; }
 jq -c -f "$ROOT/catalogue/render.jq" "$inventory" > "$tmp/pages.jsonl"
 mkdir -p "$tmp/pages"

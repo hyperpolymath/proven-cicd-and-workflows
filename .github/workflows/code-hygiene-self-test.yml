@@ -31,6 +31,8 @@
         "proven/**",
         "templates/**",
         "scripts/proven-stamp.sh",
+        "scripts/proven-coverage-collect.sh",
+        "scripts/coverdata-to-lcov.exs",
         ".github/workflows/proven-lock-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
@@ -63,6 +65,8 @@
         "proven/**",
         "templates/**",
         "scripts/proven-stamp.sh",
+        "scripts/proven-coverage-collect.sh",
+        "scripts/coverdata-to-lcov.exs",
         ".github/workflows/proven-lock-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
@@ -150,6 +154,12 @@
           # The published manifest of stamped artifacts, which the applier's
           # BEHIND-CONTENT census reads, agrees with every stamped body.
           run: "bash tests/proven-manifest.sh",
+        },
+        {
+          # The stamped coverage collector: stamp, manifest entry, lint, exit
+          # codes (never 1), and real runs on tiny Rust, Mix and JS fixtures
+          # where the toolchain is present (a missing one is named SKIP).
+          run: "bash tests/proven-coverage-collect.sh",
         },
       ],
     },

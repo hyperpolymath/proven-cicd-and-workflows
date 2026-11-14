@@ -8,6 +8,8 @@
 #   gate      consistent -> 0; lock defect -> 1; drifted copy -> 1 (drift)
 #   selftest  a suite whose shipped C always says CONSISTENT -> 2 (not_run:selftest)
 #   pin       a malformed pinned SHA -> 2 (not_run:pin), before any fetch
+#   classes   identity, fetch-missing (no retry), fetch (transient), checkout,
+#             suite and runtime each fail the job with their own class
 # PROVEN_IDRIS2_SOURCE_DIR: Idris2 checkout for the RefC runtime (else fetched).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -51,6 +53,55 @@ yq '.jobs.proven-lock.steps[1].run' "$template" > "$tmp/run.sh"
 rc=0; out=$(env -i PATH="$PATH" PROVEN_SHA=not-a-sha RUNNER_TEMP="$tmp/rt" bash "$tmp/run.sh" 2>&1) || rc=$?
 [[ $rc == 2 && $out == *PROVEN_LOCK_CLASS=not_run:pin* ]] && ok 'a malformed pin is NOT RUN before any fetch' || bad "malformed pin: exit $rc, output: $out"
 
+# --- every pre-verdict failure has its own class (advisor review, 0.2.0).
+# The template's run script runs against a local suite remote: git rewrites the
+# github.com URL to it, curl and sleep are stubs, and a git wrapper can fail the
+# checkout. Nothing here touches the network.
+stubs=$tmp/stubs; mkdir -p "$stubs"
+printf '#!/usr/bin/env bash\n[[ -n ${STUB_CURL_FAIL:-} ]] && exit 22\nprintf '"'"'{"id": %%s, "full_name": "hyperpolymath/proven-cicd-and-workflows"}\\n'"'"' "${STUB_ID:-1326697643}"\n' > "$stubs/curl"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$stubs/sleep"
+realgit=$(command -v git)
+printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ $a == checkout && -n ${STUB_CHECKOUT_FAIL:-} ]] && exit 128; done\nexec %q "$@"\n' "$realgit" > "$stubs/git"
+chmod +x "$stubs"/*
+fake_suite() { # DIR [OMIT_FILE] -> commit SHA on stdout
+  local d=$1 omit=${2:-} f
+  rm -rf -- "$d"; mkdir -p "$d"
+  for f in scripts/proven-lock-gate.sh scripts/proven-stamp.sh scripts/build-proven-lock.sh \
+           scripts/extract-lock-facts.sh dist/proven-lock/proven-lock-verdict.c; do
+    [[ $f == "$omit" ]] && continue
+    mkdir -p "$d/$(dirname "$f")"; echo '# fake' > "$d/$f"
+  done
+  printf '#!/usr/bin/env bash\necho "PROVEN_LOCK_CLASS=consistent"\n' > "$d/scripts/proven-lock-gate.sh"
+  git -C "$d" init -q && git -C "$d" add -A
+  git -C "$d" -c user.name=c -c user.email=c@invalid -c commit.gpgsign=false commit -qm suite
+  git -C "$d" rev-parse HEAD
+}
+remote_from() { # SUITE_DIR -> bare remote at $tmp/remote/proven-cicd-and-workflows.git
+  rm -rf -- "$tmp/remote"; mkdir -p "$tmp/remote"
+  git clone -q --bare "$1" "$tmp/remote/proven-cicd-and-workflows.git"
+  git -C "$tmp/remote/proven-cicd-and-workflows.git" config uploadpack.allowAnySHA1InWant true
+}
+printf '[url "file://%s/remote/"]\n\tinsteadOf = https://github.com/hyperpolymath/\n' "$tmp" > "$tmp/gitconfig"
+run_gate_script() { # WANT_RC WANT_CLASS NAME SHA [ENV...]
+  local want=$1 class=$2 name=$3 sha=$4 rc=0; shift 4
+  rm -rf -- "$tmp/rt"; mkdir -p "$tmp/rt"
+  env -i PATH="$stubs:$PATH" HOME="$tmp" GIT_CONFIG_GLOBAL="$tmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+    PROVEN_SHA="$sha" RUNNER_TEMP="$tmp/rt" GH_TOKEN=dummy GITHUB_WORKSPACE="$tmp/ws" "$@" \
+    bash "$tmp/run.sh" >"$tmp/out" 2>&1 || rc=$?
+  if [[ $rc == "$want" ]] && grep -qx "PROVEN_LOCK_CLASS=$class" "$tmp/out"; then ok "$name"
+  else bad "$name: wanted $want/$class, got $rc"; sed 's/^/    /' "$tmp/out" | tail -8; fi
+}
+good=$(fake_suite "$tmp/fake-good"); remote_from "$tmp/fake-good"
+run_gate_script 0 consistent 'a verified suite at the pinned commit runs the gate' "$good"
+run_gate_script 2 not_run:identity 'a suite repository with another id is refused' "$good" STUB_ID=42
+run_gate_script 2 not_run:identity 'an unreadable repository id is refused' "$good" STUB_CURL_FAIL=1
+run_gate_script 2 not_run:fetch-missing 'a pinned commit the suite lacks is fetch-missing, not a transient fetch' 1111111111111111111111111111111111111111
+run_gate_script 2 not_run:checkout 'a failed checkout has its own class' "$good" STUB_CHECKOUT_FAIL=1
+partial=$(fake_suite "$tmp/fake-partial" dist/proven-lock/proven-lock-verdict.c); remote_from "$tmp/fake-partial"
+run_gate_script 2 not_run:suite 'a suite lacking a file the gate runs is refused' "$partial"
+rm -rf -- "$tmp/remote"
+run_gate_script 2 not_run:fetch 'an unreachable suite after retries is a transient fetch failure' "$good"
+
 # --- gate end to end, with this checkout as the suite
 workspace() { # FIXTURE -> $tmp/ws with the stamped gate installed
   local fixture=$1
@@ -77,5 +128,17 @@ printf '#include <stdio.h>\nvoid *global_IORef_Storage;\nint main(void){puts("CO
 git -C "$tmp/suite" init -q && git -C "$tmp/suite" add -A && git -C "$tmp/suite" -c user.name=c -c user.email=c@invalid -c commit.gpgsign=false commit -qm counterfeit
 workspace ok-tag-keyed
 gate 2 not_run:selftest 'a counterfeit always-CONSISTENT binary is refused by the self-test' "$tmp/suite"
+
+
+# --- runtime: an unreachable Idris2 runtime host is not_run:runtime, never a
+# build failure (advisor review). The fetch is redirected to a path that does
+# not exist; sleep is stubbed so the retries are instant.
+printf '[url "file://%s/no-such-host/"]\n\tinsteadOf = https://github.com/idris-lang/\n' "$tmp" > "$tmp/gitconfig-rt"
+workspace ok-tag-keyed
+rc=0
+env -u PROVEN_IDRIS2_SOURCE_DIR PATH="$stubs:$PATH" GIT_CONFIG_GLOBAL="$tmp/gitconfig-rt" GIT_CONFIG_NOSYSTEM=1 \
+  bash "$root/scripts/proven-lock-gate.sh" "$tmp/ws" .github/workflows/proven-lock-gate.yml >"$tmp/out" 2>&1 || rc=$?
+if [[ $rc == 2 ]] && tail -n 1 "$tmp/out" | grep -qx PROVEN_LOCK_CLASS=not_run:runtime; then ok 'an unreachable runtime host is not_run:runtime, not a build failure'
+else bad "runtime: wanted 2/not_run:runtime, got $rc/$(tail -n 1 "$tmp/out")"; sed 's/^/    /' "$tmp/out" | tail -8; fi
 
 exit "$fail"

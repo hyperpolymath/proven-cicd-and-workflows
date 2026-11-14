@@ -1,0 +1,7 @@
+{
+  "name": "cov-demo",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MPL-2.0",
+  "scripts": { "test": "node --test" }
+}

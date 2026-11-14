@@ -372,6 +372,16 @@
       "summary": "Reserved integration point for future semantic analysis.",
       "limitations": "Current action prints a success message without invoking the proposed analyser. Not assurance; excluded from default audit.",
       "path": "actions/semantic-audit-check/action.yml"
+    },
+    {
+      "id": "proven-coverage-collect",
+      "clade": "observatory",
+      "status": "advisory",
+      "nature": "advisory",
+      "title": "Proven coverage collector",
+      "summary": "Stamped workflow that collects raw and proven coverage reports (Rust, Elixir, JavaScript) with report-meta sidecars and uploads them as one artifact for Hypatia to judge.",
+      "limitations": "Shadow only: it collects and never judges a coverage number or fails on one. A language it cannot measure is reported, not failed. No ruleset is changed. Hypatia judges.",
+      "path": "templates/proven-coverage-collect.yml"
     }
   ]
 }

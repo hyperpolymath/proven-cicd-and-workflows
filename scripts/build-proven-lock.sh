@@ -12,16 +12,21 @@
 # an existing Idris2 checkout is used instead, and it must be at that commit.
 #
 # Trusted base of the resulting binary, stated so a green is not over-read:
-# the two named axioms in src/Proven/Lock/Axioms.idr, the Idris2 compiler that
-# generated the C, the RefC runtime, gcc and libgmp.
+# the two named axioms in src/Proven/Lock/Axioms.idr; the facts decoder and IO
+# in src/Proven/Lock/Main.idr (covering, not total, unproven); the Idris2
+# compiler that generated the C; the RefC runtime; gcc and libgmp.
 #
-# Exit: 0 built; 2 NOT RUN (missing gcc or gmp.h, fetch failed, wrong runtime
-# commit, compile failed). A build that cannot finish is never a verdict.
+# Exit: 0 built; 2 NOT RUN (missing gcc or gmp.h, wrong runtime commit, compile
+# failed); 3 NOT RUN because the Idris2 runtime could not be fetched or checked
+# out (an availability failure of a third-party host, kept apart from a build
+# failure so the gate can class it not_run:runtime). A build that cannot finish
+# is never a verdict.
 set -euo pipefail
 
 readonly IDRIS2_SOURCE_SHA=27780073c8631826d846499840b3857d9b9a4fd5
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 notrun() { printf 'build-proven-lock: %s; NOT RUN\n' "$1" >&2; exit 2; }
+noruntime() { printf 'build-proven-lock: %s; NOT RUN (runtime)\n' "$1" >&2; exit 3; }
 
 out=${1:-}
 [[ -n $out ]] || notrun "usage: build-proven-lock.sh OUT [--runtime IDRIS2_SOURCE_DIR]"
@@ -55,8 +60,8 @@ if [[ -z $runtime ]]; then
       fetched=1; break
     fi
   done
-  [[ $fetched == 1 ]] || notrun "could not fetch the Idris2 runtime at $IDRIS2_SOURCE_SHA"
-  git -C "$runtime" checkout -q --detach FETCH_HEAD || notrun "could not check out the Idris2 runtime"
+  [[ $fetched == 1 ]] || noruntime "could not fetch the Idris2 runtime at $IDRIS2_SOURCE_SHA"
+  git -C "$runtime" checkout -q --detach FETCH_HEAD || noruntime "could not check out the Idris2 runtime"
 fi
 actual=$(git -C "$runtime" rev-parse HEAD 2>/dev/null) || notrun "runtime is not a git checkout"
 [[ $actual == "$IDRIS2_SOURCE_SHA" ]] || notrun "runtime is at $actual, not $IDRIS2_SOURCE_SHA"

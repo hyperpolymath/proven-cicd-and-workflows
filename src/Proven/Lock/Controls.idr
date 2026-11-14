@@ -107,7 +107,34 @@ callerEdgeCertified = CallerEdge Refl Oh Oh Here Oh
 ||| the direct key and the key reached only through the composite.
 public export
 relockRepairsDropped :
-  (case relockEntry Controls.probe Controls.wf of
+  (case relockEntry Controls.probe [Controls.checkoutKey, Controls.leafKey] Controls.wf of
      Right (e ** _) => e
      Left _ => []) = [Controls.checkoutKey, Controls.leafKey]
 relockRepairsDropped = Refl
+
+||| A workflow that also calls a reusable workflow at job level.
+public export
+calleeKey : String
+calleeKey = "z/callee@v1"
+
+public export
+wfCall : Workflow
+wfCall = MkWorkflow ".github/workflows/c.yml" wfNode [Controls.calleeKey]
+
+||| A job-level call the lock keys no record for is left out of the relocked
+||| entry (an entry may omit it), so relock never turns a CONSISTENT lock into
+||| one with a DanglingRecord (advisor review, fixture job-call-absent-ok).
+public export
+relockOmitsUnrecordedCall :
+  (case relockEntry Controls.probe [Controls.checkoutKey, Controls.leafKey] Controls.wfCall of
+     Right (e ** _) => e
+     Left _ => []) = [Controls.checkoutKey, Controls.leafKey]
+relockOmitsUnrecordedCall = Refl
+
+||| A job-level call that has a record is listed after the reached keys.
+public export
+relockListsRecordedCall :
+  (case relockEntry Controls.probe [Controls.checkoutKey, Controls.leafKey, Controls.calleeKey] Controls.wfCall of
+     Right (e ** _) => e
+     Left _ => []) = [Controls.checkoutKey, Controls.leafKey, Controls.calleeKey]
+relockListsRecordedCall = Refl

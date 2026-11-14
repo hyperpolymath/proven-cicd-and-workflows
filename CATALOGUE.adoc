@@ -6,7 +6,7 @@
 
 *Repository assurance, organised by purpose. Discover by clade; choose by nature; adopt with evidence.*
 
-*32 composite actions · 8 clades · two independent discovery axes.*
+*32 composite actions · 1 stamped templates · 8 clades · two independent discovery axes.*
 
 This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartridge implementation, or a certification scheme. Inspired by BoJ's separation of capability domain from interface/type, it groups existing CI/CD building blocks without moving their paths or changing their behaviour.
 
@@ -29,7 +29,7 @@ This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartrid
 |<<schema,Schema — manifests & contracts>> |Validate structured manifests and executable contract declarations. |2 |1 |1 |0 |0
 |<<proof,Proof — languages & verification>> |Compile, test, inspect interfaces and execute proof tools where applicable. |7 |6 |1 |0 |0
 |<<bridge,Bridge — ecosystem integration>> |Connect BoJ capabilities and external analysis tools to repository checks. |2 |1 |1 |0 |0
-|<<observatory,Observatory — advisory signals>> |Discover useful signals without presenting warnings or heuristics as certification. |7 |0 |0 |7 |0
+|<<observatory,Observatory — advisory signals>> |Discover useful signals without presenting warnings or heuristics as certification. |8 |0 |0 |8 |0
 |<<frontier,Frontier — unfinished capabilities>> |Visible roadmap boundaries: not implemented assurance and not recommended gates. |2 |0 |0 |0 |2
 |===
 
@@ -37,7 +37,7 @@ This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartrid
 
 * *Enforcing (20):* can reject a subject. This is not a guarantee of completeness, applicability, production readiness or formal verification.
 * *Tool-dependent (3):* requires explicitly supplied validators/toolchains; inspect applicability and not-run behaviour before adoption.
-* *Advisory (7):* signals and warnings, not an assurance verdict. Some current outputs are simulated or heuristic; each card names the boundary.
+* *Advisory (8):* signals and warnings, not an assurance verdict. Some current outputs are simulated or heuristic; each card names the boundary.
 * *Stub (2):* unfinished integration or placeholder. Do not deploy as evidence of a completed check.
 
 Nature is a separate axis: a policy-pattern scan is not a compiler, a receipt verifier is not an analyser, and a proof executor is not a proof that every program is correct. These labels are reviewed inventory metadata; tests enforce coverage and consistency, not semantic correctness of every gate.
@@ -47,7 +47,7 @@ Nature is a separate axis: a policy-pattern scan is not a compiler, a receipt ve
 [cols="2,1,7",options="header"]
 |===
 |Nature |Count |Capabilities
-|advisory |7 |link:actions/badges-check/action.yml[Accreditations & badges] · link:actions/gitsea-check/action.yml[Analytics declarations] · link:actions/hosting-check/action.yml[Hosting configuration] · link:actions/metrics-check/action.yml[Metrics & proof indicators] · link:actions/tests-benches-check/action.yml[Test & benchmark discoverability] · link:actions/trust-humans-check/action.yml[Human trust declarations] · link:actions/www-compliance-check/action.yml[Web & well-known conventions]
+|advisory |8 |link:actions/badges-check/action.yml[Accreditations & badges] · link:actions/gitsea-check/action.yml[Analytics declarations] · link:actions/hosting-check/action.yml[Hosting configuration] · link:actions/metrics-check/action.yml[Metrics & proof indicators] · link:actions/tests-benches-check/action.yml[Test & benchmark discoverability] · link:actions/trust-humans-check/action.yml[Human trust declarations] · link:actions/www-compliance-check/action.yml[Web & well-known conventions] · link:templates/proven-coverage-collect.yml[Proven coverage collector]
 |build-test |2 |link:actions/rust-ci-check/action.yml[Strict Rust CI] · link:actions/kanren-check/action.yml[Relational-code checks]
 |integration |2 |link:actions/boj-cartridge-check/action.yml[BoJ cartridge applicability] · link:actions/custom-tools-check/action.yml[Pons & Panic Attack]
 |placeholder |2 |link:actions/prat-check/action.yml[PRAT testing placeholder] · link:actions/semantic-audit-check/action.yml[Semantic audit placeholder]
@@ -158,7 +158,7 @@ link:catalogue/clades/bridge.adoc[Explore this clade — 2 capabilities]
 
 Discover useful signals without presenting warnings or heuristics as certification.
 
-link:catalogue/clades/observatory.adoc[Explore this clade — 7 capabilities]
+link:catalogue/clades/observatory.adoc[Explore this clade — 8 capabilities]
 
 [cols="2,2,2,5",options="header"]
 |===
@@ -170,6 +170,7 @@ link:catalogue/clades/observatory.adoc[Explore this clade — 7 capabilities]
 |link:actions/tests-benches-check/action.yml[Test & benchmark discoverability] |advisory |advisory |Look for benchmark mentions and test/benchmark dashboards.
 |link:actions/trust-humans-check/action.yml[Human trust declarations] |advisory |advisory |Inspect trust.txt/humans.txt and association conventions.
 |link:actions/www-compliance-check/action.yml[Web & well-known conventions] |advisory |advisory |Inspect website and well-known/resource conventions.
+|link:templates/proven-coverage-collect.yml[Proven coverage collector] |advisory |advisory |Stamped workflow that collects raw and proven coverage reports (Rust, Elixir, JavaScript) with report-meta sidecars and uploads them as one artifact for Hypatia to judge.
 |===
 
 [[frontier]]

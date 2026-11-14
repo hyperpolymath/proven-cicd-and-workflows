@@ -161,13 +161,28 @@ and nothing changes between relock and check. The four properties to prove:
   `src/Proven/Lock/Model.idr`.
 . *Empty entries.* A `[]` entry is admissible if and only if that workflow
   reaches nothing by steps. Proved.
-. *Relock soundness.* Whenever relock does not refuse, its output is
-  `consistent`.
-. *Relock idempotence.* Relocking a relocked lock changes nothing.
+. *Relock is edge-exact.* Whenever relock does not refuse, each entry it
+  returns carries an `EdgesExact` certificate (proved by construction in
+  `relockEntry`). This is not a claim that the whole lock judges
+  `consistent`: a key reached by steps that no record keys is listed and
+  reported in `needs_records`, because relock never invents a record. A
+  job-level call with no record is left out (an entry may omit it), so relock
+  never turns a `consistent` lock into one with a `DanglingRecord`.
+  `tests/proven-lock.sh` checks on every fixture that a `consistent` lock
+  stays `consistent` under relock, and that otherwise the only new reasons
+  are `DanglingRecord` or `UnusedRecord` on keys relock added or removed.
+. *Relock reads the graph alone.* Relock is a function of the workflow graph
+  and the record keys; the entries it replaces never reach it
+  (`relockIgnoresEntries`, by `Refl`). File-level idempotence of a written
+  lock, records and ordering included, belongs to the tool that writes it and
+  is not proved here.
 
-The relock properties are not proved yet. The trusted base is two named axioms
-about primitive String equality (`src/Proven/Lock/Axioms.idr`), the assumption
-`DecEq String` already makes.
+The trusted base is two named axioms about primitive String equality
+(`src/Proven/Lock/Axioms.idr`), the assumption `DecEq String` already makes.
+Outside the proofs, and unproven: the facts decoder and the IO in
+`src/Proven/Lock/Main.idr` (covering, not total), which sit between the bash
+extractor and the judge, and the extractor itself, which the fixture corpus
+tests but does not prove.
 
 Conformance testing covers only the extractor, because that is where bash
 breaks. The fixtures enumerate concrete `uses:` syntax: `./local`,

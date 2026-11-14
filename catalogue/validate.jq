@@ -21,7 +21,9 @@ all(.capabilities[];
   (["enforcing", "tool-dependent", "advisory", "stub"] | index($e.status) != null) and
   (["scanner", "receipt-verifier", "policy-gate", "validator", "build-test", "proof-executor", "integration", "advisory", "placeholder"] | index($e.nature) != null) and
   ((.status == "stub") == (.nature == "placeholder")) and
-  (.path == ("actions/" + .id + "-check/action.yml")) and
+  # A composite action, or a stamped template (no composite, no workflow, no caller).
+  ((.path == ("actions/" + .id + "-check/action.yml")) or
+   (.path == ("templates/" + .id + ".yml") and (has("workflow") | not) and (has("template") | not))) and
   ((has("workflow") | not) or (.workflow | test("^\\.github/workflows/[a-zA-Z0-9_-]+\\.yml$"))) and
   ((has("template") | not) or (.template | test("^templates/[a-zA-Z0-9_-]+\\.yml$")))
 ) and

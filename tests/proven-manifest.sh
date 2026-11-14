@@ -9,7 +9,10 @@
 #   * each entry's template starts with exactly the stamp the manifest records,
 #     and the template body matches that stamp (scripts/proven-stamp.sh check);
 #   * every stamped file under templates/ or .github/workflows/ is listed, and
-#     a stamped copy installed here is the manifest's version, not BEHIND;
+#     a stamped copy installed here matches its own stamp (no drift) and is
+#     never AHEAD of the manifest. It may be BEHIND: refreshing a stale copy is
+#     the applier's job (BEHIND-CONTENT, then its content-only rewrite), and
+#     this repository's own copy is that rewrite's first canary;
 #   * artifact names are unique; versions are MAJOR.MINOR.PATCH.
 # Then a set of mutants, each run on an isolated copy, must be refused.
 # Exit: 0 conforms, 1 broken, 2 not run (no jq, or no manifest).
@@ -45,7 +48,7 @@ check() {
     bash "$dir/scripts/proven-stamp.sh" check "$dir/$template" >/dev/null 2>&1 ||
       { echo "FAIL $template body does not match its stamp"; fail=1; }
   done <<<"$rows"
-  # Every stamped file here is listed; an installed copy is current.
+  # Every stamped file here is listed; an installed copy is not ahead.
   local f first name ver
   while IFS= read -r f; do
     first=$(head -n 1 "$f")
@@ -53,8 +56,9 @@ check() {
     ver=${first#*@}; ver=${ver%% *}
     grep -qxF "$name" <(cut -f1 <<<"$rows") || { echo "FAIL ${f#"$dir/"} names $name, which the manifest does not list"; fail=1; continue; }
     if [[ ${f#"$dir/"} == .github/workflows/* ]]; then
-      [[ $ver == "$(awk -F'\t' -v a="$name" '$1 == a { print $2 }' <<<"$rows")" ]] ||
-        { echo "FAIL ${f#"$dir/"} is $name@$ver, BEHIND or ahead of the manifest"; fail=1; }
+      local want; want=$(awk -F'\t' -v a="$name" '$1 == a { print $2 }' <<<"$rows")
+      [[ $(printf '%s\n' "$ver" "$want" | sort -V | tail -n 1) == "$want" ]] ||
+        { echo "FAIL ${f#"$dir/"} is $name@$ver, AHEAD of the manifest's $want"; fail=1; }
       bash "$dir/scripts/proven-stamp.sh" check "$f" >/dev/null 2>&1 || { echo "FAIL ${f#"$dir/"} drifted from its stamp"; fail=1; }
     fi
   done < <(grep -rlE '^# proven-cicd: ' "$dir/templates" "$dir/.github/workflows" 2>/dev/null |
@@ -100,7 +104,7 @@ refuse 'template body edited without restamping' 1
 fresh; printf '# hand edit\n' >> "$tmp/r/templates/proven-lock-gate.yml"
 bash "$tmp/r/scripts/proven-stamp.sh" stamp "$tmp/r/templates/proven-lock-gate.yml" >/dev/null
 refuse 'template restamped but manifest hash not updated' 1
-fresh; edit_json '.artifacts[0].version = "0.2.0"'
+fresh; edit_json '.artifacts[0].version = "0.3.0"'
 refuse 'manifest version ahead of the template stamp' 1
 fresh; edit_json '.artifacts[0].sha256 = ("0" * 64)'
 refuse 'manifest hash for another body' 1
@@ -114,8 +118,10 @@ fresh; edit_json '.artifacts = []'
 refuse 'empty artifacts list' 1
 fresh; sed '1s/proven-lock-gate@/unlisted-gate@/' "$tmp/r/templates/proven-lock-gate.yml" > "$tmp/r/templates/unlisted.yml"
 refuse 'stamped template the manifest does not list' 1
-fresh; sed -i '1s/@0\.1\.0 /@0.0.9 /' "$tmp/r/.github/workflows/proven-lock-gate.yml"
-refuse 'installed copy BEHIND the manifest' 1
+fresh; sed -i '1s/@0\.1\.0 /@9.9.9 /' "$tmp/r/.github/workflows/proven-lock-gate.yml"
+refuse 'installed copy AHEAD of the manifest' 1
+fresh; printf '# hand edit\n' >> "$tmp/r/.github/workflows/proven-lock-gate.yml"
+refuse 'installed copy drifted from its stamp' 1
 fresh; rm "$tmp/r/proven/manifest.json"
 refuse 'manifest missing' 2
-echo "proven-manifest: manifest conforms; 11 mutants refused"
+echo "proven-manifest: manifest conforms (installed copy may lag); 12 mutants refused"
