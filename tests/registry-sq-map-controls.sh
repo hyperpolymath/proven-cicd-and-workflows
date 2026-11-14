@@ -40,4 +40,10 @@ awk -F'\t' 'BEGIN{OFS="\t"} $3=="unmapped" && !done {done=1; next} {print}' "$ma
 expect 'dropping an unmapped row fails the reverse check' 1 HYPATIA_PRAXIS="$tmp/praxis-all.deed"
 cp "$map" "$tmp/map.tsv"; printf 'hypatia/ci_failure_triage/zz\tSQ-LOCK-02\tunmapped\tabsent\tnote\n' >> "$tmp/map.tsv"
 expect 'an unmapped row that names an SQ id fails' 1
+cp "$map" "$tmp/map.tsv"; printf 'hypatia/workflow_audit/zz\tunassigned\tunmapped\tpresent\tnote\n' >> "$tmp/map.tsv"
+expect 'an unmapped row outside ci_failure_triage fails' 1
+cp "$map" "$tmp/map.tsv"; printf 'hypatia/ci_failure_triage/zz\tunassigned\tunmapped\tabsent\tnote\n' >> "$tmp/map.tsv"
+expect 'an unmapped row absent from the registry fails' 1
+grep -v '^hypatia/workflow_audit/actions_lock_stale	' "$map" > "$tmp/map.tsv"
+expect 'deleting a workflow_audit ADR mapping fails the reverse check' 1 HYPATIA_PRAXIS="$tmp/praxis-all.deed"
 head -n 1 "$map" > "$tmp/map.tsv"; expect 'an empty map is NOT RUN' 2

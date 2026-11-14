@@ -89,7 +89,9 @@
     contents: "read",
   },
   concurrency: {
-    group: "${{ github.workflow }}-${{ github.ref }}",
+    # The event is part of the key, so a weekly or dispatched drift run and a
+    # push to main never cancel each other.
+    group: "${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}",
     cancel-in-progress: true,
   },
   jobs: {

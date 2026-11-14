@@ -34,6 +34,8 @@ done < <(awk -F'\t' '
   $1 != "-" && $3 == "mapped" && $2 == "hypatia-only" { print "row " NR+1 ": mapped row has no SQ id" }
   $1 != "-" && $3 == "hypatia-only" && $2 != "hypatia-only" { print "row " NR+1 ": hypatia-only row names " $2 }
   $1 != "-" && $3 == "unmapped" && $2 != "unassigned" { print "row " NR+1 ": an unmapped row must say unassigned, not " $2 }
+  $1 != "-" && $3 == "unmapped" && $1 !~ /^hypatia\/ci_failure_triage\// { print "row " NR+1 ": only a ci_failure_triage id may be unmapped, not " $1 }
+  $1 != "-" && $3 == "unmapped" && $4 != "present" { print "row " NR+1 ": an unmapped row must be present in the registry (else drop it)" }
   $1 != "-" && $3 != "mapped" && $3 != "hypatia-only" && $3 != "unmapped" { print "row " NR+1 ": an A5 row must be mapped, hypatia-only or unmapped, not " $3 }
   $1 != "-" && $4 != "present" && $4 != "absent" { print "row " NR+1 ": praxis must be present or absent" }
   $1 == "-" && $3 != "squabbler-only" && $3 != "kernel-reason" { print "row " NR+1 ": a row without an A5 id must be squabbler-only or kernel-reason" }
@@ -71,14 +73,16 @@ if [[ -n ${HYPATIA_PRAXIS:-} ]]; then
     if grep -qxF -- "$a5" <<<"$registry"; then actual=present; else actual=absent; fi
     [[ $actual == "$praxis" ]] || bad "$a5: praxis column says $praxis, registry says $actual"
   done <<<"$rows"
-  # Reverse: every triage id in the registry has a row. Without this a rule
-  # Hypatia adds stays out of the map and the test still passes.
-  triage=$(grep -E '^hypatia/ci_failure_triage/' <<<"$registry" || true)
+  # Reverse: every triage id in the registry has a row, and so do the ADR 0004
+  # mappings Hypatia emits from another module. Without this a rule Hypatia
+  # adds, or a mapped row someone deletes, leaves the test green.
+  adr_elsewhere=$'hypatia/workflow_audit/actions_lock_stale\nhypatia/workflow_audit/mirror_without_visibility_guard'
+  triage=$({ grep -E '^hypatia/ci_failure_triage/' <<<"$registry" || true; grep -xF -f <(echo "$adr_elsewhere") <<<"$registry" || true; } | sort -u)
   if [[ -n $triage ]]; then
     missing=$(comm -23 <(echo "$triage") <(awk -F'\t' '$1 != "-" {print $1}' <<<"$rows" | sort -u))
     [[ -z $missing ]] || bad "triage ids in the registry with no row (map them, or list them unmapped): $(tr '\n' ' ' <<<"$missing")"
   fi
-  echo "checked against $(wc -l <<<"$registry") praxis ids ($(grep -c . <<<"$triage" || true) triage ids, both directions)"
+  echo "checked against $(wc -l <<<"$registry") praxis ids ($(grep -c . <<<"$triage" || true) required ids, both directions)"
 fi
 
 judge=$root/src/Proven/Lock/Judge.idr
