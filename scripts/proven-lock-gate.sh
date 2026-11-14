@@ -37,7 +37,7 @@ report() { # OUTCOME CLASS [FINDINGS_JSON]
       --arg repo "${GITHUB_REPOSITORY:-}" --arg sha "${GITHUB_SHA:-}" \
       --arg run "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}" \
       --arg attempt "${GITHUB_RUN_ATTEMPT:-}" --arg suite_sha "$(git -C "$suite" rev-parse HEAD 2>/dev/null || true)" \
-      --arg version "$(head -n 1 "$workspace/$stamped" 2>/dev/null | sed -n 's/^# proven-cicd: [^@]*@\([^ ]*\) .*/\1/p')" \
+      --arg version "$(head -n 2 "$workspace/$stamped" 2>/dev/null | sed -n 's/^# proven-cicd: [^@]*@\([^ ]*\) .*/\1/p')" \
       '{schema: "proven-cicd/run-report/v1", artifact: "proven-lock-gate", content_version: $version,
         suite_sha: $suite_sha, repo: $repo, head_sha: $sha, run_url: $run, attempt: $attempt,
         outcome: $outcome, class: $class, findings: $findings}' \

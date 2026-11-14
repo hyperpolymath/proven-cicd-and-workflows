@@ -79,9 +79,13 @@ aliases recorded in `rule.json`. CASE numbers are experiments, not rules.
 
 Each stamped file has three regions:
 
-. The *stamp line*:
+. The *stamp line*, which is line 2 of the file:
   `# proven-cicd: <artifact>@<version> sha256:<hash of the hashed region>`.
-. The *hashed region*: the body this repository proves. It must hold nothing
+  Line 1 stays the `# SPDX-License-Identifier:` line, because consumer workflow
+  linters require `head -1` to be that line. `stamp` refuses a template whose
+  line 1 is not an SPDX line.
+. The *hashed region*: the body this repository proves. It is every line
+  except the stamp line and the local region, so the SPDX line is hashed. It must hold nothing
   that Hypatia's secret or UUID scanners flag, such as a key header or a
   UUID-shaped literal. A sha256 hex string is fine.
 . The *local region*: values that legitimately differ per repository. This
@@ -93,6 +97,12 @@ SHAs were hashed, every Dependabot bump would turn the drift gate red across
 the estate. Stamped files are also excluded from Dependabot where the third-party
 pin cannot be lifted out of the body. The Dependabot-versus-lock rule covers
 the other half of that interaction.
+
+Copies installed before this layout carry the stamp on line 1. `check` still
+accepts them, hashing every line except line 1, and prints a note that the copy
+is legacy. `stamp` never writes that layout. A stamp on any other line is
+refused with exit 2. Re-stamping a legacy copy from the current template moves
+the stamp to line 2.
 
 There are two judgements, and they come from two places:
 
