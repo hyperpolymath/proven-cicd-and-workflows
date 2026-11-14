@@ -42,10 +42,45 @@ cp "$map" "$tmp/map.tsv"; printf 'hypatia/ci_failure_triage/zz\tSQ-LOCK-02\tunma
 expect 'an unmapped row that names an SQ id fails' 1
 cp "$map" "$tmp/map.tsv"; printf 'hypatia/workflow_audit/zz\tunassigned\tunmapped\tpresent\tnote\n' >> "$tmp/map.tsv"
 expect 'an unmapped row outside ci_failure_triage fails' 1
+cp "$map" "$tmp/map.tsv"; printf 'hypatia/ci_failure_triage/zz\tunassigned\tunmapped\tpresent\tnote\n' >> "$tmp/map.tsv"
+expect 'an unmapped row that says present but the registry lacks fails' 1 HYPATIA_PRAXIS="$tmp/praxis-all.deed"
 cp "$map" "$tmp/map.tsv"; printf 'hypatia/ci_failure_triage/zz\tunassigned\tunmapped\tabsent\tnote\n' >> "$tmp/map.tsv"
-expect 'an unmapped row absent from the registry fails' 1
+expect 'a pending row (unmapped, absent) that the registry lacks passes' 0 HYPATIA_PRAXIS="$tmp/praxis-all.deed"
+cp "$map" "$tmp/map.tsv"; expect 'HYPATIA_PRAXIS_SOURCE other than 1 is NOT RUN' 2 HYPATIA_PRAXIS="$tmp/praxis-all.deed" HYPATIA_PRAXIS_SOURCE=yes
 grep -v '^hypatia/workflow_audit/actions_lock_stale	' "$map" > "$tmp/map.tsv"
 expect 'deleting a workflow_audit ADR mapping fails the reverse check' 1 HYPATIA_PRAXIS="$tmp/praxis-all.deed"
 echo 'no ids here' > "$tmp/empty.deed"
 cp "$map" "$tmp/map.tsv"; expect 'a registry with no A5 ids is NOT RUN, not a failure' 2 HYPATIA_PRAXIS="$tmp/empty.deed"
 head -n 1 "$map" > "$tmp/map.tsv"; expect 'an empty map is NOT RUN' 2
+
+# --- A new triage rule lands with nothing merged red (advisor, 2026-11-14).
+# pin.deed is the registry at this repository's Hypatia pin, before the rule;
+# pr.deed is the Hypatia change that adds it (and Hypatia main once it merges).
+new=hypatia/ci_failure_triage/brand_new_rule
+cp "$tmp/praxis-all.deed" "$tmp/pin.deed"
+{ cat "$tmp/pin.deed"; echo "$new"; } > "$tmp/pr.deed"
+cp "$map" "$tmp/map.tsv"
+expect 'flow, before: the Hypatia change with no row fails its own CI' 1 HYPATIA_PRAXIS="$tmp/pr.deed" HYPATIA_PRAXIS_SOURCE=1
+printf '%s\tunassigned\tunmapped\tpresent\tnote\n' "$new" >> "$tmp/map.tsv"
+expect 'flow, the deadlock: a row added present fails here against the pin' 1 HYPATIA_PRAXIS="$tmp/pin.deed"
+cp "$map" "$tmp/map.tsv"; printf '%s\tunassigned\tunmapped\tabsent\tnote\n' "$new" >> "$tmp/map.tsv"
+expect 'flow, step 1: the row added absent (pending) passes here against the pin' 0 HYPATIA_PRAXIS="$tmp/pin.deed"
+expect 'flow, step 2: the Hypatia change passes its own CI' 0 HYPATIA_PRAXIS="$tmp/pr.deed" HYPATIA_PRAXIS_SOURCE=1
+grep -q "pending row $new lands with this change" "$tmp/log" && echo 'ok: flow, step 2 says the row lands with the change' || { echo 'FAIL flow, step 2 note missing'; exit 1; }
+expect 'flow, step 3: after the merge the weekly run against Hypatia main passes' 0 HYPATIA_PRAXIS="$tmp/pr.deed"
+grep -q "WARN pending row $new is in the registry now: flip" "$tmp/log" && echo 'ok: flow, step 3 warns to flip the column' || { echo 'FAIL flow, step 3 WARN missing'; exit 1; }
+sed -i "s#^$new\tunassigned\tunmapped\tabsent\t#$new\tunassigned\tunmapped\tpresent\t#" "$tmp/map.tsv"
+expect 'flow, step 4: the flip, with the pin moved, passes' 0 HYPATIA_PRAXIS="$tmp/pr.deed"
+! grep -q "pending row $new" "$tmp/log" && echo 'ok: flow, step 4 no longer reports the row as pending' || { echo 'FAIL flow, step 4 still pending'; exit 1; }
+expect 'flow: a flip before the pin moves fails' 1 HYPATIA_PRAXIS="$tmp/pin.deed"
+
+# --- Removing a mapped rule: the Hypatia change passes with a WARN, and the
+# pin move that passes it fails until the column is set in the same change.
+gone=hypatia/ci_failure_triage/pages_not_enabled
+grep -vxF "$gone" "$tmp/praxis-all.deed" > "$tmp/removed.deed"
+cp "$map" "$tmp/map.tsv"
+expect 'removal: the Hypatia change that drops a mapped rule passes its own CI' 0 HYPATIA_PRAXIS="$tmp/removed.deed" HYPATIA_PRAXIS_SOURCE=1
+grep -q "WARN $gone: praxis column says present" "$tmp/log" && echo 'ok: removal warns about the column' || { echo 'FAIL removal WARN missing'; exit 1; }
+expect 'removal: a pin move past it without setting the column fails' 1 HYPATIA_PRAXIS="$tmp/removed.deed"
+sed -i "s#^\($gone\t[^\t]*\tmapped\t\)present\t#\1absent\t#" "$tmp/map.tsv"
+expect 'removal: the pin move with the column set to absent passes' 0 HYPATIA_PRAXIS="$tmp/removed.deed"
