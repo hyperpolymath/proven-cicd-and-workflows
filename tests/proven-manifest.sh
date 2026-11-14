@@ -158,13 +158,21 @@ fresh; edit_json '.artifacts = []'
 refuse 'empty artifacts list' 1
 fresh; sed '2s/proven-lock-gate@/unlisted-gate@/' "$tmp/r/templates/proven-lock-gate.yml" > "$tmp/r/templates/unlisted.yml"
 refuse 'stamped template the manifest does not list' 1
-fresh; sed -i '1s/@0\.1\.0 /@9.9.9 /' "$tmp/r/.github/workflows/proven-lock-gate.yml"
+# The stamp is on line 1 in the legacy layout and line 2 in the current one, and its
+# version moves, so set whatever version the stamp has instead of matching a fixed one.
+fresh; sed -i '1,2s/^\(# proven-cicd: proven-lock-gate@\)[0-9][0-9.]* /\19.9.9 /' "$tmp/r/.github/workflows/proven-lock-gate.yml"
+grep -q '^# proven-cicd: proven-lock-gate@9\.9\.9 ' "$tmp/r/.github/workflows/proven-lock-gate.yml" || { echo "FAIL: AHEAD mutant did not change the stamp"; exit 1; }
 refuse 'installed copy AHEAD of the manifest' 1
 fresh; printf '# hand edit\n' >> "$tmp/r/.github/workflows/proven-lock-gate.yml"
 refuse 'installed copy drifted from its stamp' 1
 fresh; w=$tmp/r/.github/workflows/proven-lock-gate.yml
-# The installed copy is in the legacy layout; stamp writes only the current one.
-{ sed -n 2p "$w"; sed -n 1p "$w" | sed 's/@0\.1\.0 /@0.0.9 /'; tail -n +3 "$w"; } > "$tmp/w" && mv "$tmp/w" "$w"
+# stamp writes only the current layout (SPDX on line 1, stamp on line 2). Put the installed
+# copy in that layout whichever layout it is in, then give it a version nobody published.
+if sed -n 1p "$w" | grep -q '^# proven-cicd: '; then
+  { sed -n 2p "$w"; sed -n 1p "$w"; tail -n +3 "$w"; } > "$tmp/w" && mv "$tmp/w" "$w"
+fi
+sed -i '2s/^\(# proven-cicd: proven-lock-gate@\)[0-9][0-9.]* /\10.0.9 /' "$w"
+grep -q '^# proven-cicd: proven-lock-gate@0\.0\.9 ' "$w" || { echo "FAIL: unpublished-version mutant did not change the stamp"; exit 1; }
 bash "$tmp/r/scripts/proven-stamp.sh" stamp "$tmp/r/.github/workflows/proven-lock-gate.yml" >/dev/null
 refuse 'installed copy restamped at a version that was never published' 1
 fresh; edit_json '(.artifacts[0].history) |= .[:-1]'
