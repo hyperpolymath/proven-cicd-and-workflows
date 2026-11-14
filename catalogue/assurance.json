@@ -270,6 +270,13 @@
       "coverage": "placeholder",
       "evidence_note": "Not implemented assurance; no adoption recommendation.",
       "consumer_receipts": []
+    },
+    {
+      "id": "proven-coverage-collect",
+      "test_paths": [],
+      "coverage": "advisory-only",
+      "evidence_note": "Shadow collector: it never judges a coverage number. Its stamp, manifest entry, exit codes and Rust, Mix and JS fixture runs are checked by tests/proven-coverage-collect.sh; Hypatia judges the reports.",
+      "consumer_receipts": []
     }
   ]
 }

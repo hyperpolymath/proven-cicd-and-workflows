@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: CC-BY-SA-4.0
+= Proven coverage collector
+
+Artifact: `proven-coverage-collect@0.1.0`. Status: shadow only.
+
+This is the third increment of Hypatia's proven-coverage design
+(`hypatia/docs/design/proven-coverage.adoc`, sections 3.1, 4, 6 and 8.4). It
+ships as a stamped inline copy, the same way as `proven-lock-gate`. The stamp,
+drift and BEHIND rules are in `ARCHITECTURE.adoc` in this directory.
+
+== What it does
+
+The workflow collects coverage reports. It does not judge them. Hypatia judges
+them with `mix hypatia.coverage.report`. No number is compared, shown as a
+verdict, or used to pass or fail anything here.
+
+It runs on `pull_request` and on push to `main`. The token is `contents: read`.
+
+For each language the repository has, it makes two runs. The raw run executes
+all tests. The proven run executes a subset. Hypatia compares them.
+
+[cols="1,2,2,2"]
+|===
+| Language | Detected by | Raw run | Proven run
+
+| Rust | `Cargo.toml` at the root
+| `cargo llvm-cov --json` to `cov/raw/llvm.json`
+| Same, with the test-name filter (default `prop_`) to `cov/proven/llvm.json`
+
+| Elixir | `mix.exs` at the root
+| `mix test --cover --export-coverage raw`
+| `mix test --cover --only proven --export-coverage proven`
+
+| JavaScript | `package.json` at the root
+| `c8@10.1.3` around `node --test` (default globs `test/**/*.test.js`)
+| Same, with the proven globs (default `test/**/props.test.js`)
+|===
+
+Rust adds `--branch` only when `PROVEN_COV_RUST_TOOLCHAIN` starts with
+`nightly`. The default is `stable`, so branches are off.
+
+Elixir needs no change to the consumer's `mix.exs`. Mix exports Erlang `:cover`
+data. `scripts/coverdata-to-lcov.exs` turns it into LCOV with
+`mix run --no-start`. It writes lines only, never `BRDA` or `BRF`. It is a
+small self-contained equivalent of `Hypatia.Coverage.CoverExport`, not a call
+into Hypatia, because that would make Hypatia a dependency of every consumer.
+Keep the two in step. A test is in the proven run when it carries
+`@tag :proven`.
+
+Every report has a sidecar `<report>.meta.json` with schema
+`hypatia.proven-coverage.report-meta/1`: `repo`, `commit`, `run_id`, `role`
+(`raw` or `proven`), `tool` and `tool_version`. The raw and proven runs share one
+`run_id`.
+
+== What it uploads
+
+One artifact named `proven-coverage`, kept for 14 days. It holds the `cov/`
+tree: the reports, the sidecars, `cov/collect-report.json`
+(`proven-cicd/coverage-collect-report/v1`, one row per language with its status
+and the reason a report is missing) and `cov/summary.md`. The job summary shows
+the same table. It has no percentages.
+
+== Shadow rules (design section 8.4)
+
+* It never fails on a coverage number.
+* A language it cannot measure, a tool that fails and a test run that fails are
+  each reported with a reason. The job still passes.
+* It fails only when the collector itself cannot run: a bad pin, a failed fetch,
+  a missing `GITHUB_SHA`, or a copy that drifted from its stamp. The driver
+  `scripts/proven-coverage-collect.sh` exits 0 for collected (even partly), 2
+  for could not run, and never 1.
+* A repository with none of the languages exits 0 with "Nothing to collect".
+* Rulesets are not changed. Only the squabbler owner changes rulesets (R12).
+  This job is not a required check.
+
+== Install
+
+Install it the same way as `proven-lock-gate`. The applier copies
+`templates/proven-coverage-collect.yml` to
+`.github/workflows/proven-coverage-collect.yml`, fills the local values and
+writes the stamp. A consumer sets these `proven-cicd:local-next` values:
+
+* `PROVEN_SHA`: the pinned commit of this repository. A malformed or unfetchable
+  pin is exit 2.
+* the SHAs of the third-party actions (checkout, rust-toolchain,
+  install-action, setup-beam, setup-node, upload-artifact), which Dependabot may
+  move;
+* `PROVEN_COV_RUST_TOOLCHAIN`, `PROVEN_COV_RUST_PROVEN_FILTER`,
+  `PROVEN_COV_OTP_VERSION`, `PROVEN_COV_ELIXIR_VERSION`,
+  `PROVEN_COV_NODE_VERSION`, `PROVEN_COV_JS_RAW_TESTS` and
+  `PROVEN_COV_JS_PROVEN_TESTS`.
+
+The body is hashed. An edit to it is drift, and the applier reports a copy
+whose stamp is older than `proven/manifest.json` as BEHIND.
+
+== Limits
+
+* Only the repository root is detected. A workspace with sub-projects is not
+  walked.
+* JavaScript branch ids are not stable between runs (design section 4.4). Hypatia
+  judges JS on lines.
+* It runs one job on one runner, because upload-artifact cannot append to one
+  artifact name from several jobs. A language whose toolchain step fails fails
+  the job.
+
+== Tests
+
+`tests/proven-coverage-collect.sh` checks the stamp and manifest entry, lints
+the workflow, checks the exit codes, and runs the tiny fixtures under
+`tests/fixtures/proven-coverage/` for real when the toolchain is present. A
+missing toolchain is named SKIP. `PROVEN_COV_REQUIRE_REAL=1` turns a SKIP into
+a failure.
