@@ -269,6 +269,14 @@ Each policy below becomes registry rules with fixtures, one PR per topic:
 
 * *Retry and rerun.* HTTP 403 rate limits, 502 errors, merge races and
   cancelled runs get at most one rerun per job, which matches ADR 0004 guard 2.
+  The table is `proven/policy/retry.tsv`: one row per mapped A5 rule in a rerun
+  class (`SQ-RUN-*`, one rerun) or a noise class (`SQ-NOI-*`, none), with the
+  rerun cap, its scope (always `job`) and whether a referral follows.
+  `tests/retry-policy.sh` takes the id pairing from `sq-map.tsv`, and fails if a
+  mapped rerun or noise row has no policy row. Dispatch and meaning stay with
+  the squabbler and Hypatia (R1); this table records the cap, it does not
+  dispatch. Not covered yet: 403 rate limits on a step other than setup-bun,
+  and the Dependabot "behind main" case (CASE-030).
 * *Concurrency.* WF021 wins over WH007, and publishers never set
   `cancel-in-progress`.
 * *Toolchain pins in one file:* OTP 27.3.4.19 (R2), Bun 1.4.2, Nickel 1.18.0
