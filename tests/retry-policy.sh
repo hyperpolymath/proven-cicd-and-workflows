@@ -15,7 +15,8 @@ while IFS= read -r row; do bad "malformed row (need 6 non-empty tab fields): $ro
     tail -n +2 "$policy" | awk -F'\t' 'NF != 6 || $1 == "" || $2 == "" || $3 == "" || $4 == "" || $5 == "" || $6 == "" { print }')
 
 declare -A seen
-while IFS=$'\t' read -r a5 sq max scope referral source; do
+# `|| [[ -n $a5 ]]`: read returns non-zero at EOF, which would skip a final row with no newline.
+while IFS=$'\t' read -r a5 sq max scope referral source || [[ -n $a5 ]]; do
     [[ -n $a5 && -n $sq && -n $max && -n $scope && -n $referral && -n $source ]] || continue
     [[ -z ${seen[$a5]:-} ]] || bad "$a5: duplicate row"
     seen[$a5]=1

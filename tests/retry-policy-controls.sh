@@ -20,5 +20,6 @@ mk; tail -n 1 "$pol" >> "$pol"; expect_fail "duplicate row"
 mk; sed -i 's/\(api_rate_limit\tSQ-RUN-01\t1\tjob\t\)no/\1maybe/' "$pol"; expect_fail "bad then_referral value"
 mk; sed -i 's/\(merge_ref_race\tSQ-NOI-02\t0\tjob\t\)no/\1yes/' "$pol"; expect_fail "referral after no rerun"
 mk; sed -i 's/^\(hypatia\/ci_failure_triage\/api_rate_limit\tSQ-RUN-01\t1\tjob\tno\t\).*/\1/' "$pol"; expect_fail "empty source field"
+mk; printf 'hypatia/ci_failure_triage/not_a_rule\tSQ-RUN-01\t2\tjob\tno\tx' >> "$pol"; expect_fail "final row with no trailing newline is still checked"
 mk; printf 'hypatia/ci_failure_triage/new_flaky\tSQ-RUN-01\tmapped\tpresent\tx\n' >> "$map"; expect_fail "new rerun-class map row without a policy row"
 exit $fails
