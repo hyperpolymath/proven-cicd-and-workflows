@@ -1,0 +1,5 @@
+tool	version	env_var	source	note
+otp	27.3.4.19	PROVEN_COV_OTP_VERSION	CASE-001/CASE-003, R2	OTP 28 miscompiles PinSites.walk/4 (segfault); hypatia#1061 set the oracle default to this
+bun	1.4.2	-	CASE-012, SQ-PIN-03	setup-bun 403 rate limit; the pin is the root-cause fix
+nickel	1.18.0	-	ARCHITECTURE.adoc, Other policy rules	no consumer in this repository yet
+yq	v4.53.3	-	SQ-GEN-04, CASE-033	mikefarah yq; the kyaml format check needs it
