@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MPL-2.0
+# Provenance of the vendored Idris2 RefC runtime in this directory.
+#
+# repository: https://github.com/idris-lang/Idris2
+# commit:     27780073c8631826d846499840b3857d9b9a4fd5
+# paths:      support/refc/*.c support/refc/*.h -> refc/
+#             support/c/*.c support/c/*.h       -> c/
+#             (Makefiles, .gitignore and support/c/windows/ are not vendored:
+#             the Linux build does not use them.)
+#
+# The files are byte-for-byte copies and are never edited here; no SPDX header
+# is added to them. SHA256SUMS lists every vendored file and its sha256, and
+# tests/proven-lock-runtime-vendor.sh checks both the sums and byte identity
+# with upstream at the commit above.
+#
+# Licences, carried verbatim:
+#   LICENSE           Idris2's BSD-3-Clause licence, which covers the runtime.
+#   c/getline.c       carries its own notice in its header: The NetBSD
+#                     Foundation, 2-clause BSD. It is left intact.
+#
+# The commit is the one whose RefC backend generated
+# dist/proven-lock/proven-lock-verdict.c (Idris2 0.7.0-27780073c).

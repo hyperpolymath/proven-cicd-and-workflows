@@ -12,7 +12,13 @@
 #     a stamped copy installed here matches its own stamp (no drift) and is
 #     never AHEAD of the manifest. It may be BEHIND: refreshing a stale copy is
 #     the applier's job (BEHIND-CONTENT, then its content-only rewrite), and
-#     this repository's own copy is that rewrite's first canary;
+#     this repository's own copy is that rewrite's first canary. A BEHIND copy
+#     must be a version that was published: its {version, sha256} is in the
+#     artifact's `history`, so a body restamped self-consistently at a lower
+#     version is refused;
+#   * each artifact's `history` lists every published {version, sha256} in
+#     order, ends with the current one, never goes down, and repeats a version
+#     only where the earlier entry records the repeat as a `defect`;
 #   * artifact names are unique; versions are MAJOR.MINOR.PATCH.
 # Then a set of mutants, each run on an isolated copy, must be refused.
 # Exit: 0 conforms, 1 broken, 2 not run (no jq, or no manifest).
@@ -40,6 +46,28 @@ check() {
     echo "FAIL an artifact entry has a missing or non-string field"; return 1
   fi
   local dups
+  local hist
+  hist=$(jq -r '.artifacts[] | .artifact as $a | .version as $v | .sha256 as $h |
+      if (.history | type) != "array" or (.history | length) == 0 then "\($a)\tno history"
+      elif any(.history[]; (type != "object") or ((.version | type) != "string") or ((.sha256 | type) != "string")
+               or ((.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) | not) or ((.sha256 | test("^[0-9a-f]{64}$")) | not)
+               or ((has("defect") and ((.defect | type) != "string")))) then "\($a)\ta history entry is not {version: MAJOR.MINOR.PATCH, sha256: 64-hex}"
+      elif (.history | last) != {version: $v, sha256: $h} and ((.history | last) | del(.defect)) != {version: $v, sha256: $h} then "\($a)\thistory does not end with the current version and sha256"
+      elif ([.history[] | [.version, .sha256]] | length) != ([.history[] | [.version, .sha256]] | unique | length) then "\($a)\thistory repeats an entry"
+      else empty end' "$m" 2>/dev/null) || { echo "FAIL an artifact history is malformed"; fail=1; }
+  [[ -z $hist ]] || { while IFS=$'\t' read -r a why; do echo "FAIL $a: $why"; done <<<"$hist"; fail=1; }
+  local order
+  order=$(jq -r '.artifacts[] | .artifact as $a | .history as $h | range(1; $h | length) as $i |
+      [$a, $h[$i-1].version, $h[$i].version, ($h[$i-1] | has("defect"))] | @tsv' "$m" 2>/dev/null) || true
+  local a prev cur flagged
+  while IFS=$'\t' read -r a prev cur flagged; do
+    [[ -n $a ]] || continue
+    if [[ $prev == "$cur" ]]; then
+      [[ $flagged == true ]] || { echo "FAIL $a: version $cur names two bodies and the earlier entry records no defect"; fail=1; }
+    elif [[ $(printf '%s\n' "$prev" "$cur" | sort -V | tail -n 1) != "$cur" ]]; then
+      echo "FAIL $a: history goes down from $prev to $cur"; fail=1
+    fi
+  done <<<"$order"
   dups=$(cut -f1 <<<"$rows" | sort | uniq -d)
   [[ -z $dups ]] || { echo "FAIL duplicate artifact: $dups"; fail=1; }
   local artifact version sha template install
@@ -68,6 +96,10 @@ check() {
       [[ $(printf '%s\n' "$ver" "$want" | sort -V | tail -n 1) == "$want" ]] ||
         { echo "FAIL ${f#"$dir/"} is $name@$ver, AHEAD of the manifest's $want"; fail=1; }
       bash "$dir/scripts/proven-stamp.sh" check "$f" >/dev/null 2>&1 || { echo "FAIL ${f#"$dir/"} drifted from its stamp"; fail=1; }
+      local h=${first##*sha256:}
+      jq -e --arg a "$name" --arg v "$ver" --arg h "$h" \
+        'any(.artifacts[] | select(.artifact == $a) | .history[]; .version == $v and .sha256 == $h)' "$dir/proven/manifest.json" >/dev/null 2>&1 ||
+        { echo "FAIL ${f#"$dir/"} is $name@$ver sha256:${h:0:12}, which was never published (not in history)"; fail=1; }
     fi
   done < <(grep -rlE '^# proven-cicd: ' "$dir/templates" "$dir/.github/workflows" 2>/dev/null |
            while IFS= read -r p; do [[ -n $(stamp_of "$p") ]] && printf '%s\n' "$p"; done)
@@ -112,7 +144,7 @@ refuse 'template body edited without restamping' 1
 fresh; printf '# hand edit\n' >> "$tmp/r/templates/proven-lock-gate.yml"
 bash "$tmp/r/scripts/proven-stamp.sh" stamp "$tmp/r/templates/proven-lock-gate.yml" >/dev/null
 refuse 'template restamped but manifest hash not updated' 1
-fresh; edit_json '.artifacts[0].version = "0.3.0"'
+fresh; edit_json '.artifacts[0].version = "0.4.0"'
 refuse 'manifest version ahead of the template stamp' 1
 fresh; edit_json '.artifacts[0].sha256 = ("0" * 64)'
 refuse 'manifest hash for another body' 1
@@ -130,6 +162,23 @@ fresh; sed -i '1s/@0\.1\.0 /@9.9.9 /' "$tmp/r/.github/workflows/proven-lock-gate
 refuse 'installed copy AHEAD of the manifest' 1
 fresh; printf '# hand edit\n' >> "$tmp/r/.github/workflows/proven-lock-gate.yml"
 refuse 'installed copy drifted from its stamp' 1
+fresh; w=$tmp/r/.github/workflows/proven-lock-gate.yml
+# The installed copy is in the legacy layout; stamp writes only the current one.
+{ sed -n 2p "$w"; sed -n 1p "$w" | sed 's/@0\.1\.0 /@0.0.9 /'; tail -n +3 "$w"; } > "$tmp/w" && mv "$tmp/w" "$w"
+bash "$tmp/r/scripts/proven-stamp.sh" stamp "$tmp/r/.github/workflows/proven-lock-gate.yml" >/dev/null
+refuse 'installed copy restamped at a version that was never published' 1
+fresh; edit_json '(.artifacts[0].history) |= .[:-1]'
+refuse 'history that does not end with the current version' 1
+fresh; edit_json '(.artifacts[0].history) |= [.[1], .[0]] + .[2:]'
+refuse 'history that goes down' 1
+fresh; edit_json '(.artifacts[0].history) |= [.[0], (.[0] | .sha256 = ("1" * 64))] + .[1:]'
+refuse 'a version naming two bodies with no recorded defect' 1
+fresh; edit_json 'del(.artifacts[0].history)'
+refuse 'missing history' 1
+fresh; edit_json '.artifacts[0].history[1].sha256 = "not-a-sha"'
+refuse 'a middle history entry with a malformed sha256' 1
+fresh; edit_json '.artifacts[0].history[0].version = "0.1"'
+refuse 'a middle history entry with a malformed version' 1
 fresh; rm "$tmp/r/proven/manifest.json"
 refuse 'manifest missing' 2
-echo "proven-manifest: manifest conforms (installed copy may lag); 12 mutants refused"
+echo "proven-manifest: manifest conforms (installed copy may lag, to a published version); 19 mutants refused"

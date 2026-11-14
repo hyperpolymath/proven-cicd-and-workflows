@@ -8,7 +8,8 @@
 #
 #   1. drift      the consumer's copy must match its stamp (scripts/proven-stamp.sh)
 #   2. toolchain  gcc and gmp.h; gmp.h is installed with apt only if absent
-#   3. build      scripts/build-proven-lock.sh, from the shipped C
+#   3. build      scripts/build-proven-lock.sh, from the shipped C and the
+#                 vendored RefC runtime (no network)
 #   4. self-test  known answers on bundled fixtures, including a planted
 #                 defect, so that a binary that always says CONSISTENT is refused
 #   5. verdict    extract the workspace's facts and judge them (--json)
@@ -17,8 +18,8 @@
 #   consistent        exit 0
 #   defect            exit 1: the lock is inconsistent (findings above)
 #   drift             exit 1: the stamped copy was edited (REFER, never auto-fixed)
-#   not_run:<why>     exit 2: no verdict. <why> is stamp, toolchain, runtime (the
-#                     Idris2 RefC runtime could not be fetched), build,
+#   not_run:<why>     exit 2: no verdict. <why> is stamp, toolchain, build (the
+#                     shipped C and vendored runtime did not compile),
 #                     selftest, extract or verdict. The job fails: NOT RUN is never a pass.
 # A report record (proven-cicd/run-report/v1) is appended to
 # $RUNNER_TEMP/proven-lock-report.jsonl when RUNNER_TEMP is set.
@@ -81,14 +82,7 @@ if ! printf '#include <gmp.h>\n' | gcc -x c -fsyntax-only - 2>/dev/null; then
 fi
 
 # 3. build
-build_args=("$tmp/verdict")
-[[ -n ${PROVEN_IDRIS2_SOURCE_DIR:-} ]] && build_args+=(--runtime "$PROVEN_IDRIS2_SOURCE_DIR")
-rc=0; bash "$suite/scripts/build-proven-lock.sh" "${build_args[@]}" || rc=$?
-case $rc in
-  0) ;;
-  3) finish 2 not_run:runtime not_run ;;
-  *) finish 2 not_run:build not_run ;;
-esac
+bash "$suite/scripts/build-proven-lock.sh" "$tmp/verdict" || finish 2 not_run:build not_run
 verdict=$tmp/verdict
 
 # 4. self-test: the fresh binary must give the known answers before its

@@ -15,3 +15,9 @@ actions/affirmation-check/check.sh
 # module; tests/proven-lock-proofs.sh enforces exactly two believe_me there and
 # no escape hatch in any other kernel module.
 src/Proven/Lock/Axioms.idr
+
+# The Idris2 RefC runtime, vendored byte for byte from idris-lang/Idris2 (see
+# dist/proven-lock/runtime/UPSTREAM). Its upstream TODO comments are not this
+# repository's debt, and editing them would break the byte-identity check in
+# tests/proven-lock-runtime-vendor.sh.
+dist/proven-lock/runtime/

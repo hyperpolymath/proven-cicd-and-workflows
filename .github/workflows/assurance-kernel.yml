@@ -23,6 +23,7 @@ on:
       - "dist/proven-lock/**"
       - "scripts/build-proven-lock.sh"
       - "tests/proven-lock-dist.sh"
+      - "tests/proven-lock-runtime-vendor.sh"
       - "templates/proven-lock-gate.yml"
       - "scripts/proven-lock-gate.sh"
       - "scripts/proven-stamp.sh"
@@ -99,6 +100,8 @@ jobs:
         run: bash tests/proven-lock.sh
       - name: Lock kernel distribution (shipped C is the proven source; its gcc build passes the corpus)
         run: bash tests/proven-lock-dist.sh
+      - name: Vendored RefC runtime is byte-identical to idris-lang/Idris2 at the pinned commit (planted one-byte controls)
+        run: bash tests/proven-lock-runtime-vendor.sh
       - name: Lock gate consumer template (stamp, NOT RUN fails the job, self-test refuses a counterfeit)
         run: bash tests/proven-lock-gate.sh
       - name: Compile and exercise the new finite GitHub bridge

@@ -8,9 +8,11 @@
 #   gate      consistent -> 0; lock defect -> 1; drifted copy -> 1 (drift)
 #   selftest  a suite whose shipped C always says CONSISTENT -> 2 (not_run:selftest)
 #   pin       a malformed pinned SHA -> 2 (not_run:pin), before any fetch
-#   classes   identity, fetch-missing (no retry), fetch (transient), checkout,
-#             suite and runtime each fail the job with their own class
-# PROVEN_IDRIS2_SOURCE_DIR: Idris2 checkout for the RefC runtime (else fetched).
+#   classes   identity (another repository), identity-unreadable (an outage),
+#             fetch-missing (no retry), fetch (transient), checkout and suite
+#             each fail the job with their own class
+#   offline   the build uses the vendored RefC runtime: with git and curl
+#             unusable it still builds and the gate still judges
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 command -v yq >/dev/null && yq --version | grep -q mikefarah || { echo "proven-lock-gate: mikefarah yq missing; NOT RUN" >&2; exit 2; }
@@ -95,20 +97,36 @@ rc=0; out=$(env -i PATH="$PATH" PROVEN_SHA=not-a-sha RUNNER_TEMP="$tmp/rt" bash 
 # github.com URL to it, curl and sleep are stubs, and a git wrapper can fail the
 # checkout. Nothing here touches the network.
 stubs=$tmp/stubs; mkdir -p "$stubs"
-printf '#!/usr/bin/env bash\n[[ -n ${STUB_CURL_FAIL:-} ]] && exit 22\nprintf '"'"'{"id": %%s, "full_name": "hyperpolymath/proven-cicd-and-workflows"}\\n'"'"' "${STUB_ID:-1326697643}"\n' > "$stubs/curl"
+# curl stub: honours -o FILE and -w '%{http_code}' as the template uses them.
+# STUB_CURL_FAIL makes it unreachable; STUB_HTTP sets the status (default 200);
+# STUB_ID the id in the body.
+cat > "$stubs/curl" <<'CURLSH'
+#!/usr/bin/env bash
+[[ -n ${STUB_CURL_FAIL:-} ]] && exit 7
+out=/dev/stdout w=""
+while [[ $# -gt 0 ]]; do case $1 in -o) out=$2; shift ;; -w) w=$2; shift ;; esac; shift; done
+printf '{"id": %s, "full_name": "hyperpolymath/proven-cicd-and-workflows"}\n' "${STUB_ID:-1326697643}" > "$out"
+[[ -n $w ]] && printf '%s' "${STUB_HTTP:-200}"
+exit 0
+CURLSH
 printf '#!/usr/bin/env bash\nexit 0\n' > "$stubs/sleep"
 realgit=$(command -v git)
 printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ $a == checkout && -n ${STUB_CHECKOUT_FAIL:-} ]] && exit 128; done\nexec %q "$@"\n' "$realgit" > "$stubs/git"
 chmod +x "$stubs"/*
-fake_suite() { # DIR [OMIT_FILE] -> commit SHA on stdout
-  local d=$1 omit=${2:-} f
+fake_suite() { # DIR [OMIT_FILE] [MANIFEST_GATE_VERSION] -> commit SHA on stdout
+  local d=$1 omit=${2:-} gv=${3:-$(sed -n '1,2s/^# proven-cicd: proven-lock-gate@\([^ ]*\) .*/\1/p' "$template")} f
   rm -rf -- "$d"; mkdir -p "$d"
   for f in scripts/proven-lock-gate.sh scripts/proven-stamp.sh scripts/build-proven-lock.sh \
-           scripts/extract-lock-facts.sh dist/proven-lock/proven-lock-verdict.c; do
-    [[ $f == "$omit" ]] && continue
+           scripts/extract-lock-facts.sh dist/proven-lock/proven-lock-verdict.c \
+           dist/proven-lock/runtime/refc/x.c dist/proven-lock/runtime/c/x.c tests/fixtures/proven-lock/x; do
+    [[ $f == "$omit" || $(dirname "$f") == "$omit" ]] && continue
     mkdir -p "$d/$(dirname "$f")"; echo '# fake' > "$d/$f"
   done
   printf '#!/usr/bin/env bash\necho "PROVEN_LOCK_CLASS=consistent"\n' > "$d/scripts/proven-lock-gate.sh"
+  if [[ $gv != none ]]; then
+    mkdir -p "$d/proven"
+    printf '{"schema":"proven-cicd/manifest/v1","artifacts":[{"artifact":"proven-lock-gate","version":"%s"}]}\n' "$gv" > "$d/proven/manifest.json"
+  fi
   git -C "$d" init -q && git -C "$d" add -A
   git -C "$d" -c user.name=c -c user.email=c@invalid -c commit.gpgsign=false commit -qm suite
   git -C "$d" rev-parse HEAD
@@ -128,14 +146,29 @@ run_gate_script() { # WANT_RC WANT_CLASS NAME SHA [ENV...]
   if [[ $rc == "$want" ]] && grep -qx "PROVEN_LOCK_CLASS=$class" "$tmp/out"; then ok "$name"
   else bad "$name: wanted $want/$class, got $rc"; sed 's/^/    /' "$tmp/out" | tail -8; fi
 }
+# The consumer workspace holds the stamped copy, whose version the suite must reach.
+mkdir -p "$tmp/ws/.github/workflows"; cp "$template" "$tmp/ws/.github/workflows/proven-lock-gate.yml"
 good=$(fake_suite "$tmp/fake-good"); remote_from "$tmp/fake-good"
 run_gate_script 0 consistent 'a verified suite at the pinned commit runs the gate' "$good"
 run_gate_script 2 not_run:identity 'a suite repository with another id is refused' "$good" STUB_ID=42
-run_gate_script 2 not_run:identity 'an unreadable repository id is refused' "$good" STUB_CURL_FAIL=1
+run_gate_script 2 not_run:identity-unreadable 'an unreadable repository id is a re-run, not a different repository' "$good" STUB_CURL_FAIL=1
+run_gate_script 2 not_run:identity-unreadable 'a reply with no id is unreadable, not a mismatch' "$good" STUB_ID=null
+run_gate_script 2 not_run:identity 'a repository name that no longer exists (404) is identity, not a re-run' "$good" STUB_HTTP=404
+run_gate_script 2 not_run:identity-unreadable 'a rate-limited API (403) is a re-run' "$good" STUB_HTTP=403
 run_gate_script 2 not_run:fetch-missing 'a pinned commit the suite lacks is fetch-missing, not a transient fetch' 1111111111111111111111111111111111111111
 run_gate_script 2 not_run:checkout 'a failed checkout has its own class' "$good" STUB_CHECKOUT_FAIL=1
 partial=$(fake_suite "$tmp/fake-partial" dist/proven-lock/proven-lock-verdict.c); remote_from "$tmp/fake-partial"
 run_gate_script 2 not_run:suite 'a suite lacking a file the gate runs is refused' "$partial"
+nofix=$(fake_suite "$tmp/fake-nofix" tests/fixtures/proven-lock); remote_from "$tmp/fake-nofix"
+run_gate_script 2 not_run:suite 'a suite lacking the self-test fixtures is refused' "$nofix"
+nort=$(fake_suite "$tmp/fake-nort" dist/proven-lock/runtime/refc); remote_from "$tmp/fake-nort"
+run_gate_script 2 not_run:suite 'a suite lacking the vendored runtime is refused' "$nort"
+old=$(fake_suite "$tmp/fake-old" "" 0.2.0); remote_from "$tmp/fake-old"
+run_gate_script 2 not_run:suite-behind 'a suite pinned before this copy'"'"'s version is suite-behind (move the pin)' "$old"
+nomani=$(fake_suite "$tmp/fake-nomani" "" none); remote_from "$tmp/fake-nomani"
+run_gate_script 2 not_run:suite-behind 'a suite with no manifest (older than the manifest itself) is suite-behind' "$nomani"
+newer=$(fake_suite "$tmp/fake-newer" "" 9.0.0); remote_from "$tmp/fake-newer"
+run_gate_script 0 consistent 'a suite newer than this copy runs the gate' "$newer"
 rm -rf -- "$tmp/remote"
 run_gate_script 2 not_run:fetch 'an unreachable suite after retries is a transient fetch failure' "$good"
 
@@ -167,15 +200,17 @@ workspace ok-tag-keyed
 gate 2 not_run:selftest 'a counterfeit always-CONSISTENT binary is refused by the self-test' "$tmp/suite"
 
 
-# --- runtime: an unreachable Idris2 runtime host is not_run:runtime, never a
-# build failure (advisor review). The fetch is redirected to a path that does
-# not exist; sleep is stubbed so the retries are instant.
-printf '[url "file://%s/no-such-host/"]\n\tinsteadOf = https://github.com/idris-lang/\n' "$tmp" > "$tmp/gitconfig-rt"
+# --- offline: the build takes the vendored RefC runtime. With git and curl
+# made unusable the gate still builds and judges, so no third-party host can
+# stop it (owner ruling 2026-11-14: vendor the runtime).
+offline=$tmp/offline; mkdir -p "$offline"
+printf '#!/usr/bin/env bash\necho "offline control: $(basename "$0") must not be called" >&2\nexit 99\n' > "$offline/git"
+cp "$offline/git" "$offline/curl"; chmod +x "$offline"/*
 workspace ok-tag-keyed
 rc=0
-env -u PROVEN_IDRIS2_SOURCE_DIR PATH="$stubs:$PATH" GIT_CONFIG_GLOBAL="$tmp/gitconfig-rt" GIT_CONFIG_NOSYSTEM=1 \
-  bash "$root/scripts/proven-lock-gate.sh" "$tmp/ws" .github/workflows/proven-lock-gate.yml >"$tmp/out" 2>&1 || rc=$?
-if [[ $rc == 2 ]] && tail -n 1 "$tmp/out" | grep -qx PROVEN_LOCK_CLASS=not_run:runtime; then ok 'an unreachable runtime host is not_run:runtime, not a build failure'
-else bad "runtime: wanted 2/not_run:runtime, got $rc/$(tail -n 1 "$tmp/out")"; sed 's/^/    /' "$tmp/out" | tail -8; fi
+PATH="$offline:$PATH" bash "$root/scripts/proven-lock-gate.sh" "$tmp/ws" .github/workflows/proven-lock-gate.yml >"$tmp/out" 2>&1 || rc=$?
+if [[ $rc == 0 ]] && tail -n 1 "$tmp/out" | grep -qx PROVEN_LOCK_CLASS=consistent && ! grep -q 'must not be called' "$tmp/out"; then
+  ok 'the gate builds and judges with git and curl unusable (vendored runtime)'
+else bad "offline: wanted 0/consistent, got $rc/$(tail -n 1 "$tmp/out")"; sed 's/^/    /' "$tmp/out" | tail -8; fi
 
 exit "$fail"

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-# proven-cicd: proven-lock-gate@0.2.1 sha256:a4bab5af357d4538c95b3509ad5909e5ba631dc08975b185e578f62edc69c2fc
+# proven-cicd: proven-lock-gate@0.3.0 sha256:d94add93bfa6cf1cf54fbe1416ca100c66fbb4785fe728375e4ec58d3f145b5d
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-lock-gate.yml.
 # Do not edit by hand. A changed body fails this gate as drift. The applier
 # moves the pinned suite SHA. The line after each `proven-cicd:local-next`
@@ -12,14 +12,22 @@
 # a verdict. Every way the gate can fail before its verdict has its own class:
 #   not_run:pin            PROVEN_SHA is not a 40-hex commit
 #   not_run:identity       the suite repository is not the one this gate pins
-#                          (repository id 1326697643), or its id could not be read
+#                          (repository id 1326697643, after following a rename),
+#                          or the name no longer exists: refer, never re-run
+#   not_run:identity-unreadable  the repository id could not be read (API outage
+#                          or rate limit): a re-run
 #   not_run:fetch-missing  the pinned commit does not exist in the suite (persistent)
 #   not_run:fetch          the suite could not be fetched after retries (transient)
 #   not_run:checkout       the fetched commit could not be checked out
+#   not_run:suite-behind   the pinned suite is older than this copy: its manifest
+#                          lists an earlier proven-lock-gate (or none). Fix: move
+#                          PROVEN_SHA to a commit whose proven/manifest.json lists
+#                          at least this copy's version
 #   not_run:suite          the checkout is not the pinned commit, is modified, or
-#                          lacks a file the gate runs
-# and the suite's own script adds drift, toolchain, runtime, build, selftest,
-# extract and verdict.
+#                          lacks a file or directory the gate runs
+# and the suite's own script adds drift, toolchain, build, selftest, extract and
+# verdict. The Idris2 RefC runtime is vendored in the suite (dist/), so the build
+# needs no network and has no class of its own for a third-party host.
 name: Proven lock gate
 on:
   pull_request:
@@ -49,14 +57,27 @@ jobs:
           repo=hyperpolymath/proven-cicd-and-workflows
           # The suite is pinned by commit; the id pins the repository itself, so a
           # transferred or recreated repository under the same name is refused.
-          id=$(curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
-                 "https://api.github.com/repos/$repo" | jq -r '.id // empty') || fail identity "could not read the id of $repo"
+          # Two classes: an id that cannot be read is an availability failure (a
+          # re-run); an id that differs is a different repository (refer).
+          # A rename answers 301: follow it (-L) and judge the id it leads to. A
+          # name that no longer exists (404, 410) is permanent, so it is identity;
+          # any other non-200 (403, 429, 5xx) is availability, a re-run.
+          code=$(curl -sS -L --retry 3 -o "$RUNNER_TEMP/proven-repo.json" -w '%{http_code}' \
+                   -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$repo") ||
+            fail identity-unreadable "could not reach the API for $repo"
+          case $code in
+            200) ;;
+            404|410) fail identity "$repo does not exist (HTTP $code)" ;;
+            *) fail identity-unreadable "the API answered HTTP $code for $repo" ;;
+          esac
+          id=$(jq -r '.id // empty' "$RUNNER_TEMP/proven-repo.json" 2>/dev/null) || fail identity-unreadable "the reply for $repo is not JSON"
+          [[ $id =~ ^[0-9]+$ ]] || fail identity-unreadable "the reply for $repo has no id"
           [[ $id == 1326697643 ]] || fail identity "$repo has id '$id', not 1326697643"
           suite="$RUNNER_TEMP/proven-suite"
           git init -q "$suite"
           git -C "$suite" remote add origin "https://github.com/$repo.git"
           git -C "$suite" config core.sparseCheckout true
-          printf '%s\n' dist/ scripts/ tests/fixtures/proven-lock/ > "$suite/.git/info/sparse-checkout"
+          printf '%s\n' dist/ scripts/ tests/fixtures/proven-lock/ /proven/manifest.json > "$suite/.git/info/sparse-checkout"
           fetched=0
           for delay in 0 10 30; do
             sleep "$delay"
@@ -70,8 +91,19 @@ jobs:
           git -C "$suite" checkout -q --detach FETCH_HEAD || fail checkout
           [[ $(git -C "$suite" rev-parse HEAD) == "$PROVEN_SHA" ]] || fail suite "checked out $(git -C "$suite" rev-parse HEAD), not $PROVEN_SHA"
           [[ -z $(git -C "$suite" status --porcelain) ]] || fail suite "the suite checkout is modified"
+          # This copy needs a suite at least as new as itself (0.3.0 needs the
+          # vendored runtime): a pin older than the copy is its own class, so the
+          # fix is plain (move the pin), not a generic refusal.
+          mine=$(sed -n '1,2s/^# proven-cicd: proven-lock-gate@\([0-9]*\.[0-9]*\.[0-9]*\) .*/\1/p' "$GITHUB_WORKSPACE/.github/workflows/proven-lock-gate.yml")
+          [[ -n $mine ]] || fail suite "this copy has no proven-lock-gate stamp"
+          theirs=$(jq -r '[.artifacts[] | select(.artifact == "proven-lock-gate") | .version][0] // empty' "$suite/proven/manifest.json" 2>/dev/null || true)
+          [[ -n $theirs && $(printf '%s\n' "$theirs" "$mine" | sort -V | head -n 1) == "$mine" ]] ||
+            fail suite-behind "the suite at $PROVEN_SHA lists proven-lock-gate ${theirs:-nothing}, older than this copy's $mine; move PROVEN_SHA"
           for f in scripts/proven-lock-gate.sh scripts/proven-stamp.sh scripts/build-proven-lock.sh \
                    scripts/extract-lock-facts.sh dist/proven-lock/proven-lock-verdict.c; do
             [[ -f $suite/$f ]] || fail suite "the suite at $PROVEN_SHA lacks $f"
+          done
+          for d in dist/proven-lock/runtime/refc dist/proven-lock/runtime/c tests/fixtures/proven-lock; do
+            [[ -d $suite/$d ]] || fail suite "the suite at $PROVEN_SHA lacks $d/"
           done
           bash "$suite/scripts/proven-lock-gate.sh" "$GITHUB_WORKSPACE" .github/workflows/proven-lock-gate.yml
