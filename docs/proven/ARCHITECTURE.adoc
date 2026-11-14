@@ -267,8 +267,9 @@ assertion yet; it is still to gain one.
 
 Each policy below becomes registry rules with fixtures, one PR per topic:
 
-* *Retry and rerun.* HTTP 403 rate limits, 502 errors, merge races and
-  cancelled runs get at most one rerun per job, which matches ADR 0004 guard 2.
+* *Retry and rerun.* HTTP 403 rate limits, 502 errors and cancelled runs get at
+  most one rerun per job, which matches ADR 0004 guard 2. Merge races get none:
+  a merge race is never a re-run (`SQ-NOI-02`), as the owner ruled on 2026-11-14.
   The table is `proven/policy/retry.tsv`: one row per mapped A5 rule in a rerun
   class (`SQ-RUN-*`, one rerun) or a noise class (`SQ-NOI-*`, none), with the
   rerun cap, its scope (always `job`) and whether a referral follows.
