@@ -43,7 +43,10 @@ directing referrals, which R1 gives to Hypatia.
 
 This repository holds the one map between the two id spaces (agreed with the
 squabbler owner, 2026-11-13): one row per A5 id, naming exactly one squabbler id
-or `hypatia-only`. The squabbler's own table carries no A5 column, because the
+or `hypatia-only`, or listed `unmapped` (with `unassigned`) while ADR 0004 has
+not mapped it; which SQ id an unmapped triage id gets is the squabbler owner's
+decision. Every `hypatia/ci_failure_triage` id in Hypatia's registry, and the
+ADR's two `workflow_audit` ids, must have a row. The squabbler's own table carries no A5 column, because the
 squabbler is not Hypatia-dependent and the mapping is many to one (three A5 lock
 rules map to SQ-LOCK-02). A squabbler id may have zero or more A5 ids, and is
 either mapped or listed `squabbler-only`. The conformance test that both run
@@ -66,7 +69,7 @@ proven-lock.ipkg                            builds proven-lock-verdict
 scripts/extract-lock-facts.sh               bash+jq fact extractor (graph, lock)
 tests/proven-lock-proofs.sh                 compiler controls and the trusted-base guard
 tests/fixtures/proven-lock/<case>/          repo/ (workflows under dot-github/), expected
-proven/registry/sq-map.tsv                  A5 id -> SQ id or hypatia-only
+proven/registry/sq-map.tsv                  A5 id -> SQ id, hypatia-only, or unmapped
 proven/conformance/                         registry <-> dispatch conformance test
 proven/feedback/                            run reports, ingested by PR
 ....
@@ -178,9 +181,18 @@ and nothing changes between relock and check. The four properties to prove:
   reported in `needs_records`, because relock never invents a record. A
   job-level call with no record is left out (an entry may omit it), so relock
   never turns a `consistent` lock into one with a `DanglingRecord`.
-  `tests/proven-lock.sh` checks on every fixture that a `consistent` lock
-  stays `consistent` under relock, and that otherwise the only new reasons
-  are `DanglingRecord` or `UnusedRecord` on keys relock added or removed.
+  `--relock` also ends with one `unused_records` line: the records nothing
+  names once the entries are replaced. A relock with `needs_records` or
+  `unused_records` non-empty is *not yet a consistent lock*: the SQ-LOCK-02
+  fix (regenerate the lock) must add the needed records and drop the unused
+  ones before it claims a fix. Tested, not proven: `tests/proven-lock.sh`
+  checks on every fixture that a `consistent` lock stays `consistent` under
+  relock; that otherwise every new reason is a `DanglingRecord` on a key
+  `needs_records` names, or an `UnusedRecord`; that the judge's
+  `UnusedRecord` keys equal `unused_records` exactly; and both lists against
+  an independent computation. A fixture relock or the extractor refuses is a
+  pinned skip, never a pass, and four planted defects in the relock output
+  must each be refused, so the check cannot go soft unseen.
 . *Relock reads the graph alone.* Relock is a function of the workflow graph
   and the record keys; the entries it replaces never reach it
   (`relockIgnoresEntries`, by `Refl`). File-level idempotence of a written
@@ -256,6 +268,10 @@ Each policy below becomes registry rules with fixtures, one PR per topic:
   `cancel-in-progress`.
 * *Toolchain pins in one file:* OTP 27.3.4.19 (R2), Bun 1.4.2, Nickel 1.18.0
   and yq v4.53.3.
+  The file is `proven/pins/toolchain.tsv`. `tests/toolchain-pins.sh` checks its
+  shape and that every stamped template that sets a pinned tool's env var uses
+  the pinned version; `tests/toolchain-pins-controls.sh` has five mutants. It
+  does not yet check consumer repositories: that is the applier's job.
 * *Dependabot versus the lock.* A bump must regenerate the lock in the same PR,
   or it is referred.
 * *Hooks.*

@@ -79,18 +79,28 @@ done
 
 # --relock is edge-exact and never makes a lock worse (advisor review): with
 # every managed entry replaced by its relocked entry,
-#   * no edge reason remains (MissingTransitiveEdge, BlindEmptyEntry, StaleRef);
-#   * a CONSISTENT lock stays CONSISTENT;
-#   * any reason that is new is a DanglingRecord or UnusedRecord on a key that
-#     relock added to or removed from an entry;
-#   * `needs_records` names exactly the relocked keys that no record keys.
-# Relock reads only the graph and the record keys (relockIgnoresEntries), so a
-# second relock is not compared here: that comparison could not fail.
+#   (a) a CONSISTENT lock stays CONSISTENT, and no edge reason remains
+#       (MissingTransitiveEdge, BlindEmptyEntry, StaleRef);
+#   (b) every reason that is new is a DanglingRecord on a key `needs_records`
+#       names, or an UnusedRecord; and the judge's UnusedRecord keys on the
+#       relocked lock are exactly the run's `unused_records`;
+#   * `needs_records` names exactly the relocked keys that no record keys, and
+#     `unused_records` exactly the records nothing names any more, each checked
+#     against an independent jq computation.
+# Tested, not proven. Relock reads only the graph and the record keys
+# (relockIgnoresEntries), so a second relock is not compared here: that
+# comparison could not fail.
+#
+# relock_ok exits 0 conforms, 1 broken (reason on stdout), 3 skipped (reason on
+# stdout): a fixture the extractor or relock refuses has nothing to check, and
+# is counted as a skip, never as a pass. RELOCK_MUTATE, a jq filter over the
+# --relock output (one array), plants a defect for the negative controls below.
 relock_ok() { # CASE_ROOT
-  local r1 out0 out1 v0 v1 diffkeys newr needs want
-  "$repo/scripts/extract-lock-facts.sh" "$1" > "$tmp/facts.json" 2>/dev/null || return 0
-  r1=$("$verdict" --relock "$tmp/facts.json" 2>/dev/null) || return 0   # refusals are NOT RUN cases
-  jq --argjson r "$(jq -s . <<<"$r1")" '.entries |= map(.path as $p | ($r[] | select(.workflow == $p and .managed) | .keys) as $k | .keys = $k)' \
+  local r1 out0 out1 v0 v1 newr needs want unused wunused judged
+  "$repo/scripts/extract-lock-facts.sh" "$1" > "$tmp/facts.json" 2>/dev/null || { echo "the extractor refuses the fixture"; return 3; }
+  r1=$("$verdict" --relock "$tmp/facts.json" 2>/dev/null) || { echo "relock refuses the fixture"; return 3; }
+  r1=$(jq -s -c "${RELOCK_MUTATE:-.}" <<<"$r1") || { echo "mutation filter failed"; return 1; }
+  jq --argjson r "$r1" '.entries |= map(.path as $p | ($r[] | select(.workflow == $p and .managed) | .keys) as $k | .keys = $k)' \
     "$tmp/facts.json" > "$tmp/relocked.json"
   # Capture first: under pipefail the verdict's exit 1 would mask grep's match.
   out0=$("$verdict" "$tmp/facts.json" 2>/dev/null) || true
@@ -100,28 +110,62 @@ relock_ok() { # CASE_ROOT
     echo "an edge reason survives relock"; return 1
   fi
   [[ $v0 != CONSISTENT || $v1 == CONSISTENT ]] || { echo "relock turned a CONSISTENT lock $v1: $(grep '^REASON' <<<"$out1" | tr '\t\n' ' ;')"; return 1; }
-  diffkeys=$(jq -rn --slurpfile a "$tmp/facts.json" --slurpfile b "$tmp/relocked.json" \
-    '[$a[0].entries[].keys[]] as $x | [$b[0].entries[].keys[]] as $y | (($x - $y) + ($y - $x)) | unique[]')
+  needs=$(jq -r '.[] | select(.managed) | .needs_records[]' <<<"$r1" | LC_ALL=C sort -u)
+  want=$(jq -rn --slurpfile f "$tmp/facts.json" --argjson r "$r1" \
+    '[$f[0].records[].key] as $k | [$r[] | select(.managed) | .keys[] | select(. as $x | $k | index($x) | not)] | unique[]')
+  [[ $needs == "$want" ]] || { echo "needs_records [$needs] is not the unkeyed relocked keys [$want]"; return 1; }
+  [[ $(jq '[.[] | select(has("unused_records"))] | length' <<<"$r1") == 1 ]] || { echo "not exactly one unused_records line"; return 1; }
+  unused=$(jq -r '.[] | select(has("unused_records")) | .unused_records[]' <<<"$r1" | LC_ALL=C sort -u)
+  wunused=$(jq -r '([.entries[].keys[]] + [.records[] | .uses | if type == "array" then .[] else empty end]) as $n
+    | [.records[].key | select(. as $x | $n | index($x) | not)] | unique[]' "$tmp/relocked.json")
+  [[ $unused == "$wunused" ]] || { echo "unused_records [$unused] is not the records nothing names [$wunused]"; return 1; }
+  judged=$(grep -E '^REASON	UnusedRecord	' <<<"$out1" | cut -f3 | LC_ALL=C sort -u)
+  [[ $judged == "$unused" ]] || { echo "the judge's UnusedRecord keys [$judged] are not unused_records [$unused]"; return 1; }
   newr=$(comm -13 <(grep '^REASON' <<<"$out0" | LC_ALL=C sort) <(grep '^REASON' <<<"$out1" | LC_ALL=C sort))
   while IFS=$'\t' read -r _ reason key _; do
     [[ -n $reason ]] || continue
     case $reason in
-      DanglingRecord|UnusedRecord) grep -qxF -- "$key" <<<"$diffkeys" || { echo "new $reason on $key, which relock did not change"; return 1; } ;;
+      DanglingRecord) grep -qxF -- "$key" <<<"$needs" || { echo "new DanglingRecord on $key, which needs_records does not name"; return 1; } ;;
+      UnusedRecord) ;;   # checked above against unused_records, exactly
       *) echo "relock introduced $reason $key"; return 1 ;;
     esac
   done <<<"$newr"
-  needs=$(jq -r 'select(.managed) | .needs_records[]' <<<"$r1" | LC_ALL=C sort -u)
-  want=$(jq -rn --slurpfile f "$tmp/facts.json" --argjson r "$(jq -s . <<<"$r1")" \
-    '[$f[0].records[].key] as $k | [$r[] | select(.managed) | .keys[] | select(. as $x | $k | index($x) | not)] | unique[]')
-  [[ $needs == "$want" ]] || { echo "needs_records [$needs] is not the unkeyed relocked keys [$want]"; return 1; }
 }
+# The fixtures relock cannot check, pinned: a new silent skip fails the suite.
+expected_skips="missing-composite unparsable-workflow"
+skips="" relock_ok_count=0
 for dir in "$fixtures"/*/; do
   name=$(basename "$dir")
   [[ -d $dir/repo && -f $dir/expected ]] || continue
   rm -rf -- "$tmp/case"; cp -R "$dir/repo" "$tmp/case"
   [[ -d $tmp/case/dot-github ]] && mv "$tmp/case/dot-github" "$tmp/case/.github"
-  if why=$(relock_ok "$tmp/case"); then echo "ok relock $name"; else echo "FAIL relock $name: $why"; fail=1; fi
+  rc=0; why=$(relock_ok "$tmp/case") || rc=$?
+  case $rc in
+    0) echo "ok relock $name"; relock_ok_count=$((relock_ok_count + 1)) ;;
+    3) echo "skip relock $name: $why"; skips="$skips $name" ;;
+    *) echo "FAIL relock $name: $why"; fail=1 ;;
+  esac
 done
+[[ ${skips# } == "$expected_skips" ]] && echo "ok relock: $relock_ok_count fixtures checked; skipped exactly [$expected_skips]" ||
+  { echo "FAIL relock: skipped [${skips# }], expected [$expected_skips]"; fail=1; }
+
+# Negative controls for relock_ok itself, so the check above cannot go soft
+# unseen: each planted defect in the relock output must be refused.
+relock_mutant() { # FIXTURE NAME FILTER
+  local rc=0
+  rm -rf -- "$tmp/case"; cp -R "$fixtures/$1/repo" "$tmp/case"
+  [[ -d $tmp/case/dot-github ]] && mv "$tmp/case/dot-github" "$tmp/case/.github"
+  RELOCK_MUTATE=$3 relock_ok "$tmp/case" >/dev/null || rc=$?
+  if [[ $rc == 1 ]]; then echo "ok relock control: $2 is refused"
+  else echo "FAIL relock control: $2 was accepted (exit $rc)"; fail=1; fi
+}
+relock_mutant job-call-absent-ok 'an unrecorded job-call key appended to a relocked entry' \
+  'map(if .managed and has("keys") then .keys += ["planted/unrecorded@v1"] else . end)'
+relock_mutant composite-transitive-missing 'a needs_records element dropped' \
+  'map(if has("needs_records") and (.needs_records | length) > 0 then .needs_records |= .[1:] else . end)'
+relock_mutant dependabot-bump-stale-lock 'an unused_records element dropped' \
+  'map(if has("unused_records") then .unused_records |= .[1:] else . end)'
+relock_mutant ok-tag-keyed 'an unused_records line removed' 'map(select(has("unused_records") | not))'
 
 # --json (the squabbler executor contract) must agree with the text verdict on
 # every fixture: same exit code, every line valid JSON, one finding object per

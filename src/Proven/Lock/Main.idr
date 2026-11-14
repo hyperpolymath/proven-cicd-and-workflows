@@ -16,6 +16,7 @@ module Proven.Lock.Main
 
 import Assurance.GitHub
 import Data.List
+import Data.Maybe
 import Language.JSON
 import Proven.Lock.Judge
 import Proven.Lock.Model
@@ -174,12 +175,35 @@ report Json f (Inconsistent whys unjudged) = do
   exitWith (ExitFailure 1)
 report mode f (NotRun whys) = notRun mode whys
 
+||| The keys of a workflow's certified entry, or Nothing when relock refuses it.
+relockedKeys : Facts -> Workflow -> Maybe (List String)
+relockedKeys f w = case relockEntry (composites f) (recordKeys f) w of
+  Left _ => Nothing
+  Right (e ** _) => Just e
+
+||| The records no entry and no nested `uses:` names once every managed entry is
+||| replaced by its relocked entry: exactly the keys the judge would report as
+||| UnusedRecord on the relocked lock (the same definition as closureReasons).
+||| Unproven glue, like the rest of this module; tests/proven-lock.sh checks it
+||| against an independent computation and against the judge.
+unusedAfterRelock : Facts -> List String
+unusedAfterRelock f =
+  let relocked = mapMaybe (\w => map (\e => (path w, e)) (relockedKeys f w))
+                          (filter (isManaged f) (workflows f))
+      newKeys = \ent => fromMaybe (keys ent) (lookup (path ent) relocked)
+      named = dedup (concatMap newKeys (entries f) ++ concatMap nested (records f))
+   in filter (\k => not (elem k named)) (recordKeys f)
+
 ||| One certified entry per workflow: {workflow, managed, keys, needs_records}
 ||| or {workflow, managed, refused}. `keys` is edge-exact; `needs_records` lists
 ||| the keys in it that no lock record keys yet (relock never invents a record),
 ||| so a writer knows which records to resolve before the lock can judge
-||| CONSISTENT. Exit 0 when every entry is certified, 2 if any
-||| is refused: a partial relock is never written as if it were whole.
+||| CONSISTENT. When every entry is certified, one last line
+||| {unused_records} names the records nothing will name once the entries are
+||| replaced, so the writer knows which to drop. A relock with either list
+||| non-empty is not yet a consistent lock. Exit 0 when every entry is
+||| certified, 2 if any is refused: a partial relock is never written as if it
+||| were whole, and then no unused_records line is printed.
 covering
 relock : String -> IO ()
 relock file = do
@@ -190,7 +214,9 @@ relock file = do
       Nothing => notRun Json ["facts are not valid proven-cicd/lock-facts/v1"]
       Just f => do
         refused <- traverse (one f) (workflows f)
-        if any id refused then exitWith (ExitFailure 2) else pure ()
+        if any id refused
+          then exitWith (ExitFailure 2)
+          else putStrLn ("{\"unused_records\":" ++ jsonList (unusedAfterRelock f) ++ "}")
   where
     managedJson : Facts -> Workflow -> String
     managedJson f w = if isManaged f w then "true" else "false"
