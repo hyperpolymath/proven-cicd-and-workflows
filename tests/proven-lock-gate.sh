@@ -65,8 +65,8 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$stubs/sleep"
 realgit=$(command -v git)
 printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ $a == checkout && -n ${STUB_CHECKOUT_FAIL:-} ]] && exit 128; done\nexec %q "$@"\n' "$realgit" > "$stubs/git"
 chmod +x "$stubs"/*
-fake_suite() { # DIR [OMIT_FILE] -> commit SHA on stdout
-  local d=$1 omit=${2:-} f
+fake_suite() { # DIR [OMIT_FILE] [MANIFEST_GATE_VERSION] -> commit SHA on stdout
+  local d=$1 omit=${2:-} gv=${3:-$(sed -n '1s/^# proven-cicd: proven-lock-gate@\([^ ]*\) .*/\1/p' "$template")} f
   rm -rf -- "$d"; mkdir -p "$d"
   for f in scripts/proven-lock-gate.sh scripts/proven-stamp.sh scripts/build-proven-lock.sh \
            scripts/extract-lock-facts.sh dist/proven-lock/proven-lock-verdict.c \
@@ -75,6 +75,10 @@ fake_suite() { # DIR [OMIT_FILE] -> commit SHA on stdout
     mkdir -p "$d/$(dirname "$f")"; echo '# fake' > "$d/$f"
   done
   printf '#!/usr/bin/env bash\necho "PROVEN_LOCK_CLASS=consistent"\n' > "$d/scripts/proven-lock-gate.sh"
+  if [[ $gv != none ]]; then
+    mkdir -p "$d/proven"
+    printf '{"schema":"proven-cicd/manifest/v1","artifacts":[{"artifact":"proven-lock-gate","version":"%s"}]}\n' "$gv" > "$d/proven/manifest.json"
+  fi
   git -C "$d" init -q && git -C "$d" add -A
   git -C "$d" -c user.name=c -c user.email=c@invalid -c commit.gpgsign=false commit -qm suite
   git -C "$d" rev-parse HEAD
@@ -94,6 +98,8 @@ run_gate_script() { # WANT_RC WANT_CLASS NAME SHA [ENV...]
   if [[ $rc == "$want" ]] && grep -qx "PROVEN_LOCK_CLASS=$class" "$tmp/out"; then ok "$name"
   else bad "$name: wanted $want/$class, got $rc"; sed 's/^/    /' "$tmp/out" | tail -8; fi
 }
+# The consumer workspace holds the stamped copy, whose version the suite must reach.
+mkdir -p "$tmp/ws/.github/workflows"; cp "$template" "$tmp/ws/.github/workflows/proven-lock-gate.yml"
 good=$(fake_suite "$tmp/fake-good"); remote_from "$tmp/fake-good"
 run_gate_script 0 consistent 'a verified suite at the pinned commit runs the gate' "$good"
 run_gate_script 2 not_run:identity 'a suite repository with another id is refused' "$good" STUB_ID=42
@@ -107,6 +113,12 @@ nofix=$(fake_suite "$tmp/fake-nofix" tests/fixtures/proven-lock); remote_from "$
 run_gate_script 2 not_run:suite 'a suite lacking the self-test fixtures is refused' "$nofix"
 nort=$(fake_suite "$tmp/fake-nort" dist/proven-lock/runtime/refc); remote_from "$tmp/fake-nort"
 run_gate_script 2 not_run:suite 'a suite lacking the vendored runtime is refused' "$nort"
+old=$(fake_suite "$tmp/fake-old" "" 0.2.0); remote_from "$tmp/fake-old"
+run_gate_script 2 not_run:suite-behind 'a suite pinned before this copy'"'"'s version is suite-behind (move the pin)' "$old"
+nomani=$(fake_suite "$tmp/fake-nomani" "" none); remote_from "$tmp/fake-nomani"
+run_gate_script 2 not_run:suite-behind 'a suite with no manifest (older than the manifest itself) is suite-behind' "$nomani"
+newer=$(fake_suite "$tmp/fake-newer" "" 9.0.0); remote_from "$tmp/fake-newer"
+run_gate_script 0 consistent 'a suite newer than this copy runs the gate' "$newer"
 rm -rf -- "$tmp/remote"
 run_gate_script 2 not_run:fetch 'an unreachable suite after retries is a transient fetch failure' "$good"
 

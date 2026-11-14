@@ -1,4 +1,4 @@
-# proven-cicd: proven-lock-gate@0.3.0 sha256:e4da5f6ddf2856adaea83703dd217f8b7e122ff919173e616a7c0eb2196ba032
+# proven-cicd: proven-lock-gate@0.3.0 sha256:6998a36457f65dc14e98501ba97f262e09fff8702e7f7b716b622bb4ac0bf979
 # SPDX-License-Identifier: MPL-2.0
 # Stamped copy of hyperpolymath/proven-cicd-and-workflows templates/proven-lock-gate.yml.
 # Do not edit by hand. A changed body fails this gate as drift. The applier
@@ -18,6 +18,10 @@
 #   not_run:fetch-missing  the pinned commit does not exist in the suite (persistent)
 #   not_run:fetch          the suite could not be fetched after retries (transient)
 #   not_run:checkout       the fetched commit could not be checked out
+#   not_run:suite-behind   the pinned suite is older than this copy: its manifest
+#                          lists an earlier proven-lock-gate (or none). Fix: move
+#                          PROVEN_SHA to a commit whose proven/manifest.json lists
+#                          at least this copy's version
 #   not_run:suite          the checkout is not the pinned commit, is modified, or
 #                          lacks a file or directory the gate runs
 # and the suite's own script adds drift, toolchain, build, selftest, extract and
@@ -63,7 +67,7 @@ jobs:
           git init -q "$suite"
           git -C "$suite" remote add origin "https://github.com/$repo.git"
           git -C "$suite" config core.sparseCheckout true
-          printf '%s\n' dist/ scripts/ tests/fixtures/proven-lock/ > "$suite/.git/info/sparse-checkout"
+          printf '%s\n' dist/ scripts/ tests/fixtures/proven-lock/ /proven/manifest.json > "$suite/.git/info/sparse-checkout"
           fetched=0
           for delay in 0 10 30; do
             sleep "$delay"
@@ -77,6 +81,14 @@ jobs:
           git -C "$suite" checkout -q --detach FETCH_HEAD || fail checkout
           [[ $(git -C "$suite" rev-parse HEAD) == "$PROVEN_SHA" ]] || fail suite "checked out $(git -C "$suite" rev-parse HEAD), not $PROVEN_SHA"
           [[ -z $(git -C "$suite" status --porcelain) ]] || fail suite "the suite checkout is modified"
+          # This copy needs a suite at least as new as itself (0.3.0 needs the
+          # vendored runtime): a pin older than the copy is its own class, so the
+          # fix is plain (move the pin), not a generic refusal.
+          mine=$(sed -n '1s/^# proven-cicd: proven-lock-gate@\([0-9]*\.[0-9]*\.[0-9]*\) .*/\1/p' "$GITHUB_WORKSPACE/.github/workflows/proven-lock-gate.yml")
+          [[ -n $mine ]] || fail suite "this copy has no proven-lock-gate stamp"
+          theirs=$(jq -r '[.artifacts[] | select(.artifact == "proven-lock-gate") | .version][0] // empty' "$suite/proven/manifest.json" 2>/dev/null || true)
+          [[ -n $theirs && $(printf '%s\n' "$theirs" "$mine" | sort -V | head -n 1) == "$mine" ]] ||
+            fail suite-behind "the suite at $PROVEN_SHA lists proven-lock-gate ${theirs:-nothing}, older than this copy's $mine; move PROVEN_SHA"
           for f in scripts/proven-lock-gate.sh scripts/proven-stamp.sh scripts/build-proven-lock.sh \
                    scripts/extract-lock-facts.sh dist/proven-lock/proven-lock-verdict.c; do
             [[ -f $suite/$f ]] || fail suite "the suite at $PROVEN_SHA lacks $f"
