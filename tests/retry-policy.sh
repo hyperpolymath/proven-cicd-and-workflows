@@ -27,12 +27,16 @@ while IFS=$'\t' read -r a5 sq max scope referral source || [[ -n $a5 ]]; do
     pair=$(awk -F'\t' -v a="$a5" '$1 == a { print $2 "\t" $3 }' "$map")
     [[ -n $pair ]] || { bad "$a5: not in sq-map.tsv"; continue; }
     [[ $pair == "$sq"$'\t'mapped ]] || bad "$a5: policy says $sq, map says ${pair//$'\t'/ }"
-    # Family rule: SQ-RUN-* is a rerun class (one), SQ-NOI-* is noise (never a rerun).
+    # SQ-RUN-* is a rerun class: one rerun. An SQ-NOI-* (noise) rule is not always zero, so the
+    # map's note decides: "never a re-run" means 0, "one re-run" means 1, and a noise rule must say.
+    note=$(awk -F'\t' -v a="$a5" '$1 == a { print $5 }' "$map")
     case $sq in
         SQ-RUN-*) [[ $max == 1 ]] || bad "$a5: $sq is a rerun class, max_reruns must be 1" ;;
-        SQ-NOI-*) [[ $max == 0 ]] || bad "$a5: $sq is noise, max_reruns must be 0" ;;
+        SQ-NOI-*) [[ $note == *"never a re-run"* || $note == *"one re-run"* ]] || bad "$a5: $sq is noise, so its sq-map note must say 'never a re-run' or 'one re-run'" ;;
         *) bad "$a5: $sq is neither SQ-RUN-* nor SQ-NOI-*" ;;
     esac
+    [[ $note != *"never a re-run"* || $max == 0 ]] || bad "$a5: the sq-map note says never a re-run, max_reruns must be 0"
+    [[ $note != *"one re-run"* || $max == 1 ]] || bad "$a5: the sq-map note says one re-run, max_reruns must be 1"
     [[ $referral == no || $max == 1 ]] || bad "$a5: a referral after a rerun needs max_reruns 1"
 done < <(tail -n +2 "$policy")
 

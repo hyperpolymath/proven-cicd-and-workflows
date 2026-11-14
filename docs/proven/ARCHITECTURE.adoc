@@ -271,8 +271,10 @@ Each policy below becomes registry rules with fixtures, one PR per topic:
   most one rerun per job, which matches ADR 0004 guard 2. Merge races get none:
   a merge race is never a re-run (`SQ-NOI-02`), as the owner ruled on 2026-11-14.
   The table is `proven/policy/retry.tsv`: one row per mapped A5 rule in a rerun
-  class (`SQ-RUN-*`, one rerun) or a noise class (`SQ-NOI-*`, none), with the
-  rerun cap, its scope (always `job`) and whether a referral follows.
+  class (`SQ-RUN-*`, one rerun) or a noise class (`SQ-NOI-*`), with the rerun
+  cap (0 or 1), its scope (always `job`) and whether a referral follows. For a
+  noise rule the `sq-map.tsv` note says which cap applies: a merge race is
+  "never a re-run" (0); a cancelled run is "at most one re-run" (1).
   `tests/retry-policy.sh` takes the id pairing from `sq-map.tsv`, and fails if a
   mapped rerun or noise row has no policy row. Dispatch and meaning stay with
   the squabbler and Hypatia (R1); this table records the cap, it does not
