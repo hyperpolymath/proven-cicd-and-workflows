@@ -36,8 +36,45 @@ sed -e 's/PROVEN_SHA: "0\{40\}"/PROVEN_SHA: "11111111111111111111111111111111111
     "$template" > "$tmp/local.yml"
 grep -q 1111111111 "$tmp/local.yml" && grep -q 2222222222 "$tmp/local.yml" || bad 'local-region control did not apply its edits'
 expect_rc 'a local-region edit (suite pin, Dependabot bump) still matches' 0 bash "$root/scripts/proven-stamp.sh" check "$tmp/local.yml"
-tail -n +2 "$template" > "$tmp/nostamp.yml"
+sed '2d' "$template" > "$tmp/nostamp.yml"
 expect_rc 'a copy without a stamp is NOT RUN' 2 bash "$root/scripts/proven-stamp.sh" check "$tmp/nostamp.yml"
+
+# --- stamp layout: SPDX on line 1, stamp on line 2; legacy line-1 stamp still checks
+st=$root/scripts/proven-stamp.sh
+[[ $(sed -n 1p "$template") == '# SPDX-License-Identifier: '* ]] && ok 'template line 1 is the SPDX line' || bad 'template line 1 is not SPDX'
+[[ $(sed -n 2p "$template") == '# proven-cicd: '* ]] && ok 'template line 2 is the stamp' || bad 'template line 2 is not the stamp'
+# a fresh stamp from a placeholder stamp, then check
+{ sed -n 1p "$template"; echo "# proven-cicd: demo@1.0.0 sha256:$(printf '0%.0s' {1..64})"; tail -n +3 "$template"; } > "$tmp/new.yml"
+expect_rc 'a placeholder stamp is drift before stamping' 1 bash "$st" check "$tmp/new.yml"
+expect_rc 'stamp writes the new layout' 0 bash "$st" stamp "$tmp/new.yml"
+expect_rc 'a freshly stamped copy checks ok' 0 bash "$st" check "$tmp/new.yml"
+[[ $(sed -n 1p "$tmp/new.yml") == '# SPDX-License-Identifier: '* && $(sed -n 2p "$tmp/new.yml") == '# proven-cicd: demo@1.0.0 sha256:'* ]] &&
+  ok 'stamped copy keeps SPDX on line 1 and the stamp on line 2' || bad 'stamped layout wrong'
+sed 's/timeout-minutes: 15/timeout-minutes: 90/' "$tmp/new.yml" > "$tmp/new-edited.yml"
+expect_rc 'a body edit is drift (new layout)' 1 bash "$st" check "$tmp/new-edited.yml"
+sed '1s/MPL-2.0/Apache-2.0/' "$tmp/new.yml" > "$tmp/new-spdx.yml"
+expect_rc 'an SPDX line edit is drift (SPDX is hashed)' 1 bash "$st" check "$tmp/new-spdx.yml"
+# legacy layout: stamp on line 1, no SPDX line above it
+{ echo "# proven-cicd: demo@1.0.0 sha256:$(printf '0%.0s' {1..64})"; tail -n +1 "$tmp/new.yml" | tail -n +3 | sed '1i # SPDX-License-Identifier: MPL-2.0'; } > "$tmp/legacy.yml"
+h=$(bash "$st" hash "$tmp/legacy.yml")
+sed -i "1s/sha256:.*/sha256:$h/" "$tmp/legacy.yml"
+expect_rc 'a legacy line-1 copy still checks ok' 0 bash "$st" check "$tmp/legacy.yml"
+grep -q 'LEGACY layout' "$tmp/out" && ok 'a legacy copy is named as legacy' || bad 'no legacy note'
+sed 's/timeout-minutes: 15/timeout-minutes: 90/' "$tmp/legacy.yml" > "$tmp/legacy-edited.yml"
+expect_rc 'a body edit is drift (legacy layout)' 1 bash "$st" check "$tmp/legacy-edited.yml"
+expect_rc 'stamp refuses a legacy copy (never writes the legacy layout)' 2 bash "$st" stamp "$tmp/legacy.yml"
+# a template without SPDX on line 1 is refused by stamp
+{ echo '# not spdx'; sed -n 2p "$tmp/new.yml"; tail -n +3 "$tmp/new.yml"; } > "$tmp/nospdx.yml"
+expect_rc 'stamp refuses a template without SPDX on line 1' 2 bash "$st" stamp "$tmp/nospdx.yml"
+expect_rc 'check refuses a stamp under a non-SPDX line 1' 2 bash "$st" check "$tmp/nospdx.yml"
+# the stamp on any other line fails
+{ sed -n 1p "$tmp/new.yml"; echo '# filler'; sed -n 2p "$tmp/new.yml"; tail -n +3 "$tmp/new.yml"; } > "$tmp/line3.yml"
+expect_rc 'a stamp on line 3 fails' 2 bash "$st" check "$tmp/line3.yml"
+{ tail -n +3 "$tmp/new.yml"; sed -n 2p "$tmp/new.yml"; } > "$tmp/last.yml"
+expect_rc 'a stamp on the last line fails' 2 bash "$st" check "$tmp/last.yml"
+{ sed -n 2p "$tmp/new.yml"; sed -n 1p "$tmp/new.yml"; tail -n +3 "$tmp/new.yml"; } > "$tmp/swapped.yml"
+h=$(bash "$st" hash "$tmp/swapped.yml"); sed -i "1s/sha256:.*/sha256:$h/" "$tmp/swapped.yml"
+expect_rc 'stamp-then-SPDX (old order) is read as legacy, never as the new layout' 0 bash "$st" check "$tmp/swapped.yml"
 
 # --- lint: NOT RUN must fail the job
 ifs=$(yq '[.. | select(has("if"))] | length' "$template")
