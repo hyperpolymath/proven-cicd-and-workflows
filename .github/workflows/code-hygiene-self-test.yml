@@ -135,6 +135,10 @@
           run: "bash tests/deonboard-estate-audit.sh",
         },
         {
+          # Toolchain pins live in one file, and stamped templates agree with it.
+          run: "bash tests/toolchain-pins.sh && bash tests/toolchain-pins-controls.sh",
+        },
+        {
           # The one map between Hypatia A5 ids and squabbler ids, and the
           # negative controls that show its conformance test can fail.
           run: "bash tests/registry-sq-map.sh && bash tests/registry-sq-map-controls.sh",
