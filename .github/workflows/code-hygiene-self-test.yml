@@ -146,6 +146,11 @@
           run: "bash tests/deonboard-estate-audit.sh",
         },
         {
+          # The rerun policy table agrees with the A5/SQ map and the cap of one
+          # rerun per job, and the controls show the test can fail.
+          run: "bash tests/retry-policy.sh && bash tests/retry-policy-controls.sh",
+        },
+        {
           # Toolchain pins live in one file, and stamped templates agree with it.
           run: "bash tests/toolchain-pins.sh && bash tests/toolchain-pins-controls.sh",
         },

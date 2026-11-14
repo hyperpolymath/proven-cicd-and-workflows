@@ -1,0 +1,7 @@
+a5_id	sq_id	max_reruns	scope	then_referral	source
+hypatia/ci_failure_triage/api_rate_limit	SQ-RUN-01	1	job	no	ARCHITECTURE.adoc retry policy; CASE-012; sq-map note
+hypatia/ci_failure_triage/api_server_error	SQ-RUN-03	1	job	no	ARCHITECTURE.adoc retry policy; sq-map note: one re-run
+hypatia/ci_failure_triage/external_host_unreachable	SQ-RUN-03	1	job	no	ARCHITECTURE.adoc retry policy; sq-map note: one re-run
+hypatia/ci_failure_triage/scan_range_missing_commit	SQ-RUN-04	1	job	yes	sq-map note: one re-run, then a referral
+hypatia/ci_failure_triage/merge_ref_race	SQ-NOI-02	0	job	no	sq-map note: never a re-run
+hypatia/ci_failure_triage/runner_cancelled	SQ-NOI-01	0	job	no	CASE-011; sq-map note: noise, squabbler rule covers a replaced head
