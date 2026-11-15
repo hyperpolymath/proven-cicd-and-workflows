@@ -87,13 +87,15 @@ if [[ -n ${GITHUB_OUTPUT:-} ]]; then
   printf 'passed=%s\ncovered_cells=%s\n' "$passed" "$cells" >> "$GITHUB_OUTPUT"
 fi
 
-if (( total == 0 || passed == 0 )); then
-  record insufficient "Document validated but no passing executed tests ($passed/$total); benchmarks not assessed"
+# Distinguish an observed failure from a complete absence of passing
+# executions; an all-red test run must never be called insufficient evidence.
+if (( failed > 0 || errors > 0 )); then
+  record failed "Document validates, but $failed failures and $errors errors remain ($passed/$total passed); benchmarks not assessed"
   if [[ "$required" == true ]]; then exit 1; fi
   exit 0
 fi
-if (( failed > 0 || errors > 0 )); then
-  record failed "Document validates, but $failed failures and $errors errors remain ($passed/$total passed); benchmarks not assessed"
+if (( total == 0 || passed == 0 )); then
+  record insufficient "Document validated but no passing executed tests ($passed/$total); benchmarks not assessed"
   if [[ "$required" == true ]]; then exit 1; fi
   exit 0
 fi
