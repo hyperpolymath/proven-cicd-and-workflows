@@ -148,7 +148,7 @@
         {
           # The rerun policy table agrees with the A5/SQ map and the cap of one
           # rerun per job, and the controls show the test can fail.
-          run: "bash tests/retry-policy.sh && bash tests/retry-policy-controls.sh",
+          run: "bash tests/retry-policy.sh && bash tests/retry-policy-controls.sh && bash tests/retry-hypatia-controls.sh",
         },
         {
           # Toolchain pins live in one file, and stamped templates agree with it.
@@ -199,7 +199,7 @@
             repository: "hyperpolymath/hypatia",
             ref: "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'main' || 'f955ace8d0056e21dd92f797c7f26c2ddf864d2c' }}",
             path: "hypatia-registry",
-            sparse-checkout: "hypatia_rules_praxis.deed",
+            sparse-checkout: "hypatia_rules_praxis.deed\nlib/rules/ci_failure_triage.ex",
             sparse-checkout-cone-mode: false,
             persist-credentials: false,
           },
@@ -216,7 +216,7 @@
           },
         },
         {
-          run: "HYPATIA_PRAXIS=hypatia-registry/hypatia_rules_praxis.deed SQUABBLER_RULES=squabbler-rules/crates/squabble-core/data/first-line-rules.tsv bash tests/registry-sq-map.sh",
+          run: "HYPATIA_PRAXIS=hypatia-registry/hypatia_rules_praxis.deed SQUABBLER_RULES=squabbler-rules/crates/squabble-core/data/first-line-rules.tsv bash tests/registry-sq-map.sh && bash tests/retry-hypatia.sh hypatia-registry/lib/rules/ci_failure_triage.ex",
         },
       ],
     },

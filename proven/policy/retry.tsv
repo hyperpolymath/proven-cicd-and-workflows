@@ -4,4 +4,4 @@ hypatia/ci_failure_triage/api_server_error	SQ-RUN-03	1	job	no	none	ARCHITECTURE.
 hypatia/ci_failure_triage/external_host_unreachable	SQ-RUN-03	1	job	no	none	ARCHITECTURE.adoc retry policy; sq-map note: one re-run
 hypatia/ci_failure_triage/scan_range_missing_commit	SQ-RUN-04	1	job	yes	none	sq-map note: one re-run, then a referral
 hypatia/ci_failure_triage/merge_ref_race	SQ-NOI-02	0	job	no	none	sq-map note: never a re-run
-hypatia/ci_failure_triage/runner_cancelled	SQ-NOI-01	0	job	no	none	CASE-011; 0 until Hypatia's runner_cancelled rule (retries 0) changes; owner 2026-11-14 allows at most one, and then only with guard head-current
+hypatia/ci_failure_triage/runner_cancelled	SQ-NOI-01	1	job	no	head-current	CASE-011; owner 2026-11-15: one rerun only while the run head is still the ref head, else 0; Hypatia's rule must change to match
