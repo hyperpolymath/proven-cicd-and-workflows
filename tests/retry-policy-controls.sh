@@ -12,18 +12,21 @@ mk; bash "$here/tests/retry-policy.sh" "$t/r" >/dev/null 2>&1 && echo "ok: good 
 mk; sed -i 's/\(api_rate_limit\tSQ-RUN-01\t\)1/\12/' "$pol"; expect_fail "two reruns"
 mk; sed -i 's/\(merge_ref_race\tSQ-NOI-02\t\)0/\11/' "$pol"; expect_fail "noise class given a rerun"
 mk; sed -i 's/\(api_server_error\tSQ-RUN-03\t\)1/\10/' "$pol"; expect_fail "rerun class given none"
-mk; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t\)1/\10/' "$pol"; expect_fail "noise rule whose map note says one re-run given none"
-mk; sed -i 's/; owner 2026-11-14: at most one re-run//' "$map"; expect_fail "noise rule whose map note states no rerun value"
-mk; sed -i 's/\(merge_ref_race\tSQ-NOI-02\tmapped\tpresent\t\)ADR0004 mapping table: never a re-run/\1ADR0004 mapping table: noise/' "$map"; expect_fail "merge-race note no longer says never a re-run"
+mk; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t1\tjob\tno\t\)head-current/\1none/' "$pol"; expect_fail "cancelled-run rerun without the head guard"
+mk; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t1\tjob\tno\t\)head-current/\1always/' "$pol"; expect_fail "unknown guard value"
+mk; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t\)1\(\tjob\tno\t\)head-current/\10\2head-current/' "$pol"; expect_fail "guard on a zero cap"
+mk; sed -i 's/\(merge_ref_race\tSQ-NOI-02\t\)0\(\tjob\tno\t\)none/\11\2head-current/' "$pol"; expect_fail "merge race re-run even with a guard"
+# The cap comes from the structured field: rewording a map note must not change the verdict.
+mk; sed -i 's/never a re-run/not even one re-run/' "$map"; bash "$here/tests/retry-policy.sh" "$t/r" >/dev/null 2>&1 && echo "ok: map note wording is not enforcement" || { echo "FAILED: map note wording changed the verdict"; fails=1; }
 mk; sed -i 's/\(api_rate_limit\t\)SQ-RUN-01/\1SQ-RUN-03/' "$pol"; expect_fail "sq id disagrees with the map"
 mk; sed -i 's/\(external_host_unreachable\tSQ-RUN-03\t1\t\)job/\1workflow/' "$pol"; expect_fail "scope is not job"
 mk; sed -i '/scan_range_missing_commit/d' "$pol"; expect_fail "a mapped rerun row has no policy row"
-mk; printf 'hypatia/ci_failure_triage/not_a_rule\tSQ-RUN-01\t1\tjob\tno\tx\n' >> "$pol"; expect_fail "policy row not in the map"
+mk; printf 'hypatia/ci_failure_triage/not_a_rule\tSQ-RUN-01\t1\tjob\tno\tnone\tx\n' >> "$pol"; expect_fail "policy row not in the map"
 mk; tail -n 1 "$pol" >> "$pol"; expect_fail "duplicate row"
 mk; sed -i 's/\(api_rate_limit\tSQ-RUN-01\t1\tjob\t\)no/\1maybe/' "$pol"; expect_fail "bad then_referral value"
 mk; sed -i 's/\(merge_ref_race\tSQ-NOI-02\t0\tjob\t\)no/\1yes/' "$pol"; expect_fail "referral after no rerun"
 mk; sed -i 's/^\(hypatia\/ci_failure_triage\/api_rate_limit\tSQ-RUN-01\t1\tjob\tno\t\).*/\1/' "$pol"; expect_fail "empty source field"
-mk; printf 'hypatia/ci_failure_triage/not_a_rule\tSQ-RUN-01\t2\tjob\tno\tx' >> "$pol"; expect_fail "final row with no trailing newline is still checked"
+mk; printf 'hypatia/ci_failure_triage/not_a_rule\tSQ-RUN-01\t2\tjob\tno\tnone\tx' >> "$pol"; expect_fail "final row with no trailing newline is still checked"
 mk; printf 'hypatia/ci_failure_triage/new_flaky\tSQ-RUN-01\tmapped\tpresent\tx\n' >> "$map"; expect_fail "new rerun-class map row without a policy row"
 # An empty population (header-only policy, no mapped rerun or noise rows) is valid and must
 # conform cleanly: no shell error, exit 0, and the conformance line.
