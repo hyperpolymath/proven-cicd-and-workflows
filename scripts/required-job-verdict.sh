@@ -47,6 +47,8 @@ for name in "${!expected[@]}"; do
   [[ ${seen[$name]+present} ]] || void "missing mandatory job observation: $name"
 done
 [[ "$count" -eq "$expected_count" ]] || void "job cardinality mismatch: observed $count expected $expected_count"
-[[ "$not_run" -eq 0 ]] || void "$not_run of $count mandatory jobs skipped/cancelled"
+# A known substantive failure takes precedence over other jobs being
+# skipped or cancelled; the overall verdict must not erase the failure.
 [[ "$failed" -eq 0 ]] || { printf 'FAIL: %s of %s mandatory jobs failed\n' "$failed" "$count" >&2; exit 1; }
+[[ "$not_run" -eq 0 ]] || void "$not_run of $count mandatory jobs skipped/cancelled"
 printf 'PASS: %s explicitly named mandatory job results are success\n' "$count"
