@@ -52,13 +52,13 @@ Count ERROR-marker lines in available Pons and Panic Attack logs; explicitly lea
 * link:../../actions/metrics-check/action.yml[Action definition and inputs]
 
 [[tests-benches]]
-== Test & benchmark discoverability
+== Test & benchmark evidence observatory
 
 *`tests-benches` · advisory · advisory*
 
-Look for benchmark mentions and test/benchmark dashboards.
+Observe a validated Proven-Tests schema-v2 report and derived test-cell counts; otherwise report not_assessed.
 
-*Assurance boundary:* Does not execute tests/benchmarks; metric extraction is mocked/N/A.
+*Assurance boundary:* Advisory by default. Requires an independently pinned Proven-Tests validator and a real run report; does not execute tests, verify runner identity or measure benchmarks. Strict mode rejects missing/failed evidence.
 
 * link:../../actions/tests-benches-check/action.yml[Action definition and inputs]
 
