@@ -67,9 +67,18 @@ cp "$map" "$tmp/map.tsv"; printf '%s\tunassigned\tunmapped\tabsent\tnote\n' "$ne
 expect 'flow, step 1: the row added absent (pending) passes here against the pin' 0 HYPATIA_PRAXIS="$tmp/pin.deed"
 expect 'flow, step 2: the Hypatia change passes its own CI' 0 HYPATIA_PRAXIS="$tmp/pr.deed" HYPATIA_PRAXIS_SOURCE=1
 grep -q "pending row $new lands with this change" "$tmp/log" && echo 'ok: flow, step 2 says the row lands with the change' || { echo 'FAIL flow, step 2 note missing'; exit 1; }
-expect 'flow, step 3: after the merge the weekly run against Hypatia main passes' 0 HYPATIA_PRAXIS="$tmp/pr.deed"
+expect 'flow, step 3: after the merge the weekly run against Hypatia main passes' 0 HYPATIA_PRAXIS="$tmp/pr.deed" HYPATIA_PRAXIS_AT=head
 grep -q "WARN pending row $new is in the registry now: flip" "$tmp/log" && echo 'ok: flow, step 3 warns to flip the column' || { echo 'FAIL flow, step 3 WARN missing'; exit 1; }
+# The pin moves past the rule (the pinned registry now holds the id). Without
+# the flip in the same change that is a FAIL, so the flip cannot be forgotten.
+expect 'flow, step 4 without the flip: the pin moved past a pending row fails' 1 HYPATIA_PRAXIS="$tmp/pr.deed" HYPATIA_PRAXIS_AT=pin
+grep -q "FAIL the pin has moved past $new: flip its praxis column to present" "$tmp/log" && echo 'ok: the failure names the row and the flip' || { echo 'FAIL pin-moved message missing'; exit 1; }
+expect 'an unset HYPATIA_PRAXIS_AT behaves as pin' 1 HYPATIA_PRAXIS="$tmp/pr.deed"
+grep -q "FAIL the pin has moved past $new" "$tmp/log" && echo 'ok: unset mode fails for the same reason' || { echo 'FAIL unset mode failed for another reason'; exit 1; }
+expect 'a bad HYPATIA_PRAXIS_AT is NOT RUN' 2 HYPATIA_PRAXIS="$tmp/pr.deed" HYPATIA_PRAXIS_AT=main
+expect 'the change own registry (HYPATIA_PRAXIS_SOURCE=1) is unchanged by the mode' 0 HYPATIA_PRAXIS="$tmp/pr.deed" HYPATIA_PRAXIS_SOURCE=1 HYPATIA_PRAXIS_AT=pin
 sed -i "s#^$new\tunassigned\tunmapped\tabsent\t#$new\tunassigned\tunmapped\tpresent\t#" "$tmp/map.tsv"
+grep -q "^$new	unassigned	unmapped	present	" "$tmp/map.tsv" || { echo 'FAIL flow, step 4 flip did not apply'; exit 1; }
 expect 'flow, step 4: the flip, with the pin moved, passes' 0 HYPATIA_PRAXIS="$tmp/pr.deed"
 ! grep -q "pending row $new" "$tmp/log" && echo 'ok: flow, step 4 no longer reports the row as pending' || { echo 'FAIL flow, step 4 still pending'; exit 1; }
 expect 'flow: a flip before the pin moves fails' 1 HYPATIA_PRAXIS="$tmp/pin.deed"
