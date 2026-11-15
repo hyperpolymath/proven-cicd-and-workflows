@@ -27,7 +27,7 @@ Hypatia can run it:
 * An SQ id may appear on several rows.
 * Every SQ id in the squabbler table is in the map, and the map names no SQ id the table lacks (given `SQUABBLER_RULES`).
 * The `praxis` column matches the registry, and every `hypatia/ci_failure_triage` id in the registry has a row (given `HYPATIA_PRAXIS`). Without the second half a rule Hypatia adds would stay out of the map and the test would still pass.
-* A *pending* row is `unmapped` with praxis `absent`: a triage rule on its way. It never fails the praxis check; once the registry holds its id it is a warning to flip the column to `present`. Every other row keeps strict equality with the registry at the pin.
+* A *pending* row is `unmapped` with praxis `absent`: a triage rule on its way. While the registry lacks its id it is a warning. Once the registry holds the id, `HYPATIA_PRAXIS_AT` decides: `head` (the weekly or dispatched run against Hypatia main) warns to flip the column to `present`; `pin` (the default, every push and pull request) fails, because the pin has moved past the rule. Any other value is NOT RUN. Every other row keeps strict equality with the registry at the pin.
 * With `HYPATIA_PRAXIS_SOURCE=1` (Hypatia's own CI, `scripts/check-sq-map.sh`, which passes a change's registry rather than a pinned one) a praxis mismatch is a warning, because the column describes the registry at this repository's pin. A missing row still fails.
 * Every `kernel-reason` row names a reason the lock kernel emits (given the kernel source).
 
@@ -41,7 +41,7 @@ Neither repository merges red if the steps run in this order (the flow is a cont
 
 . Add the row here first, pending: `<id>\tunassigned\tunmapped\tabsent\t<note>`. It passes against the pinned registry, which lacks the id.
 . Re-run Hypatia's SQ map source check on the change that adds the rule. It reads this repository at `main`, finds the row and passes.
-. After the Hypatia change merges, the weekly run warns that the pending row is in the registry now. Flip its column to `present` in the change that moves the Hypatia pin past it. (A flip before the pin moves fails.)
+. After the Hypatia change merges, the weekly run against Hypatia main (`HYPATIA_PRAXIS_AT=head`) warns that the pending row is in the registry now. Flip its column to `present` in the change that moves the Hypatia pin past it. That change fails until the flip is in it: at the pin (`HYPATIA_PRAXIS_AT=pin`, the default) a pending row whose id the pinned registry holds is a FAIL, "the pin has moved past <id>". A flip before the pin moves fails too.
 
 A rule Hypatia removes: Hypatia's check warns about the column and passes. The change here that moves the pin past the removal must set that row's column to `absent` (or drop an `unmapped` row), or it fails.
 
