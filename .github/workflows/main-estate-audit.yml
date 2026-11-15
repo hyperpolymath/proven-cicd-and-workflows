@@ -121,7 +121,7 @@ jobs:
           persist-credentials: false
       - name: Code Hygiene Gate
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        uses: hyperpolymath/proven-cicd-and-workflows/actions/code-hygiene-check@e49ab9c951c0e843e4bd447b2f3713779e31b6a8 # 2026-11-15 Coq proof-hole controls
+        uses: hyperpolymath/proven-cicd-and-workflows/actions/code-hygiene-check@79302740b55f29fc3a1cf576b48e1c9cc9c25c84 # 2026-11-15 Coq proof-hole controls
       - name: Formatting Validation Gate
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: hyperpolymath/proven-cicd-and-workflows/actions/formatting-check@c519c4520afbfe48f16aceb0706d7cfb1d649994 # 2026-10-14 (#54)
