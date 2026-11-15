@@ -45,7 +45,13 @@ subject_root=$(git rev-parse --show-toplevel 2>/dev/null) ||
 [[ $(pwd -P) == "$subject_root" ]] || void 'run the gate from the subject repository root'
 gate_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) ||
   void 'gate checkout root unavailable'
-subject_excludes=(":(exclude)$PROVEN_TESTS_ROOT")
+# Zig's compiler-generated cache and install output may exist before this
+# gate (e.g. cached CI workspace), but may not substitute for source checkout.
+# They are rederived by the explicit test and final ReleaseSafe builds.
+subject_excludes=(":(exclude)$PROVEN_TESTS_ROOT"
+                  ":(exclude)$ZIG_PROJECT_DIR/.zig-cache"
+                  ":(exclude)$ZIG_PROJECT_DIR/zig-cache"
+                  ":(exclude)$ZIG_PROJECT_DIR/zig-out")
 if [[ $gate_root == "$subject_root/"* ]]; then
   gate_relative=${gate_root#"$subject_root/"}
   subject_excludes+=(":(exclude)$gate_relative")
