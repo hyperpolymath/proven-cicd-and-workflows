@@ -216,6 +216,13 @@
           },
         },
         {
+          # Which registry was checked out, for the pending-row rule: `head`
+          # on the schedule and on a dispatch (Hypatia main, so a pending row
+          # whose rule has merged is a WARN), `pin` otherwise (so a pin move
+          # that passes a pending row without flipping it fails).
+          env: {
+            HYPATIA_PRAXIS_AT: "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'head' || 'pin' }}",
+          },
           run: "HYPATIA_PRAXIS=hypatia-registry/hypatia_rules_praxis.deed SQUABBLER_RULES=squabbler-rules/crates/squabble-core/data/first-line-rules.tsv bash tests/registry-sq-map.sh",
         },
       ],

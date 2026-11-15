@@ -14,14 +14,23 @@
 #                  change that adds or removes a rule disagrees with it by design:
 #                  a column mismatch is then a WARN, not a FAIL. A missing row
 #                  still fails (the reverse direction is unchanged).
+#   HYPATIA_PRAXIS_AT=pin|head  which registry HYPATIA_PRAXIS is, when it is not
+#                  a change's own (HYPATIA_PRAXIS_SOURCE unset). `pin` (the
+#                  default, so a forgotten flag is strict): the registry at this
+#                  repository's Hypatia pin. `head`: Hypatia's default branch, as
+#                  the weekly or dispatched run reads it. Any other value is NOT
+#                  RUN (exit 2).
 #
 # A PENDING row is `unmapped` with praxis `absent`: a triage rule on its way.
 # It is how a new rule lands without either repository merging red. The row is
 # added here first, `absent`, which passes against the pinned registry; then the
 # Hypatia change that adds the rule passes, because its registry holds the id
 # and the row exists; then, when the pin moves past it, the column is flipped to
-# `present`. Until the flip a pending row whose id the registry holds is a WARN,
-# never a FAIL. Without HYPATIA_PRAXIS_SOURCE, mapped and hypatia-only rows keep
+# `present`. A pending row whose id the registry holds is a WARN on the head run
+# and on a change's own registry (the rule has merged, or is merging, but the pin
+# has not moved). At the pin it FAILS: the pin has moved past the rule, so the
+# flip belongs in the same change as the pin move, and is enforced there.
+# Without HYPATIA_PRAXIS_SOURCE, mapped and hypatia-only rows keep
 # strict equality, and so does an `unmapped` row that says `present`: at a pin
 # move a removed rule, or a mapped row whose rule has arrived, fails until the
 # column is set (or the row dropped) in the same change as the pin.
@@ -84,6 +93,8 @@ if [[ -n ${HYPATIA_PRAXIS:-} ]]; then
   [[ -f $HYPATIA_PRAXIS ]] || { echo "HYPATIA_PRAXIS=$HYPATIA_PRAXIS missing; NOT RUN" >&2; exit 2; }
   source_side=${HYPATIA_PRAXIS_SOURCE:-}
   [[ -z $source_side || $source_side == 1 ]] || { echo "HYPATIA_PRAXIS_SOURCE must be 1 or unset, not $source_side; NOT RUN" >&2; exit 2; }
+  praxis_at=${HYPATIA_PRAXIS_AT:-pin}
+  [[ $praxis_at == pin || $praxis_at == head ]] || { echo "HYPATIA_PRAXIS_AT must be pin, head or unset, not $praxis_at; NOT RUN" >&2; exit 2; }
   # `|| true`: under pipefail a grep with no match would end the script with
   # exit 1 and no message; an empty registry is NOT RUN, said just below.
   registry=$({ grep -oE 'hypatia/[a-z0-9_]+/[A-Za-z0-9_]+' "$HYPATIA_PRAXIS" || true; } | sort -u)
@@ -92,10 +103,13 @@ if [[ -n ${HYPATIA_PRAXIS:-} ]]; then
     [[ $a5 == - ]] && continue
     if grep -qxF -- "$a5" <<<"$registry"; then actual=present; else actual=absent; fi
     if [[ $status == unmapped && $praxis == absent ]]; then
-      # A pending row: never a FAIL, whichever way the registry stands.
+      # A pending row. Not in the registry yet: a WARN. In it: a note on a
+      # change's own registry, a WARN on the head run, and a FAIL at the pin,
+      # because a pin that holds the id has moved past the rule.
       if [[ $actual == absent ]]; then echo "WARN pending row $a5: not in this registry yet"
       elif [[ $source_side == 1 ]]; then echo "pending row $a5 lands with this change; flip its praxis column to present when the pin moves past it"
-      else echo "WARN pending row $a5 is in the registry now: flip its praxis column to present"; fi
+      elif [[ $praxis_at == head ]]; then echo "WARN pending row $a5 is in the registry now: flip its praxis column to present when the pin moves past it"
+      else bad "the pin has moved past $a5: flip its praxis column to present"; fi
       continue
     fi
     [[ $actual == "$praxis" ]] && continue
