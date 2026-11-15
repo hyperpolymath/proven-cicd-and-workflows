@@ -47,6 +47,7 @@ expected_harness_root=$(realpath -e -- "$PROVEN_TESTS_ROOT") ||
   void 'Proven harness root cannot be canonicalised'
 actual_harness_root=$(git -C "$PROVEN_TESTS_ROOT" rev-parse --show-toplevel 2>/dev/null) ||
   void 'Proven harness must be an independent Git checkout'
+actual_harness_root=$(realpath -e -- "$actual_harness_root") || void 'harness Git root cannot be canonicalised'
 [[ $actual_harness_root == "$expected_harness_root" &&
    $actual_harness_root != "$subject_root" ]] ||
   void 'Proven harness root is not a distinct repository checkout'
@@ -88,11 +89,33 @@ verify_harness_checkout() {
     void 'pinned Proven harness status check failed'
   [[ -z $checked_status ]] ||
     void "pinned Proven harness checkout mutated: $checked_status"
+  # git status and git diff can be bypassed by assume-unchanged/skip-worktree.
+  # Hash the executable harness and launcher bytes against immutable Git
+  # objects, independently of index flags and filesystem stat shortcuts.
+  local file expected_blob actual_blob
+  for file in integrations/contract/c-abi/run.sh integrations/contract/c-abi/launcher.c; do
+    [[ -f "$PROVEN_TESTS_ROOT/$file" && ! -L "$PROVEN_TESTS_ROOT/$file" ]] ||
+      void "pinned harness source is absent or symlinked: $file"
+    expected_blob=$(git -C "$PROVEN_TESTS_ROOT" rev-parse "$PROVEN_TESTS_SHA:$file" 2>/dev/null) ||
+      void "pinned harness commit lacks source: $file"
+    actual_blob=$(git -C "$PROVEN_TESTS_ROOT" hash-object -- "$file" 2>/dev/null) ||
+      void "pinned harness source cannot be hashed: $file"
+    [[ "$actual_blob" == "$expected_blob" ]] ||
+      void "pinned harness content mismatch despite index status: $file"
+  done
 }
 verify_harness_checkout
 actual=$PROVEN_TESTS_SHA
 [[ -f $ZIG_PROJECT_DIR/build.zig ]] || void 'native project has no build.zig'
 [[ -s $ZIG_PROJECT_DIR/$ZIG_TEST_ENTRY ]] || void 'explicit Zig test source absent'
+# Generated output is not a source of authoritative ABI declarations.
+# Only the actual produced archive is allowed beneath Zig's output tree.
+for declared in "$C_ABI_HEADER" "$C_ABI_CONSUMER" "$ZIG_PROJECT_DIR/$ZIG_TEST_ENTRY"; do
+  case "$declared" in
+    "$ZIG_PROJECT_DIR/zig-out/"*|"$ZIG_PROJECT_DIR/zig-cache/"*|"$ZIG_PROJECT_DIR/.zig-cache/"*)
+      void "source input placed under generated output tree: $declared" ;;
+  esac
+done
 for file in "$C_ABI_HEADER" "$C_ABI_CONSUMER"; do
   [[ -s $file && -r $file ]] || void "ABI consumer source missing or empty: $file"
 done
@@ -159,8 +182,8 @@ if (cd "$ZIG_PROJECT_DIR" && zig build -Doptimize=ReleaseSafe); then
 else
   fail 'final Zig ReleaseSafe ABI build failed'
 fi
-[[ -s $C_ABI_ARCHIVE && -r $C_ABI_ARCHIVE ]] ||
-  void "final ReleaseSafe build emitted no ABI archive at $C_ABI_ARCHIVE"
+[[ -s $C_ABI_ARCHIVE && -r $C_ABI_ARCHIVE && -f $C_ABI_ARCHIVE && ! -L $C_ABI_ARCHIVE ]] ||
+  void "final ReleaseSafe build emitted no regular non-symlink ABI archive at $C_ABI_ARCHIVE"
 # Revalidate the *recorded* subject revision and all non-generated
 # inputs after running subject-controlled build and tests, not merely HEAD.
 verify_subject_checkout
