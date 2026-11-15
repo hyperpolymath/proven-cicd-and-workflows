@@ -18,7 +18,7 @@ hypatia/workflow_audit/mirror_without_visibility_guard	SQ-OWN-16	mapped	present	
 hypatia/ci_failure_triage/pages_not_enabled	SQ-OWN-01	mapped	present	ADR0004 mapping table: one to one
 hypatia/ci_failure_triage/repository_map_stale	SQ-GEN-01	mapped	present	ADR0004 mapping table: one to one
 hypatia/ci_failure_triage/ruleset_blocks_push	SQ-OWN-13	mapped	present	ADR0004 mapping table: owner
-hypatia/ci_failure_triage/runner_cancelled	SQ-NOI-01	mapped	present	ADR0004 mapping table: squabbler rule is narrower (a replaced head); owner 2026-11-14: at most one re-run, guarded (see proven/policy/retry.tsv)
+hypatia/ci_failure_triage/runner_cancelled	SQ-NOI-01	mapped	present	ADR0004 mapping table: squabbler rule is narrower (a replaced head); owner 2026-11-14: at most one re-run, guarded; the table says 0 until Hypatia's rule allows it (see proven/policy/retry.tsv)
 hypatia/ci_failure_triage/scan_range_missing_commit	SQ-RUN-04	mapped	present	ADR0004 mapping table: one re-run, then a referral
 hypatia/ci_failure_triage/scanner_pin_drift	SQ-OWN-12	mapped	present	ADR0004 mapping table: owner
 hypatia/ci_failure_triage/secret_or_variable_missing	SQ-OWN-02	mapped	present	ADR0004 mapping table: mirror ssh-key case

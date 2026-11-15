@@ -267,15 +267,19 @@ assertion yet; it is still to gain one.
 
 Each policy below becomes registry rules with fixtures, one PR per topic:
 
-* *Retry and rerun.* HTTP 403 rate limits, 502 errors and cancelled runs get at
-  most one rerun per job, which matches ADR 0004 guard 2. Merge races get none:
+* *Retry and rerun.* HTTP 403 rate limits and 502 errors get one rerun per job, which matches
+  ADR 0004 guard 2. Cancelled runs are 0 for now (see below). Merge races get none:
   a merge race is never a re-run (`SQ-NOI-02`), as the owner ruled on 2026-11-14.
   The table is `proven/policy/retry.tsv`: one row per mapped A5 rule in a rerun
   class (`SQ-RUN-*`, one rerun) or a noise class (`SQ-NOI-*`), with the rerun
   cap (0 or 1), its scope (always `job`), whether a referral follows and a
   guard. The cap is a field of the table; the test does not read the wording of
   the `sq-map.tsv` note. A merge race is `0`, and the test pins `SQ-NOI-02` to 0.
-  A cancelled run (`SQ-NOI-01`) is `1` with guard `head-current`: re-run it only
+  Hypatia's executable rule is authoritative for the cap, and its
+  `runner_cancelled` has `retries 0`, so the table says `0` for `SQ-NOI-01` until
+  that rule changes; whether to change it is the owner's ruling. The owner's
+  2026-11-14 ruling allows at most one, and the table supports that only with guard
+  `head-current`: re-run a cancelled run only
   while its head_sha is still the head of its ref and no newer run of that
   workflow exists, otherwise 0. A run cancelled because a newer push replaced its
   head would, if re-run, re-enter the same concurrency group and could cancel the

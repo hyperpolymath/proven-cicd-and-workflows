@@ -12,9 +12,11 @@ mk; bash "$here/tests/retry-policy.sh" "$t/r" >/dev/null 2>&1 && echo "ok: good 
 mk; sed -i 's/\(api_rate_limit\tSQ-RUN-01\t\)1/\12/' "$pol"; expect_fail "two reruns"
 mk; sed -i 's/\(merge_ref_race\tSQ-NOI-02\t\)0/\11/' "$pol"; expect_fail "noise class given a rerun"
 mk; sed -i 's/\(api_server_error\tSQ-RUN-03\t\)1/\10/' "$pol"; expect_fail "rerun class given none"
-mk; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t1\tjob\tno\t\)head-current/\1none/' "$pol"; expect_fail "cancelled-run rerun without the head guard"
-mk; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t1\tjob\tno\t\)head-current/\1always/' "$pol"; expect_fail "unknown guard value"
-mk; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t\)1\(\tjob\tno\t\)head-current/\10\2head-current/' "$pol"; expect_fail "guard on a zero cap"
+cancel1() { sed -i 's/\(runner_cancelled\tSQ-NOI-01\t\)0\(\tjob\tno\t\)none/\11\2head-current/' "$pol"; }
+mk; cancel1; bash "$here/tests/retry-policy.sh" "$t/r" >/dev/null 2>&1 && echo "ok: a guarded cancelled-run rerun of one is accepted" || { echo "FAILED: guarded rerun of one rejected"; fails=1; }
+mk; cancel1; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t1\tjob\tno\t\)head-current/\1none/' "$pol"; expect_fail "cancelled-run rerun without the head guard"
+mk; cancel1; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t1\tjob\tno\t\)head-current/\1always/' "$pol"; expect_fail "unknown guard value"
+mk; sed -i 's/\(runner_cancelled\tSQ-NOI-01\t0\tjob\tno\t\)none/\1head-current/' "$pol"; expect_fail "guard on a zero cap"
 mk; sed -i 's/\(merge_ref_race\tSQ-NOI-02\t\)0\(\tjob\tno\t\)none/\11\2head-current/' "$pol"; expect_fail "merge race re-run even with a guard"
 # The cap comes from the structured field: rewording a map note must not change the verdict.
 mk; sed -i 's/never a re-run/not even one re-run/' "$map"; bash "$here/tests/retry-policy.sh" "$t/r" >/dev/null 2>&1 && echo "ok: map note wording is not enforcement" || { echo "FAILED: map note wording changed the verdict"; fails=1; }
