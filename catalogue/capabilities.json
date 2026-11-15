@@ -328,9 +328,9 @@
       "clade": "observatory",
       "status": "advisory",
       "nature": "advisory",
-      "title": "Test & benchmark discoverability",
-      "summary": "Look for benchmark mentions and test/benchmark dashboards.",
-      "limitations": "Does not execute tests/benchmarks; metric extraction is mocked/N/A.",
+      "title": "Test & benchmark evidence observatory",
+      "summary": "Observe a validated Proven-Tests schema-v2 report and derived test-cell counts; otherwise report not_assessed.",
+      "limitations": "Advisory by default. Requires an independently pinned Proven-Tests validator and a real run report; does not execute tests, verify runner identity or measure benchmarks. Strict mode rejects missing/failed evidence.",
       "path": "actions/tests-benches-check/action.yml"
     },
     {
