@@ -32,6 +32,13 @@ set -euo pipefail
 case "${1:-}" in
   version)
     echo "${FAKE_ZIG_VERSION:-0.13.0}" ;;
+  test)
+    [[ ${FAKE_FAIL_PHASE:-} != explicit_test ]] || exit 1
+    if [[ ${FAKE_MISSING_RECEIPT:-} == yes ]]; then
+      echo 'All 0 tests passed.' >&2
+    else
+      echo 'All 3 tests passed.' >&2
+    fi ;;
   build)
     if [[ ${2:-} == test ]]; then
       [[ ${FAKE_FAIL_PHASE:-} != test ]] || exit 1
@@ -43,7 +50,12 @@ case "${1:-}" in
       fi
     fi ;;
   fmt)
-    [[ ${FAKE_FAIL_PHASE:-} != fmt ]] || exit 1 ;;
+    [[ ${FAKE_FAIL_PHASE:-} != fmt ]] || exit 1
+    if [[ ${FAKE_FAIL_ON_CACHE:-} == yes ]]; then
+      for file in "$@"; do
+        [[ $file != *'/.zig-cache/'* ]] || exit 1
+      done
+    fi ;;
   *)
     echo 'unexpected Zig command' >&2; exit 1 ;;
 esac
@@ -51,6 +63,9 @@ EOF
 chmod +x "$tmp/fakebin/zig"
 export PATH="$tmp/fakebin:$PATH"
 export ZIG_PROJECT_DIR=ffi ZIG_VERSION=0.13.0
+export EXPECTED_SUBJECT_SHA
+EXPECTED_SUBJECT_SHA=$(git -C "$repo" rev-parse HEAD)
+export ZIG_TEST_ENTRY=src/main.zig
 export PROVEN_TESTS_ROOT=.proven-tests PROVEN_TESTS_SHA="$sha"
 export C_ABI_HEADER=ffi/subject.h C_ABI_CONSUMER=ffi/consumer.c
 export C_ABI_ARCHIVE=ffi/zig-out/lib/libsubject.a
@@ -74,6 +89,26 @@ grep -Fq 'PASS: native build + tests + format + linked ABI contract' "$tmp/out"
 run 1 'firing: native build failure' env FAKE_FAIL_PHASE=build bash "$gate"
 run 1 'firing: native test failure' env FAKE_FAIL_PHASE=test bash "$gate"
 run 1 'firing: native format failure' env FAKE_FAIL_PHASE=fmt bash "$gate"
+run 1 'firing: explicit Zig test run fails' env FAKE_FAIL_PHASE=explicit_test bash "$gate"
+run 2 'void: zero actually executed Zig tests' env FAKE_MISSING_RECEIPT=yes bash "$gate"
+run 2 'void: incorrect subject SHA' env EXPECTED_SUBJECT_SHA=0000000000000000000000000000000000000000 bash "$gate"
+run 2 'void: missing Zig test entrypoint' env ZIG_TEST_ENTRY=missing.zig bash "$gate"
+mkdir -p "$repo/ffi/.zig-cache"
+printf 'not legitimate Zig formatting input\n' > "$repo/ffi/.zig-cache/generated.zig"
+run 0 'silence: generated .zig-cache excluded from formatter' env FAKE_FAIL_ON_CACHE=yes bash "$gate"
+printf '# mutated\n' >> "$repo/.proven-tests/integrations/contract/c-abi/run.sh"
+run 2 'void: pinned harness has uncommitted mutation' bash "$gate"
+git -C "$repo/.proven-tests" checkout -- integrations/contract/c-abi/run.sh
+printf 'stale archive must not be trusted\n' > "$FAKE_ABI_ARCHIVE"
+# This direct run intentionally preserves the stale file before invoking gate.
+stale_rc=0
+env FAKE_SUPPRESS_ARCHIVE=yes bash "$gate" > "$tmp/out" 2>&1 || stale_rc=$?
+[[ $stale_rc == 2 ]] || {
+  echo "FAIL: stale archive was accepted when fresh build omitted it (rc=$stale_rc)" >&2
+  cat "$tmp/out" >&2
+  exit 1
+}
+echo 'ok: void: stale archive removed before build (exit 2)'
 run 1 'firing: C ABI subject contract failure' env FAKE_CONTRACT_RC=1 bash "$gate"
 run 2 'void: C ABI harness unavailable' env FAKE_CONTRACT_RC=2 bash "$gate"
 run 2 'void: source SHA mismatches' env PROVEN_TESTS_SHA=0000000000000000000000000000000000000000 bash "$gate"
