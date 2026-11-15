@@ -9,16 +9,29 @@
 set -euo pipefail
 void() { printf 'NOT RUN: %s\n' "$*" >&2; exit 2; }
 [[ -n ${REQUIRED_RESULTS:-} ]] || void 'required job population empty'
+[[ -n ${REQUIRED_JOB_IDS:-} ]] || void 'mandatory job identity set is absent'
+declare -A expected=()
+expected_count=0
+while IFS= read -r name || [[ -n "$name" ]]; do
+  [[ -n $name ]] || continue
+  [[ $name =~ ^[_a-zA-Z][_a-zA-Z0-9.-]*$ ]] ||
+    void "malformed expected job identity: $name"
+  [[ ! ${expected[$name]+present} ]] || void "duplicate expected job: $name"
+  expected[$name]=1
+  expected_count=$((expected_count + 1))
+done <<< "$REQUIRED_JOB_IDS"
+[[ $expected_count -gt 0 ]] || void 'zero expected mandatory jobs'
 declare -A seen=()
 count=0
 failed=0
 not_run=0
 while IFS= read -r line || [[ -n "$line" ]]; do
   [[ -n "$line" ]] || continue
-  [[ "$line" =~ ^([a-zA-Z][a-zA-Z0-9_.-]*)=([a-z_]+)$ ]] ||
+  [[ "$line" =~ ^([_a-zA-Z][_a-zA-Z0-9.-]*)=([a-z_]+)$ ]] ||
     void "malformed mandatory job observation: $line"
   name=${BASH_REMATCH[1]}
   result=${BASH_REMATCH[2]}
+  [[ ${expected[$name]+present} ]] || void "unexpected mandatory job observation: $name"
   [[ ! ${seen[$name]+present} ]] || void "duplicate job observation: $name"
   seen[$name]=1
   count=$((count + 1))
@@ -30,6 +43,10 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   esac
 done <<< "$REQUIRED_RESULTS"
 [[ "$count" -gt 0 ]] || void 'zero mandatory jobs'
+for name in "${!expected[@]}"; do
+  [[ ${seen[$name]+present} ]] || void "missing mandatory job observation: $name"
+done
+[[ "$count" -eq "$expected_count" ]] || void "job cardinality mismatch: observed $count expected $expected_count"
 [[ "$not_run" -eq 0 ]] || void "$not_run of $count mandatory jobs skipped/cancelled"
 [[ "$failed" -eq 0 ]] || { printf 'FAIL: %s of %s mandatory jobs failed\n' "$failed" "$count" >&2; exit 1; }
 printf 'PASS: %s explicitly named mandatory job results are success\n' "$count"
