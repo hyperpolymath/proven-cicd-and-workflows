@@ -7,18 +7,20 @@
 
 `scripts/zig-native-ffi-gate.sh` orchestrates a real Zig project and the independently authored C ABI consumer harness in `proven-tests-and-benches`. The only successful path is:
 
-. Verify subject Git commit and the *exact* independently checked-out Proven source commit.
+. Verify the subject HEAD matches the caller's *expected* immutable commit and the Proven harness checkout matches its immutable commit and is completely clean.
 . Require the caller's explicit Zig version and verify the installed compiler reports it.
-. Build the native library (ReleaseSafe), execute Zig unit/integration tests, and check source formatting.
+. Remove any stale archive, rebuild the native library (ReleaseSafe), run the project's test step, execute a caller-identified Zig test file and demand evidence that at least one test ran, then check owned-source formatting.
 . Require the resulting static archive; compile/link/execute the C consumer using the Proven runner.
 
-Required environment: `ZIG_PROJECT_DIR`, `ZIG_VERSION`, `PROVEN_TESTS_ROOT`, `PROVEN_TESTS_SHA`, `C_ABI_HEADER`, `C_ABI_CONSUMER`, `C_ABI_ARCHIVE`. All paths are repository-relative. `CC=zig cc` is appropriate for Zig-built libraries; supply a compiler whose linkage is independently qualified. Callers must install the specified compiler and fetch the external tests repository at a reviewed full 40-hex commit *before* running this script. The gate does not download toolchains or select floating source refs.
+Required environment: `ZIG_PROJECT_DIR`, `ZIG_VERSION`, `EXPECTED_SUBJECT_SHA`, `ZIG_TEST_ENTRY`, `PROVEN_TESTS_ROOT`, `PROVEN_TESTS_SHA`, `C_ABI_HEADER`, `C_ABI_CONSUMER`, `C_ABI_ARCHIVE`. All paths are repository-relative. `CC=zig cc` is appropriate for Zig-built libraries; supply a compiler whose linkage is independently qualified. Callers must install the specified compiler and fetch the external tests repository at a reviewed full 40-hex commit *before* running this script. The gate does not download toolchains or select floating source refs.
 
 === Outcome discipline
 
 * 0 means the specified build, tests, formatting and C consumer **actually executed** and passed on the identified revision.
 * 1 means a substantive build/test/format/contract check failed.
 * 2 means an unavailable tool, missing source, bad pin, mismatched compiler or absent output: **NOT RUN**.
+
+`ZIG_TEST_ENTRY` is relative to `ZIG_PROJECT_DIR` and must be an independently compilable Zig test source; the gate runs `zig test ENTRY -lc` and verifies the positive `All N tests passed.` receipt. The project's own `zig build test` remains required for linked/integration suites but is not sufficient evidence on its own, because a build graph can define an inert test step. The runner checks the complete harness checkout for any tracked or untracked mutation and removes stale archive bytes before rebuilding. 
 
 Both 1 and 2 must fail the consumer's required GitHub check. The script never marks a skipped check as success, never launches arbitrary shell from YAML inputs, and never claims a successful C test as an Idris2 proof. `tests/zig-native-ffi-gate.sh` uses stand-in Zig and contract commands to plant failing and missing stages; these fixtures qualify **orchestration**, not compiler behavior. Qualification of the real subject must be supplied by a live consumer such as Checky Monkey.
 
