@@ -42,6 +42,12 @@ case "${1:-}" in
   build)
     if [[ ${2:-} == test ]]; then
       [[ ${FAKE_FAIL_PHASE:-} != test ]] || exit 1
+      if [[ ${FAKE_TEST_CLOBBER_ARCHIVE:-} == yes ]]; then
+        printf 'debug archive should NOT survive\n' > "$FAKE_ABI_ARCHIVE"
+      fi
+      if [[ ${FAKE_MUTATE_HARNESS:-} == yes ]]; then
+        printf '# modified by subject test\n' >> "$FAKE_HARNESS_FILE"
+      fi
     else
       [[ ${FAKE_FAIL_PHASE:-} != build ]] || exit 1
       if [[ ${FAKE_SUPPRESS_ARCHIVE:-} != yes ]]; then
@@ -61,6 +67,16 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$tmp/fakebin/zig"
+cat > "$tmp/fakebin/find" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${FAKE_FIND_FAIL:-} == yes ]]; then
+  printf 'ffi/src/main.zig\0'
+  exit 1
+fi
+exec /usr/bin/find "$@"
+EOF
+chmod +x "$tmp/fakebin/find"
 export PATH="$tmp/fakebin:$PATH"
 export ZIG_PROJECT_DIR=ffi ZIG_VERSION=0.13.0
 export EXPECTED_SUBJECT_SHA
@@ -70,6 +86,7 @@ export PROVEN_TESTS_ROOT=.proven-tests PROVEN_TESTS_SHA="$sha"
 export C_ABI_HEADER=ffi/subject.h C_ABI_CONSUMER=ffi/consumer.c
 export C_ABI_ARCHIVE=ffi/zig-out/lib/libsubject.a
 export FAKE_ABI_ARCHIVE="$repo/$C_ABI_ARCHIVE"
+export FAKE_HARNESS_FILE="$repo/.proven-tests/integrations/contract/c-abi/run.sh"
 cd "$repo"
 run() {
   local want=$1 label=$2
@@ -99,6 +116,20 @@ run 0 'silence: generated .zig-cache excluded from formatter' env FAKE_FAIL_ON_C
 printf '# mutated\n' >> "$repo/.proven-tests/integrations/contract/c-abi/run.sh"
 run 2 'void: pinned harness has uncommitted mutation' bash "$gate"
 git -C "$repo/.proven-tests" checkout -- integrations/contract/c-abi/run.sh
+run 2 'void: subject test mutates pinned harness after initial check' \
+  env FAKE_MUTATE_HARNESS=yes bash "$gate"
+git -C "$repo/.proven-tests" checkout -- integrations/contract/c-abi/run.sh
+printf '# modified subject input\n' >> "$repo/ffi/build.zig"
+run 2 'void: source tree differs from claimed subject SHA' bash "$gate"
+git -C "$repo" checkout -- ffi/build.zig
+run 2 'void: find returns partial source list and nonzero status' \
+  env FAKE_FIND_FAIL=yes bash "$gate"
+run 0 'silence: Debug archive overwritten by final ReleaseSafe build' \
+  env FAKE_TEST_CLOBBER_ARCHIVE=yes bash "$gate"
+grep -Fq 'fake archive; this is NOT a native qualification' "$FAKE_ABI_ARCHIVE" || {
+  echo 'FAIL: final ReleaseSafe archive did not replace debug test artifact' >&2
+  exit 1
+}
 printf 'stale archive must not be trusted\n' > "$FAKE_ABI_ARCHIVE"
 # This direct run intentionally preserves the stale file before invoking gate.
 stale_rc=0
