@@ -267,14 +267,30 @@ assertion yet; it is still to gain one.
 
 Each policy below becomes registry rules with fixtures, one PR per topic:
 
-* *Retry and rerun.* HTTP 403 rate limits, 502 errors and cancelled runs get at
-  most one rerun per job, which matches ADR 0004 guard 2. Merge races get none:
+* *Retry and rerun.* HTTP 403 rate limits and 502 errors get one rerun per job, which matches
+  ADR 0004 guard 2. A cancelled run gets one, only while its head is current. Merge races get none:
   a merge race is never a re-run (`SQ-NOI-02`), as the owner ruled on 2026-11-14.
   The table is `proven/policy/retry.tsv`: one row per mapped A5 rule in a rerun
   class (`SQ-RUN-*`, one rerun) or a noise class (`SQ-NOI-*`), with the rerun
-  cap (0 or 1), its scope (always `job`) and whether a referral follows. For a
-  noise rule the `sq-map.tsv` note says which cap applies: a merge race is
-  "never a re-run" (0); a cancelled run is "at most one re-run" (1).
+  cap (0 or 1), its scope (always `job`), whether a referral follows and a
+  guard. The cap is a field of the table; the test does not read the wording of
+  the `sq-map.tsv` note. A merge race is `0`, and the test pins `SQ-NOI-02` to 0.
+  This table is authoritative for the cap. Owner ruling 2026-11-15: a cancelled
+  run (`SQ-NOI-01`) gets one rerun, guard `head-current`: re-run it only while its
+  head_sha is still the head of its ref and no newer run of that workflow exists
+  for the ref, otherwise 0. A run cancelled because a newer push replaced its
+  head would, if re-run, re-enter the same concurrency group and could cancel the
+  run for the current head. The test requires that any noise rule with a rerun
+  carries that guard, and pins `SQ-NOI-02` to 0. The cap and guard are fields;
+  the test does not read the wording of the `sq-map.tsv` note.
+  `tests/retry-hypatia.sh` compares each cap and guard with the `retries` and `guard`
+  fields of the same-named rule in Hypatia's `lib/rules/ci_failure_triage.ex`
+  (`guard: :head_current` is the table's `head-current`; no field is `none`), read in the
+  praxis job like the registry (pinned on push and pull request, main weekly). A
+  guarded 1 that Hypatia still has at 0 is a warning: the pending state while
+  the Hypatia change lands. Any other disagreement fails, including an unguarded rerun in Hypatia. Until Hypatia changes,
+  `runner_cancelled` there is `retries 0`. This table records the guard; whatever
+  dispatches the rerun must apply it, and no dispatcher in this repository does yet.
   `tests/retry-policy.sh` takes the id pairing from `sq-map.tsv`, and fails if a
   mapped rerun or noise row has no policy row. Dispatch and meaning stay with
   the squabbler and Hypatia (R1); this table records the cap, it does not

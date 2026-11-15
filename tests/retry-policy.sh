@@ -9,15 +9,15 @@ policy=$root/proven/policy/retry.tsv map=$root/proven/registry/sq-map.tsv
 fail=0
 bad() { echo "FAIL $1"; fail=1; }
 
-[[ $(head -n 1 "$policy") == $'a5_id\tsq_id\tmax_reruns\tscope\tthen_referral\tsource' ]] || bad "unexpected header"
+[[ $(head -n 1 "$policy") == $'a5_id\tsq_id\tmax_reruns\tscope\tthen_referral\tguard\tsource' ]] || bad "unexpected header"
 # Raw field check first: read would merge consecutive tabs.
-while IFS= read -r row; do bad "malformed row (need 6 non-empty tab fields): $row"; done < <(
-    tail -n +2 "$policy" | awk -F'\t' 'NF != 6 || $1 == "" || $2 == "" || $3 == "" || $4 == "" || $5 == "" || $6 == "" { print }')
+while IFS= read -r row; do bad "malformed row (need 7 non-empty tab fields): $row"; done < <(
+    tail -n +2 "$policy" | awk -F'\t' 'NF != 7 || $1 == "" || $2 == "" || $3 == "" || $4 == "" || $5 == "" || $6 == "" || $7 == "" { print }')
 
 declare -A seen=()   # set -u: an empty population (no rerun or noise rows) must not be unbound
 # `|| [[ -n $a5 ]]`: read returns non-zero at EOF, which would skip a final row with no newline.
-while IFS=$'\t' read -r a5 sq max scope referral source || [[ -n $a5 ]]; do
-    [[ -n $a5 && -n $sq && -n $max && -n $scope && -n $referral && -n $source ]] || continue
+while IFS=$'\t' read -r a5 sq max scope referral guard source || [[ -n $a5 ]]; do
+    [[ -n $a5 && -n $sq && -n $max && -n $scope && -n $referral && -n $guard && -n $source ]] || continue
     [[ -z ${seen[$a5]:-} ]] || bad "$a5: duplicate row"
     seen[$a5]=1
     [[ $max == 0 || $max == 1 ]] || bad "$a5: max_reruns '$max' must be 0 or 1 (one rerun per job at most)"
@@ -27,16 +27,19 @@ while IFS=$'\t' read -r a5 sq max scope referral source || [[ -n $a5 ]]; do
     pair=$(awk -F'\t' -v a="$a5" '$1 == a { print $2 "\t" $3 }' "$map")
     [[ -n $pair ]] || { bad "$a5: not in sq-map.tsv"; continue; }
     [[ $pair == "$sq"$'\t'mapped ]] || bad "$a5: policy says $sq, map says ${pair//$'\t'/ }"
-    # SQ-RUN-* is a rerun class: one rerun. An SQ-NOI-* (noise) rule is not always zero, so the
-    # map's note decides: "never a re-run" means 0, "one re-run" means 1, and a noise rule must say.
-    note=$(awk -F'\t' -v a="$a5" '$1 == a { print $5 }' "$map")
+    # The cap and the guard are structured fields here; the map's note wording is not read.
+    [[ $guard == none || $guard == head-current ]] || bad "$a5: guard '$guard' must be none or head-current"
+    [[ $guard == none || $max == 1 ]] || bad "$a5: a guard only makes sense with max_reruns 1"
     case $sq in
         SQ-RUN-*) [[ $max == 1 ]] || bad "$a5: $sq is a rerun class, max_reruns must be 1" ;;
-        SQ-NOI-*) [[ $note == *"never a re-run"* || $note == *"one re-run"* ]] || bad "$a5: $sq is noise, so its sq-map note must say 'never a re-run' or 'one re-run'" ;;
+        # A noise rule that is re-run at all (a cancelled run) must be guarded: re-running a
+        # run whose head was replaced re-enters its concurrency group and can cancel the
+        # run for the current head.
+        SQ-NOI-*) [[ $max == 0 || $guard == head-current ]] || bad "$a5: $sq is noise, so a rerun needs guard head-current" ;;
         *) bad "$a5: $sq is neither SQ-RUN-* nor SQ-NOI-*" ;;
     esac
-    [[ $note != *"never a re-run"* || $max == 0 ]] || bad "$a5: the sq-map note says never a re-run, max_reruns must be 0"
-    [[ $note != *"one re-run"* || $max == 1 ]] || bad "$a5: the sq-map note says one re-run, max_reruns must be 1"
+    # Owner ruling 2026-11-14: a merge race is never a re-run.
+    [[ $sq != SQ-NOI-02 || $max == 0 ]] || bad "$a5: SQ-NOI-02 (merge race) must never be re-run, max_reruns must be 0"
     [[ $referral == no || $max == 1 ]] || bad "$a5: a referral after a rerun needs max_reruns 1"
 done < <(tail -n +2 "$policy")
 
