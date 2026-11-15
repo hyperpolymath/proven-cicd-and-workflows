@@ -27,10 +27,12 @@ on:
       - "actions/kanren-check/**"
       - "scripts/verify-suite-checkout.sh"
       - "scripts/zig-native-ffi-gate.sh"
+      - "scripts/required-job-verdict.sh"
       - "scripts/deonboard-workflow.sh"
       - "actions/zig-unified-api-adapter-check/**"
       - "tests/zig-ffi-scope.sh"
       - "tests/zig-native-ffi-gate.sh"
+      - "tests/required-job-verdict.sh"
       - "tests/gate-action-owners.sh"
       - "tests/inspect-pr-ci.sh"
       - "tests/rust-doc-package-scope.sh"
@@ -51,10 +53,12 @@ on:
       - "actions/kanren-check/**"
       - "scripts/verify-suite-checkout.sh"
       - "scripts/zig-native-ffi-gate.sh"
+      - "scripts/required-job-verdict.sh"
       - "scripts/deonboard-workflow.sh"
       - "actions/zig-unified-api-adapter-check/**"
       - "tests/zig-ffi-scope.sh"
       - "tests/zig-native-ffi-gate.sh"
+      - "tests/required-job-verdict.sh"
       - "tests/gate-action-owners.sh"
       - "tests/inspect-pr-ci.sh"
       - "tests/rust-doc-package-scope.sh"
@@ -99,10 +103,10 @@ jobs:
       - name: Every gate script parses and is shellcheck-clean
         run: |
           set -euo pipefail
-          for f in actions/rust-ci-check/*.sh actions/creusot-check/*.sh actions/spark-check/*.sh actions/kanren-check/*.sh scripts/verify-suite-checkout.sh scripts/zig-native-ffi-gate.sh tests/zig-native-ffi-gate.sh scripts/deonboard-workflow.sh rollout_language_gates.sh; do
+          for f in actions/rust-ci-check/*.sh actions/creusot-check/*.sh actions/spark-check/*.sh actions/kanren-check/*.sh scripts/verify-suite-checkout.sh scripts/zig-native-ffi-gate.sh tests/zig-native-ffi-gate.sh scripts/required-job-verdict.sh tests/required-job-verdict.sh scripts/deonboard-workflow.sh rollout_language_gates.sh; do
             bash -n "$f"
           done
-          shellcheck -S warning actions/rust-ci-check/*.sh actions/creusot-check/*.sh actions/spark-check/*.sh actions/kanren-check/*.sh scripts/verify-suite-checkout.sh scripts/zig-native-ffi-gate.sh tests/zig-native-ffi-gate.sh scripts/deonboard-workflow.sh rollout_language_gates.sh
+          shellcheck -S warning actions/rust-ci-check/*.sh actions/creusot-check/*.sh actions/spark-check/*.sh actions/kanren-check/*.sh scripts/verify-suite-checkout.sh scripts/zig-native-ffi-gate.sh tests/zig-native-ffi-gate.sh scripts/required-job-verdict.sh tests/required-job-verdict.sh scripts/deonboard-workflow.sh rollout_language_gates.sh
       - name: The suite-checkout verifier refuses an empty or wrong SHA
         run: |
           set -euo pipefail
@@ -119,6 +123,8 @@ jobs:
         run: bash tests/zig-ffi-scope.sh
       - name: Zig native execution gate refuses missing setup and planted failures
         run: bash tests/zig-native-ffi-gate.sh
+      - name: Mandatory job verdict cannot make missing or failed tests green
+        run: bash tests/required-job-verdict.sh
       - name: Rust gate
         run: bash actions/rust-ci-check/test.sh
       - name: Scoped Rust documentation still rejects broken doctests
