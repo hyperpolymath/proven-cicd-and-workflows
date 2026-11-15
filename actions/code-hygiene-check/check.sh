@@ -59,11 +59,35 @@ else
 fi
 
 echo 'Scanning proof code for undeclared circumventions...'
+# The default policy scan covers proof languages with single-line comments.
+# Coq has nested block comments and the proof-closing keyword Admitted.;
+# a line grep without comment masking both misses the latter and produces
+# false positives on quoted or commented specimens. Delegate Coq to the
+# source-owned, fully tested lexical scanner below.
 circ="$({ git grep --untracked -n -E -w 'sorry|believe_me|admit|postulate|assert_total' -- \
-  '*.idr' '*.lean' '*.v' '*.agda' '*.thy' \
+  '*.idr' '*.lean' '*.agda' '*.thy' \
   "${exclude_paths[@]}" \
   "${allow_args[@]+"${allow_args[@]}"}" || true; } \
   | grep -vE ':[0-9]+:[[:space:]]*(\|\|\||--|//|\(\*)' || true)"
+
+scanner="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scan-coq.pl"
+if [[ ! -r "$scanner" ]]; then
+  echo "::error::NOT_RUN: Coq proof scanner missing: $scanner" >&2
+  fail=1
+else
+  while IFS= read -r -d '' file; do
+    result=''
+    rc=0
+    result="$(perl "$scanner" "$file" 2>&1)" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) circ+=$'\n'"$result" ;;
+      *) echo "::error::NOT_RUN: Coq scanner failed for $file: $result" >&2; fail=1 ;;
+    esac
+  done < <(git ls-files --cached --others --exclude-standard -z -- '*.v' \
+    "${exclude_paths[@]}" "${allow_args[@]+"${allow_args[@]}"}")
+fi
+
 if [[ -n "$circ" ]]; then
   echo '::error::Undeclared proof circumventions found:' >&2
   printf '%s\n' "$circ"
