@@ -23,6 +23,9 @@ case "$mode" in
   failing)
     printf '{"passed":1,"failed":1,"errors":0,"total":2,"covered_cells":1,"cat_aspect_cells":238}\n' > "$3"
     ;;
+  all_failing)
+    printf '{"passed":0,"failed":2,"errors":0,"total":2,"covered_cells":0,"cat_aspect_cells":238}\n' > "$3"
+    ;;
   zero)
     printf '{"passed":0,"failed":0,"errors":0,"total":0,"covered_cells":0,"cat_aspect_cells":238}\n' > "$3"
     ;;
@@ -64,10 +67,11 @@ case_run "missing validator" 2 not_run true "$work/report.json" "$work/missing"
 case_run "valid strict" 0 validated_report true "$work/report.json" "$work/validator"
 grep -qx "passed=2" "$work/out"
 grep -qx "covered_cells=1" "$work/out"
-for mode in failing zero invalid void inconsistent; do
+for mode in failing all_failing zero invalid void inconsistent; do
   printf '{"mode":"%s"}\n' "$mode" > "$work/report.json"
   case "$mode" in
     failing) case_run "subject failed" 1 failed true "$work/report.json" "$work/validator" ;;
+    all_failing) case_run "all tests failed" 1 failed true "$work/report.json" "$work/validator" ;;
     zero) case_run "no executed tests" 1 insufficient true "$work/report.json" "$work/validator" ;;
     invalid) case_run "validator rejected" 1 invalid true "$work/report.json" "$work/validator" ;;
     void) case_run "validator did not run" 2 not_run true "$work/report.json" "$work/validator" ;;
