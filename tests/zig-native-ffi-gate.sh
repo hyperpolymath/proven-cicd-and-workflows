@@ -19,6 +19,7 @@ cat > "$repo/.proven-tests/integrations/contract/c-abi/run.sh" <<'EOF'
 # Stand-in for the runner only: this suite tests the orchestrator's statuses.
 exit "${FAKE_CONTRACT_RC:-0}"
 EOF
+printf '/* independent fixture harness launcher */\n' > "$repo/.proven-tests/integrations/contract/c-abi/launcher.c"
 git -C "$repo/.proven-tests" init -q
 git -C "$repo/.proven-tests" -c user.name=Fixture -c user.email=fixture@example.invalid add .
 git -C "$repo/.proven-tests" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'fixture runner'
@@ -52,7 +53,11 @@ case "${1:-}" in
       [[ ${FAKE_FAIL_PHASE:-} != build ]] || exit 1
       if [[ ${FAKE_SUPPRESS_ARCHIVE:-} != yes ]]; then
         mkdir -p "$(dirname "$FAKE_ABI_ARCHIVE")"
-        printf 'fake archive; this is NOT a native qualification\n' > "$FAKE_ABI_ARCHIVE"
+        if [[ ${FAKE_ARCHIVE_SYMLINK:-} == yes ]]; then
+          ln -s "$FAKE_OLD_ARCHIVE" "$FAKE_ABI_ARCHIVE"
+        else
+          printf 'fake archive; this is NOT a native qualification\n' > "$FAKE_ABI_ARCHIVE"
+        fi
       fi
     fi ;;
   fmt)
@@ -87,6 +92,8 @@ export C_ABI_HEADER=ffi/subject.h C_ABI_CONSUMER=ffi/consumer.c
 export C_ABI_ARCHIVE=ffi/zig-out/lib/libsubject.a
 export FAKE_ABI_ARCHIVE="$repo/$C_ABI_ARCHIVE"
 export FAKE_HARNESS_FILE="$repo/.proven-tests/integrations/contract/c-abi/run.sh"
+export FAKE_OLD_ARCHIVE="$tmp/old-archive.a"
+printf 'obsolete archive that must never qualify\n' > "$FAKE_OLD_ARCHIVE"
 cd "$repo"
 run() {
   local want=$1 label=$2
@@ -119,6 +126,19 @@ git -C "$repo/.proven-tests" checkout -- integrations/contract/c-abi/run.sh
 run 2 'void: subject test mutates pinned harness after initial check' \
   env FAKE_MUTATE_HARNESS=yes bash "$gate"
 git -C "$repo/.proven-tests" checkout -- integrations/contract/c-abi/run.sh
+# Assume-unchanged index bits must not conceal rewritten harness bytes.
+git -C "$repo/.proven-tests" update-index --assume-unchanged integrations/contract/c-abi/run.sh
+printf '# malicious replacement despite Git index flag\n' >> "$FAKE_HARNESS_FILE"
+run 2 'void: harness index assume-unchanged does not mask changed bytes' bash "$gate"
+git -C "$repo/.proven-tests" update-index --no-assume-unchanged integrations/contract/c-abi/run.sh
+git -C "$repo/.proven-tests" checkout -- integrations/contract/c-abi/run.sh
+# Outputs cannot masquerade as immutable headers supplied by the consumer.
+mkdir -p "$repo/ffi/zig-out"
+cp "$repo/ffi/subject.h" "$repo/ffi/zig-out/generated.h"
+run 2 'void: ABI header from generated output tree' \
+  env C_ABI_HEADER=ffi/zig-out/generated.h bash "$gate"
+run 2 'void: final archive symlink to old data' \
+  env FAKE_ARCHIVE_SYMLINK=yes bash "$gate"
 printf '# modified subject input\n' >> "$repo/ffi/build.zig"
 run 2 'void: source tree differs from claimed subject SHA' bash "$gate"
 git -C "$repo" checkout -- ffi/build.zig
