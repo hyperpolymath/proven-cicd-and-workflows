@@ -86,6 +86,8 @@ sed -i '/^Lemma hole : False[.]$/,$d' "$fixture/src/CoqProof.v"
 cat > "$fixture/src/Module.v" <<'EOF'
 module sample;
   // A signal annotation says Admitted. but no Coq proof exists.
+  /* Verilog block note: Admitted. is not an executable Coq proof.
+     It also says admit; idtac. as prose. */
   wire ready;
 endmodule
 EOF

@@ -24,11 +24,20 @@ defined $raw or do {
 close $fh;
 my $visible = '';
 my $depth = 0;
+my $verilog_block_depth = 0;
 my $quoted = 0;
 my $len = length($raw);
 for (my $i = 0; $i < $len;) {
     my $pair = substr($raw, $i, 2);
     my $c = substr($raw, $i, 1);
+    # A .v path can be Verilog: mask /* ... */ comments as well as //.
+    if ($verilog_block_depth > 0) {
+        if ($pair eq '/*') { $verilog_block_depth++; $visible .= '  '; $i += 2; next; }
+        if ($pair eq '*/') { $verilog_block_depth--; $visible .= '  '; $i += 2; next; }
+        $visible .= ($c eq "\n" ? "\n" : ' ');
+        $i++;
+        next;
+    }
     if ($depth > 0) {
         if ($pair eq '(*') { $depth++; $visible .= '  '; $i += 2; next; }
         if ($pair eq '*)') { $depth--; $visible .= '  '; $i += 2; next; }
@@ -45,6 +54,7 @@ for (my $i = 0; $i < $len;) {
         next;
     }
     if ($pair eq '(*') { $depth = 1; $visible .= '  '; $i += 2; next; }
+    if ($pair eq '/*') { $verilog_block_depth = 1; $visible .= '  '; $i += 2; next; }
     # A .v file may be Verilog; in that language // introduces a comment.
     # Coq does not accept // as a line comment, so masking one cannot hide
     # a valid Coq proof (an invalid Coq file is caught by its compiler).
@@ -59,7 +69,7 @@ for (my $i = 0; $i < $len;) {
     $visible .= $c;
     $i++;
 }
-if ($depth || $quoted) {
+if ($depth || $verilog_block_depth || $quoted) {
     print STDERR "NOT_RUN: unterminated Coq comment or string: $path\n";
     exit 2;
 }
