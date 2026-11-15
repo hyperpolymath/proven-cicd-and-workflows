@@ -73,8 +73,38 @@ if (cd "$fixture" && bash "$checker"); then
   echo 'FAIL: executable Coq admit. tactic was accepted' >&2
   exit 1
 fi
+sed -i 's/^admit[.]$/admit; idtac./' "$fixture/src/CoqProof.v"
+if (cd "$fixture" && bash "$checker"); then
+  echo 'FAIL: Coq admit tactic composed with a tactical was accepted' >&2
+  exit 1
+fi
 sed -i '/^Lemma hole : False[.]$/,$d' "$fixture/src/CoqProof.v"
 (cd "$fixture" && bash "$checker")
+
+# Verilog and Coq share the .v suffix. A Verilog // comment is not
+# an executable Coq proof, and is not evidence of a bypass.
+cat > "$fixture/src/Module.v" <<'EOF'
+module sample;
+  // A signal annotation says Admitted. but no Coq proof exists.
+  wire ready;
+endmodule
+EOF
+(cd "$fixture" && bash "$checker")
+
+# Sparse-checkout index entries may be intentionally absent locally.
+# Skip only the explicit skip-worktree case; a missing normal file fails.
+printf 'Admitted.\n' > "$fixture/src/Sparse.v"
+git -C "$fixture" add src/Sparse.v
+git -C "$fixture" update-index --skip-worktree src/Sparse.v
+rm "$fixture/src/Sparse.v"
+(cd "$fixture" && bash "$checker")
+printf 'Admitted.\n' > "$fixture/src/Missing.v"
+git -C "$fixture" add src/Missing.v
+rm "$fixture/src/Missing.v"
+if (cd "$fixture" && bash "$checker"); then
+  echo 'FAIL: a missing ordinary tracked file was treated as a sparse omission' >&2
+  exit 1
+fi
 
 coq_scanner="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scan-coq.pl"
 rc=0
@@ -83,6 +113,6 @@ if [[ $rc -ne 2 ]]; then
   echo "FAIL: missing Coq source returned $rc instead of NOT_RUN=2" >&2
   exit 1
 fi
-echo 'Coq comments, string literals, Admitted, admit and NOT_RUN controls passed.'
+echo 'Coq/Verilog comments, nested strings, tactics, sparse, missing and NOT_RUN controls passed.'
 
 echo 'All code-hygiene positive and negative controls passed.'

@@ -76,6 +76,16 @@ if [[ ! -r "$scanner" ]]; then
   fail=1
 else
   while IFS= read -r -d '' file; do
+    if [[ ! -f "$file" ]]; then
+      # A sparse-checkout checkout can list index entries omitted from the
+      # working tree. Those were not scanned by the previous git-grep gate.
+      # Skip only positively identified skip-worktree paths, not missing
+      # normal source files (which must fail closed).
+      if git ls-files -v -- "$file" | grep -q '^S '; then
+        echo "NOT_APPLICABLE: $file omitted by sparse checkout"
+        continue
+      fi
+    fi
     result=''
     rc=0
     result="$(perl "$scanner" "$file" 2>&1)" || rc=$?

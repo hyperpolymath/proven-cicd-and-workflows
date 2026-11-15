@@ -45,6 +45,16 @@ for (my $i = 0; $i < $len;) {
         next;
     }
     if ($pair eq '(*') { $depth = 1; $visible .= '  '; $i += 2; next; }
+    # A .v file may be Verilog; in that language // introduces a comment.
+    # Coq does not accept // as a line comment, so masking one cannot hide
+    # a valid Coq proof (an invalid Coq file is caught by its compiler).
+    if ($pair eq '//') {
+        while ($i < $len && substr($raw, $i, 1) ne "\n") {
+            $visible .= ' ';
+            $i++;
+        }
+        next;
+    }
     if ($c eq '"') { $quoted = 1; $visible .= ' '; $i++; next; }
     $visible .= $c;
     $i++;
@@ -54,11 +64,13 @@ if ($depth || $quoted) {
     exit 2;
 }
 my $found = 0;
-while ($visible =~ /\b(?:Admitted|admit)\s*\./g) {
+# 'admit' is a tactic and may be followed by a semicolon or tactical,
+# e.g. admit; idtac. 'Admitted.' closes a proof without a term.
+while ($visible =~ /\b(?:Admitted\s*\.|admit\b)/g) {
     my $offset = $-[0];
     my $prefix = substr($visible, 0, $offset);
     my $line = 1 + ($prefix =~ tr/\n/\n/);
-    print "$path:$line: Coq unproved term (Admitted. or admit.)\n";
+    print "$path:$line: Coq unproved term (Admitted. or admit tactic)\n";
     $found = 1;
 }
 exit($found ? 1 : 0);
