@@ -22,7 +22,7 @@ mkrules api_rate_limit=1 api_server_error=1 external_host_unreachable=1 scan_ran
 mkrules api_rate_limit=1 api_server_error=1 external_host_unreachable=1 scan_range_missing_commit=1 merge_ref_race=0 runner_cancelled=1:always; chk "Hypatia guard differs from the table" 1
 mkrules api_rate_limit=1:head_current api_server_error=1 external_host_unreachable=1 scan_range_missing_commit=1 merge_ref_race=0 runner_cancelled=1:head_current; chk "Hypatia guards a row the table leaves unguarded" 1
 mkrules api_rate_limit=1 api_server_error=1 external_host_unreachable=1 scan_range_missing_commit=1 merge_ref_race=0 runner_cancelled=0
-out=$(run 2>&1); rc=$?; [[ $rc -eq 0 && $out == *WARN* ]] && echo "ok: guarded rerun pending in Hypatia is a warning" || { echo "FAILED: pending state (rc=$rc: $out)"; fails=1; }
+chk "table guards a rerun that Hypatia still has at 0" 1
 mkrules api_rate_limit=1 api_server_error=0 external_host_unreachable=1 scan_range_missing_commit=1 merge_ref_race=0 runner_cancelled=1; chk "unguarded row disagreeing is rejected" 1
 mkrules api_rate_limit=1 api_server_error=1 external_host_unreachable=1 scan_range_missing_commit=1 merge_ref_race=1 runner_cancelled=1:head_current; chk "Hypatia allows a merge-race rerun" 1
 mkrules api_rate_limit=1 api_server_error=1 external_host_unreachable=1 scan_range_missing_commit=1 merge_ref_race=0 runner_cancelled=2:head_current; chk "Hypatia allows more than the table" 1

@@ -197,7 +197,7 @@
           uses: "actions/checkout@v7.0.1",
           with: {
             repository: "hyperpolymath/hypatia",
-            ref: "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'main' || 'f955ace8d0056e21dd92f797c7f26c2ddf864d2c' }}",
+            ref: "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'main' || '59e6abed64d9b6c14c4c0993451cca352b2ca070' }}",
             path: "hypatia-registry",
             sparse-checkout: "hypatia_rules_praxis.deed\nlib/rules/ci_failure_triage.ex",
             sparse-checkout-cone-mode: false,

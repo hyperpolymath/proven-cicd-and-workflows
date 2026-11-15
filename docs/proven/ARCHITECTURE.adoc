@@ -287,9 +287,9 @@ Each policy below becomes registry rules with fixtures, one PR per topic:
   fields of the same-named rule in Hypatia's `lib/rules/ci_failure_triage.ex`
   (`guard: :head_current` is the table's `head-current`; no field is `none`), read in the
   praxis job like the registry (pinned on push and pull request, main weekly). A
-  guarded 1 that Hypatia still has at 0 is a warning: the pending state while
-  the Hypatia change lands. Any other disagreement fails, including an unguarded rerun in Hypatia. Until Hypatia changes,
-  `runner_cancelled` there is `retries 0`. This table records the guard; whatever
+  disagreement fails, including an unguarded rerun in Hypatia. Hypatia's
+  `runner_cancelled` is `action :rerun, retries 1, guard :head_current` (hypatia#1152),
+  read at the pinned commit. A new guarded row needs its Hypatia change first. This table records the guard; whatever
   dispatches the rerun must apply it, and no dispatcher in this repository does yet.
   `tests/retry-policy.sh` takes the id pairing from `sq-map.tsv`, and fails if a
   mapped rerun or noise row has no policy row. Dispatch and meaning stay with
