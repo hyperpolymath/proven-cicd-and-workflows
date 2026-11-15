@@ -408,13 +408,13 @@ No independent assurance verdict; retain the catalogue limitation.
 
 *Consumer proof:* no receipt indexed here.
 
-=== Test & benchmark discoverability
+=== Test & benchmark evidence observatory
 
 *advisory · advisory · advisory-only*
 
-*Claim:* Look for benchmark mentions and test/benchmark dashboards.
+*Claim:* Observe a validated Proven-Tests schema-v2 report and derived test-cell counts; otherwise report not_assessed.
 
-*Prerequisites / boundary:* Does not execute tests/benchmarks; metric extraction is mocked/N/A.
+*Prerequisites / boundary:* Advisory by default. Requires an independently pinned Proven-Tests validator and a real run report; does not execute tests, verify runner identity or measure benchmarks. Strict mode rejects missing/failed evidence.
 
 *Control evidence:* Not established in this pass.
 
