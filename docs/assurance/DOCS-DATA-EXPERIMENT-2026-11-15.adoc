@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: CC-BY-SA-4.0
+= Docs-data validation canary, 2026-11-15
+:status: Experimental, non-enforcing; NOT release qualified
+:revdate: 2026-11-15
+
+== Purpose and strict boundary
+
+This source-level candidate implements the *local document check* portion of
+the already-proposed `docs-data-v1` profile contract, not a replacement for
+the minimum `secret-scan` or `spdx-license` capabilities or any existing
+Stuff of Awe ruleset and required status. It does not yet change the
+profile mother's `adapter_state: unimplemented` because *complete* adapter
+qualification, reproducible tool installation and hosted execution are owed.
+
+The script `scripts/check-docs-data.sh PROFILE REPOSITORY_DIR SHA` first
+uses `check-docs-profile-subject.sh` to bind the repository identity, exact
+commit, tracked sources and path containment. It refuses to inspect a mutable
+or untrusted checkout as though it were the subject of that commit.
+
+For files `.adoc` or `.asciidoc`, the script renders via Asciidoctor
+`--failure-level WARN`. For Markdown, lychee parses supported link forms.
+For both, `lychee --offline` checks local references without contacting
+remote domains. The checked document count and AsciiDoc render count are
+recorded in a versioned JSON observation bound to the exact SHA.
+
+The local canary pins `lychee 0.24.2` and `Asciidoctor 2.0.23`; tool
+absence, tool-version drift, invalid source binding, unsupported document type
+or no checks executed yield exit *2* (VOID). Executed subject defects yield
+exit *1*. Executed in-scope checks with no defect yield *0*. Harness errors
+must not be mistaken for defects in the subject.
+
+== Experimental controls
+
+Run `bash tests/docs-data-gate.sh` on a Linux host equipped with the
+specified tool versions and Git, jq, SHA-256. The test executes the *real*
+adapter, not a copy of its decision logic, against local isolated git
+checkouts. No network runner registration or GitHub credentials are needed.
+
+* Silence — real valid Markdown/AsciiDoc and an existing relative link: 0
+* Silence — a subject repository with an untrusted toolchain declaration
+  must not select the verification tool: 0
+* Firing — a broken relative Markdown target: 1
+* Firing — a missing AsciiDoc include: 1
+* Calibration — nonexistent profile: 2
+* Calibration — wrong expected source commit: 2
+* Calibration — missing link checker: 2
+
+The original 2026-11-15 real-repo canary on
+https://github.com/stuff-of-awe/awesome-coq/tree/8aaeff1a559b4e94749a2a276b37cea54f26fdd5[`awesome-coq`]
+initially refused because invoking a `mise` tool shim while inside the
+repository tried to load an *untrusted* `mise.toml`. This was a tool setup
+failure, not a broken document. The corrected check runs tooling from a
+separate temporary directory and explicitly tests the subject's inability to
+change verifier tooling. On that exact coq SHA it rendered `README.adoc`
+and returned the expected non-empty observation. This is one local
+reproduction, not an independent second-machine qualification.
+
+== Out of scope / residue
+
+* Remote HTTP status, transient/network failures and broken external links
+  are *not checked offline*. They require a separate periodic/advisory
+  workflow and explicit SSRF/private-address controls.
+* Full Markdown/AsciiDoc semantics, image rendering, every anchor form,
+  PDF output, and every tool's parser soundness are *not proved*.
+* Secret and licence scanning, signatures, branch rules, K9, canon lockstep,
+  required-context closure, test taxonomy exhaustiveness and release policy
+  are *not replaced* by this script.
+* No end-to-end GitHub runner or public untrusted PR code was executed.
+* No tool-installer source digest, SLSA provenance, OCI VM lifecycle,
+  pinned hosted workflow or GitHub-required status was established.
+* The three mother profiles still describe proposals, not qualified
+  substitutions for existing CI.
+
+== Qualification before promotion
+
+. Move the canonical adversarial fixture definitions into
+  `proven-tests-and-benches` with a validated 0/1/2 harness contract and
+  compatibility with the current pinned Idris2 compiler.
+. Add an approved, SHA/digest-pinned installer for both tools and test it
+  on a separate clean ephemeral Linux runner.
+. Add explicit tool-setup failure injection, Unicode/encoded-path and
+  symlink tests, ignored/excluded-link controls and remote-link posture.
+. Check an additional clean documentation subject and a known-broken one.
+. Integrate with existing `docs-data-v1` profile validation and publish a
+  canary receipt using the Proven GitHub execution-verdict bridge; no
+  caller may mark a missing/skipped job green.
+. Map required existing contexts and the 18 x 14 testing taxonomy by
+  applicability; do not drop K9, proof, security or any required check.
+. Obtain independent review, resolve all app conversations and verify
+  latest-head and post-merge CI before demoting any existing workflow.
