@@ -25,6 +25,12 @@ git -C "$repo/.proven-tests" -c user.name=Fixture -c user.email=fixture@example.
 git -C "$repo/.proven-tests" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'fixture runner'
 sha=$(git -C "$repo/.proven-tests" rev-parse HEAD)
 git -C "$repo" init -q
+# Tracked aliases exercise canonical paths without introducing dirty inputs.
+for generated in zig-out zig-cache .zig-cache; do
+  ln -s "$generated" "$repo/ffi/alias-$generated"
+done
+mkdir -p "$repo/ffi/zig-outside"
+cp "$repo/ffi/subject.h" "$repo/ffi/zig-outside/subject.h"
 git -C "$repo" add ffi
 git -C "$repo" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'fixture native project'
 cat > "$tmp/fakebin/zig" <<'EOF'
@@ -132,11 +138,43 @@ printf '# malicious replacement despite Git index flag\n' >> "$FAKE_HARNESS_FILE
 run 2 'void: harness index assume-unchanged does not mask changed bytes' bash "$gate"
 git -C "$repo/.proven-tests" update-index --no-assume-unchanged integrations/contract/c-abi/run.sh
 git -C "$repo/.proven-tests" checkout -- integrations/contract/c-abi/run.sh
+# Subject bytes must also be checked independently of index flags.
+for flag in assume-unchanged skip-worktree; do
+  git -C "$repo" update-index --"$flag" ffi/build.zig
+  run 0 "silence: unchanged subject with $flag" bash "$gate"
+  printf '# concealed subject mutation\n' >> "$repo/ffi/build.zig"
+  run 2 "void: subject $flag does not mask changed bytes" bash "$gate"
+  grep -Fq 'subject content mismatch despite index status: ffi/build.zig' "$tmp/out"
+  git -C "$repo" update-index --no-"$flag" ffi/build.zig
+  git -C "$repo" checkout -- ffi/build.zig
+done
 # Outputs cannot masquerade as immutable headers supplied by the consumer.
 mkdir -p "$repo/ffi/zig-out"
 cp "$repo/ffi/subject.h" "$repo/ffi/zig-out/generated.h"
 run 2 'void: ABI header from generated output tree' \
   env C_ABI_HEADER=ffi/zig-out/generated.h bash "$gate"
+for generated in zig-out zig-cache .zig-cache; do
+  mkdir -p "$repo/ffi/$generated"
+  cp "$repo/ffi/subject.h" "$repo/ffi/$generated/generated.h"
+  cp "$repo/ffi/consumer.c" "$repo/ffi/$generated/consumer.c"
+  cp "$repo/ffi/src/main.zig" "$repo/ffi/$generated/main.zig"
+  for alias in "./$generated" "$generated/./" "alias-$generated"; do
+    for input in C_ABI_HEADER C_ABI_CONSUMER ZIG_TEST_ENTRY; do
+      case "$input" in
+        C_ABI_HEADER) value="ffi/$alias/generated.h" ;;
+        C_ABI_CONSUMER) value="ffi/$alias/consumer.c" ;;
+        ZIG_TEST_ENTRY) value="$alias/main.zig" ;;
+      esac
+      run 2 "void: $input canonical generated tree $alias" env "$input=$value" bash "$gate"
+      grep -Fq 'source input placed under generated output tree:' "$tmp/out"
+    done
+  done
+done
+run 0 'silence: source with generated-root prefix is allowed' \
+  env C_ABI_HEADER=ffi/zig-outside/subject.h bash "$gate"
+run 2 'void: declared source cannot be canonicalised' \
+  env C_ABI_HEADER=ffi/absent/subject.h bash "$gate"
+grep -Fq 'source input cannot be canonicalised:' "$tmp/out"
 run 2 'void: final archive symlink to old data' \
   env FAKE_ARCHIVE_SYMLINK=yes bash "$gate"
 printf '# modified subject input\n' >> "$repo/ffi/build.zig"

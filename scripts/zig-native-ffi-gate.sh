@@ -65,7 +65,8 @@ if [[ $gate_root == "$subject_root/"* ]]; then
   subject_excludes+=(":(exclude)$gate_relative")
 fi
 verify_subject_checkout() {
-  local checked_head checked_status
+  local checked_head checked_status inventory file expected_blob actual_blob
+  local -a tracked_files
   checked_head=$(git rev-parse HEAD 2>/dev/null) ||
     void 'subject HEAD unreadable'
   [[ $checked_head == "$subject_sha" ]] ||
@@ -76,6 +77,29 @@ verify_subject_checkout() {
     void "subject inputs differ from claimed commit: $checked_status"
   git diff --quiet "$subject_sha" -- . "${subject_excludes[@]}" ||
     void 'subject tracked files differ from claimed commit'
+  # As for the harness, compare bytes with immutable objects: index flags
+  # can hide changes from both status and diff. Keep the same exclusions.
+  inventory=$(mktemp) || void 'cannot create subject source inventory'
+  if ! git ls-files --cached -z -- . "${subject_excludes[@]}" > "$inventory"; then
+    rm -f -- "$inventory"
+    void 'subject source inventory unavailable'
+  fi
+  mapfile -d '' -t tracked_files < "$inventory"
+  rm -f -- "$inventory"
+  for file in "${tracked_files[@]}"; do
+    expected_blob=$(git rev-parse "$subject_sha:$file" 2>/dev/null) ||
+      void "subject commit lacks source: $file"
+    if [[ -L $file ]]; then
+      actual_blob=$(readlink -n -- "$file" | git hash-object --stdin) ||
+        void "subject symlink cannot be hashed: $file"
+    else
+      [[ -f $file ]] || void "subject source is absent or not a regular file: $file"
+      actual_blob=$(git hash-object -- "$file" 2>/dev/null) ||
+        void "subject source cannot be hashed: $file"
+    fi
+    [[ $actual_blob == "$expected_blob" ]] ||
+      void "subject content mismatch despite index status: $file"
+  done
 }
 verify_subject_checkout
 
@@ -110,11 +134,20 @@ actual=$PROVEN_TESTS_SHA
 [[ -s $ZIG_PROJECT_DIR/$ZIG_TEST_ENTRY ]] || void 'explicit Zig test source absent'
 # Generated output is not a source of authoritative ABI declarations.
 # Only the actual produced archive is allowed beneath Zig's output tree.
+generated_roots=()
+for generated in zig-out zig-cache .zig-cache; do
+  canonical_root=$(realpath -m -- "$ZIG_PROJECT_DIR/$generated") ||
+    void "generated output root cannot be canonicalised: $generated"
+  generated_roots+=("$canonical_root")
+done
 for declared in "$C_ABI_HEADER" "$C_ABI_CONSUMER" "$ZIG_PROJECT_DIR/$ZIG_TEST_ENTRY"; do
-  case "$declared" in
-    "$ZIG_PROJECT_DIR/zig-out/"*|"$ZIG_PROJECT_DIR/zig-cache/"*|"$ZIG_PROJECT_DIR/.zig-cache/"*)
-      void "source input placed under generated output tree: $declared" ;;
-  esac
+  canonical_declared=$(realpath -e -- "$declared") ||
+    void "source input cannot be canonicalised: $declared"
+  for canonical_root in "${generated_roots[@]}"; do
+    if [[ $canonical_declared == "$canonical_root" || $canonical_declared == "$canonical_root/"* ]]; then
+      void "source input placed under generated output tree: $declared"
+    fi
+  done
 done
 for file in "$C_ABI_HEADER" "$C_ABI_CONSUMER"; do
   [[ -s $file && -r $file ]] || void "ABI consumer source missing or empty: $file"
