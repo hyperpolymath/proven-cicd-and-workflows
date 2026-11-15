@@ -1,36 +1,41 @@
-name: 'Test & Benchmarks Dashboard Gate'
-description: 'Validates test/bench metrics, README benchmarks, and the presence of a historical dashboard.'
+# SPDX-License-Identifier: MPL-2.0
+name: 'Test & Benchmarks Evidence Observatory'
+description: >-
+  Observe a Proven-Tests schema-v2 report using an independently supplied,
+  executable Proven-Tests validator. Never invent test/benchmark metrics.
+  By default missing evidence is not_assessed (advisory); strict mode fails
+  closed on missing, invalid, empty or failing evidence.
+inputs:
+  report-path:
+    description: 'Path to executed Proven-Tests schema-v2 report (empty = no evidence)'
+    required: false
+    default: ''
+  validator-path:
+    description: 'Executable proven-evidence CLI from a reviewed, pinned Proven-Tests revision'
+    required: false
+    default: ''
+  require-evidence:
+    description: 'true = fail when the report is absent, unvalidated, empty or has failures'
+    required: false
+    default: 'false'
+outputs:
+  status:
+    description: 'not_assessed | not_run | invalid | insufficient | failed | validated_report'
+    value: ${{ steps.observe.outputs.status }}
+  passed:
+    description: 'Passed tests in independently derived report summary; only when validated'
+    value: ${{ steps.observe.outputs.passed }}
+  covered-cells:
+    description: 'Derived category/aspect cells; not statement of source-code line coverage'
+    value: ${{ steps.observe.outputs.covered_cells }}
 runs:
   using: 'composite'
   steps:
-    - name: Run Test and Benchmarks Check
+    - name: Observe test evidence, without invented metrics
+      id: observe
       shell: bash
-      run: |
-        echo "Validating Tests and Benchmarks..."
-        
-        README="README.adoc"
-        [ -f "README.md" ] && README="README.md"
-        
-        if [ ! -f "$README" ]; then
-          echo "::warning::No README found to check for core benchmarks."
-        else
-          # Check for core benchmarks in README
-          if ! grep -qi "benchmark" "$README"; then
-            echo "::warning::Core benchmarks should be listed upfront in the README."
-          fi
-        fi
-        
-        # Check for dashboard in tests/benches
-        if [ -d "tests" ] || [ -d "benches" ]; then
-          if [ ! -f "tests/DASHBOARD.md" ] && [ ! -f "benches/DASHBOARD.md" ] && [ ! -f "tests/benches/DASHBOARD.md" ] && [ ! -f "tests/DASHBOARD.adoc" ] && [ ! -f "benches/DASHBOARD.adoc" ]; then
-            echo "::warning::Missing full detail dashboard in tests/benches folder."
-            echo "::warning::Dashboard should be grouped by category with history."
-          fi
-        fi
-        
-        # (Mock Extraction for CI metrics logging)
-        echo "Test Count: N/A (Requires language-specific runner)"
-        echo "Test Passes: N/A"
-        echo "Benches: N/A"
-        
-        echo "Test & Benchmarks Dashboard validation complete."
+      env:
+        TEST_BENCH_REPORT: ${{ inputs.report-path }}
+        TEST_BENCH_VALIDATOR: ${{ inputs.validator-path }}
+        TEST_BENCH_REQUIRED: ${{ inputs.require-evidence }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh"
