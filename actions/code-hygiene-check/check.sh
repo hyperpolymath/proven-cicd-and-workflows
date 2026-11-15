@@ -70,9 +70,11 @@ circ="$({ git grep --untracked -n -E -w 'sorry|believe_me|admit|postulate|assert
   "${allow_args[@]+"${allow_args[@]}"}" || true; } \
   | grep -vE ':[0-9]+:[[:space:]]*(\|\|\||--|//|\(\*)' || true)"
 
-scanner="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scan-coq.pl"
-if [[ ! -r "$scanner" ]]; then
-  echo "::error::NOT_RUN: Coq proof scanner missing: $scanner" >&2
+hygiene_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+scanner="$hygiene_dir/scan-coq.pl"
+classifier="$hygiene_dir/classify-v-source.sh"
+if [[ ! -r "$scanner" || ! -r "$classifier" ]]; then
+  echo "::error::NOT_RUN: Coq language classifier or scanner missing" >&2
   fail=1
 else
   while IFS= read -r -d '' file; do
@@ -88,6 +90,21 @@ else
     fi
     result=''
     rc=0
+    language="$(bash "$classifier" "$file" 2>&1)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      echo "::error::NOT_RUN: cannot classify $file: $language" >&2
+      fail=1
+      continue
+    fi
+    if [[ "$language" = verilog ]]; then
+      echo "NOT_APPLICABLE: $file is explicitly declared Verilog"
+      continue
+    fi
+    if [[ "$language" != coq ]]; then
+      echo "::error::NOT_RUN: unexpected classifier result for $file: $language" >&2
+      fail=1
+      continue
+    fi
     result="$(perl "$scanner" "$file" 2>&1)" || rc=$?
     case "$rc" in
       0) ;;

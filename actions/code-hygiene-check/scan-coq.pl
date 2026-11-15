@@ -1,8 +1,10 @@
 #!/usr/bin/env perl
 # SPDX-License-Identifier: MPL-2.0
-# Lexical Coq proof-hole detector: match executable statements, not comments
-# or string literals. Nested (* ... *) comments are handled explicitly.
-# Exit 0: checked and clean; 1: proof hole detected; 2: no check performed.
+# Coq-only lexical proof-hole guard. Callers must classify .v files as Coq.
+# Coq's nested (* ... *) comments can contain quoted strings; delimiters
+# within those strings never change the comment depth. SSReflect // is code,
+# not a line comment. This is not a substitute for compiling Coq proofs.
+# Exit 0 checked/clean; 1 proof hole; 2 no reliable assessment.
 use strict;
 use warnings;
 
@@ -22,31 +24,26 @@ defined $raw or do {
     exit 2;
 };
 close $fh;
-my $visible = '';
-my $depth = 0;
-my $verilog_block_depth = 0;
-my $quoted = 0;
+
+my ($visible, $depth, $quoted, $comment_quoted) = ('', 0, 0, 0);
 my $len = length($raw);
 for (my $i = 0; $i < $len;) {
     my $pair = substr($raw, $i, 2);
     my $c = substr($raw, $i, 1);
-    # A .v path can be Verilog: mask /* ... */ comments as well as //.
-    if ($verilog_block_depth > 0) {
-        if ($pair eq '/*') { $verilog_block_depth++; $visible .= '  '; $i += 2; next; }
-        if ($pair eq '*/') { $verilog_block_depth--; $visible .= '  '; $i += 2; next; }
-        $visible .= ($c eq "\n" ? "\n" : ' ');
-        $i++;
-        next;
-    }
     if ($depth > 0) {
-        if ($pair eq '(*') { $depth++; $visible .= '  '; $i += 2; next; }
-        if ($pair eq '*)') { $depth--; $visible .= '  '; $i += 2; next; }
+        if ($comment_quoted) {
+            if ($pair eq '""') { $visible .= '  '; $i += 2; next; }
+            if ($c eq '"') { $comment_quoted = 0; }
+        } else {
+            if ($c eq '"') { $comment_quoted = 1; }
+            elsif ($pair eq '(*') { $depth++; $visible .= '  '; $i += 2; next; }
+            elsif ($pair eq '*)') { $depth--; $visible .= '  '; $i += 2; next; }
+        }
         $visible .= ($c eq "\n" ? "\n" : ' ');
         $i++;
         next;
     }
     if ($quoted) {
-        # Coq strings escape a quote by doubling it.
         if ($pair eq '""') { $visible .= '  '; $i += 2; next; }
         if ($c eq '"') { $quoted = 0; }
         $visible .= ($c eq "\n" ? "\n" : ' ');
@@ -54,28 +51,18 @@ for (my $i = 0; $i < $len;) {
         next;
     }
     if ($pair eq '(*') { $depth = 1; $visible .= '  '; $i += 2; next; }
-    if ($pair eq '/*') { $verilog_block_depth = 1; $visible .= '  '; $i += 2; next; }
-    # A .v file may be Verilog; in that language // introduces a comment.
-    # Coq does not accept // as a line comment, so masking one cannot hide
-    # a valid Coq proof (an invalid Coq file is caught by its compiler).
-    if ($pair eq '//') {
-        while ($i < $len && substr($raw, $i, 1) ne "\n") {
-            $visible .= ' ';
-            $i++;
-        }
-        next;
-    }
     if ($c eq '"') { $quoted = 1; $visible .= ' '; $i++; next; }
     $visible .= $c;
     $i++;
 }
-if ($depth || $verilog_block_depth || $quoted) {
+if ($depth || $comment_quoted || $quoted) {
     print STDERR "NOT_RUN: unterminated Coq comment or string: $path\n";
     exit 2;
 }
+
 my $found = 0;
-# 'admit' is a tactic and may be followed by a semicolon or tactical,
-# e.g. admit; idtac. 'Admitted.' closes a proof without a term.
+# Coq 'admit' is a tactic, including forms such as admit; idtac.
+# Admitted. closes the proof without a term. Never mask SSReflect //.
 while ($visible =~ /\b(?:Admitted\s*\.|admit\b)/g) {
     my $offset = $-[0];
     my $prefix = substr($visible, 0, $offset);

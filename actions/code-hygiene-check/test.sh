@@ -47,6 +47,19 @@ fi
 
 printf '%s' 'src/Safety.idr' > "$fixture/.cicd-hygiene-allow"
 (cd "$fixture" && bash "$checker")
+# Only a real Coq proof-hole finding counts as a firing control; an
+# unrelated checkout/tool error must not satisfy a negative test.
+expect_coq_firing() {
+  local label="$1" rc=0
+  (cd "$fixture" && bash "$checker" > "$fixture/coq-firing.log" 2>&1) || rc=$?
+  if [[ $rc -ne 1 ]] || ! grep -q 'Coq unproved term' "$fixture/coq-firing.log"; then
+    echo "FAIL: $label — expected a genuine Coq proof-hole finding" >&2
+    cat "$fixture/coq-firing.log" >&2
+    exit 1
+  fi
+  echo "PASS: $label (real proof-hole finding)"
+}
+
 # Coq: quoted/commented keywords are not executable proof escapes, while
 # Admitted. and the lower-case admit. tactic are real proof holes.
 cat > "$fixture/src/CoqProof.v" <<'EOF'
@@ -64,34 +77,56 @@ Lemma hole : False.
 Proof.
 Admitted.
 EOF
-if (cd "$fixture" && bash "$checker"); then
-  echo 'FAIL: executable Coq Admitted. proof hole was accepted' >&2
-  exit 1
-fi
+expect_coq_firing 'executable Coq Admitted. proof hole'
 sed -i 's/^Admitted[.]$/admit./' "$fixture/src/CoqProof.v"
-if (cd "$fixture" && bash "$checker"); then
-  echo 'FAIL: executable Coq admit. tactic was accepted' >&2
-  exit 1
-fi
+expect_coq_firing 'executable Coq admit. tactic'
 sed -i 's/^admit[.]$/admit; idtac./' "$fixture/src/CoqProof.v"
-if (cd "$fixture" && bash "$checker"); then
-  echo 'FAIL: Coq admit tactic composed with a tactical was accepted' >&2
-  exit 1
-fi
+expect_coq_firing 'Coq admit tactic composed with a tactical'
 sed -i '/^Lemma hole : False[.]$/,$d' "$fixture/src/CoqProof.v"
 (cd "$fixture" && bash "$checker")
 
-# Verilog and Coq share the .v suffix. A Verilog // comment is not
-# an executable Coq proof, and is not evidence of a bypass.
+# Verilog and Coq share the .v suffix. Require an explicit language
+# declaration so a hidden Coq proof cannot masquerade as Verilog.
+printf '%s\n' 'src/Module.v linguist-language=Verilog' > "$fixture/.gitattributes"
+git -C "$fixture" add .gitattributes
 cat > "$fixture/src/Module.v" <<'EOF'
 module sample;
   // A signal annotation says Admitted. but no Coq proof exists.
   /* Verilog block note: Admitted. is not an executable Coq proof.
      It also says admit; idtac. as prose. */
+  initial $display("quote: \\\"");
   wire ready;
 endmodule
 EOF
 (cd "$fixture" && bash "$checker")
+
+# A Coq comment containing quoted delimiters must not hide an executable
+# hole; SSReflect // is code, not a Verilog line comment.
+cat > "$fixture/src/CoqProof.v" <<'EOF'
+(* SPDX-License-Identifier: MPL-2.0 *)
+(* "(*" *)
+Lemma hole : False. Admitted.
+(* "*)" *)
+EOF
+expect_coq_firing 'Coq quoted comment delimiter cannot hide Admitted.'
+cat > "$fixture/src/CoqProof.v" <<'EOF'
+(* SPDX-License-Identifier: MPL-2.0 *)
+From Coq Require Import ssreflect.
+Goal False.
+move=> //. Admitted.
+EOF
+expect_coq_firing 'Coq SSReflect // cannot hide Admitted.'
+sed -i 's/^move=> \/\/\. Admitted\.$/move=> \/\/./' "$fixture/src/CoqProof.v"
+(cd "$fixture" && bash "$checker")
+
+# Undeclared Verilog-looking files are NOT_RUN until the language is explicit.
+printf 'wire ready;\n' > "$fixture/src/Unclassified.v"
+git -C "$fixture" add src/Unclassified.v
+if (cd "$fixture" && bash "$checker"); then
+  echo 'FAIL: undeclared .v language was accepted' >&2
+  exit 1
+fi
+git -C "$fixture" rm -q -f src/Unclassified.v
 
 # Sparse-checkout index entries may be intentionally absent locally.
 # Skip only the explicit skip-worktree case; a missing normal file fails.
