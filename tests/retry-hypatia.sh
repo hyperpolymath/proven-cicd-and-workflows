@@ -3,10 +3,10 @@
 # proven/policy/retry.tsv is authoritative for the rerun cap; Hypatia's executable rule
 # (lib/rules/ci_failure_triage.ex, the `retries` field) must agree with it. 0=agrees,
 # 1=disagrees, 2=cannot run. The cap AND the guard are compared: Hypatia's `guard:` field
-# (`:head_current` is the table's head-current; absent or `:none` is none). A guarded row
-# (guard head-current, cap 1) that Hypatia still has at retries 0 is a WARN: it is the pending
-# state while the Hypatia change lands, so neither repository merges red. Any other
-# disagreement fails, in particular an unguarded rerun in Hypatia where the table guards it.
+# (`:head_current` is the table's head-current; absent or `:none` is none). Any disagreement
+# fails, in particular an unguarded rerun in Hypatia where the table guards it. (While the
+# Hypatia change was pending a guarded 1 against Hypatia's 0 was a WARN; hypatia#1152 landed and
+# the pin moved, so that tolerance is gone. A new guarded row needs its Hypatia change first.)
 #   tests/retry-hypatia.sh <ci_failure_triage.ex> [<repo root>]
 set -uo pipefail
 rules=${1:-}
@@ -27,8 +27,6 @@ while IFS=$'\t' read -r a5 sq max scope referral guard source || [[ -n $a5 ]]; d
     [[ -n $got ]] || { bad "$a5: no rule named $name with a retries field in the Hypatia file"; continue; }
     n=$((n + 1))
     if [[ $got == "$max" && $gotguard == "$guard" ]]; then continue
-    elif [[ $guard == head-current && $max == 1 && $got == 0 && $gotguard == none ]]; then
-        echo "WARN $a5: table says a guarded rerun of 1, Hypatia's rule still says 0 (pending Hypatia change)"
     else bad "$a5: table says max_reruns $max guard $guard, Hypatia's rule says retries $got guard $gotguard"; fi
 done < <(tail -n +2 "$policy")
 [[ $n -gt 0 ]] || bad "no policy row was compared"
