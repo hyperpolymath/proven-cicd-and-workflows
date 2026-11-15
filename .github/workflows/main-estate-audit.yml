@@ -190,9 +190,9 @@ jobs:
       - name: Metrics Extraction Gate
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: hyperpolymath/proven-cicd-and-workflows/actions/metrics-check@88c55e28f37b8dfc5a435e86f548737997746cc9 # advisory evidence repair, 2026-11-03
-      - name: Test & Benchmarks Dashboard Gate
+      - name: Test & Benchmarks Evidence Observatory
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        uses: hyperpolymath/proven-cicd-and-workflows/actions/tests-benches-check@c519c4520afbfe48f16aceb0706d7cfb1d649994 # 2026-10-14 (#54)
+        uses: hyperpolymath/proven-cicd-and-workflows/actions/tests-benches-check@b2b066be609c3714a4955bcc8df1d24895808c48 # first complete evidence-observer action snapshot
       - name: Hosting & Site Status Gate
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: hyperpolymath/proven-cicd-and-workflows/actions/hosting-check@c519c4520afbfe48f16aceb0706d7cfb1d649994 # 2026-10-14 (#54)
