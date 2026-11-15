@@ -43,6 +43,13 @@ subject_sha=$(git rev-parse HEAD 2>/dev/null) || void 'subject is not a Git chec
 subject_root=$(git rev-parse --show-toplevel 2>/dev/null) ||
   void 'subject checkout root unavailable'
 [[ $(pwd -P) == "$subject_root" ]] || void 'run the gate from the subject repository root'
+expected_harness_root=$(realpath -e -- "$PROVEN_TESTS_ROOT") ||
+  void 'Proven harness root cannot be canonicalised'
+actual_harness_root=$(git -C "$PROVEN_TESTS_ROOT" rev-parse --show-toplevel 2>/dev/null) ||
+  void 'Proven harness must be an independent Git checkout'
+[[ $actual_harness_root == "$expected_harness_root" &&
+   $actual_harness_root != "$subject_root" ]] ||
+  void 'Proven harness root is not a distinct repository checkout'
 gate_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) ||
   void 'gate checkout root unavailable'
 # Zig's compiler-generated cache and install output may exist before this
@@ -56,9 +63,20 @@ if [[ $gate_root == "$subject_root/"* ]]; then
   gate_relative=${gate_root#"$subject_root/"}
   subject_excludes+=(":(exclude)$gate_relative")
 fi
-subject_status=$(git status --porcelain --untracked-files=all -- . "${subject_excludes[@]}") ||
-  void 'subject worktree status could not be determined'
-[[ -z $subject_status ]] || void "subject inputs differ from claimed commit: $subject_status"
+verify_subject_checkout() {
+  local checked_head checked_status
+  checked_head=$(git rev-parse HEAD 2>/dev/null) ||
+    void 'subject HEAD unreadable'
+  [[ $checked_head == "$subject_sha" ]] ||
+    void "subject HEAD changed during verification: got $checked_head, expected $subject_sha"
+  checked_status=$(git status --porcelain --ignored=matching --untracked-files=all -- . "${subject_excludes[@]}") ||
+    void 'subject worktree status could not be determined'
+  [[ -z $checked_status ]] ||
+    void "subject inputs differ from claimed commit: $checked_status"
+  git diff --quiet "$subject_sha" -- . "${subject_excludes[@]}" ||
+    void 'subject tracked files differ from claimed commit'
+}
+verify_subject_checkout
 
 verify_harness_checkout() {
   local checked_sha checked_status
@@ -143,9 +161,9 @@ else
 fi
 [[ -s $C_ABI_ARCHIVE && -r $C_ABI_ARCHIVE ]] ||
   void "final ReleaseSafe build emitted no ABI archive at $C_ABI_ARCHIVE"
-# Existing tracked subject inputs must remain the ones at the checked SHA.
-git diff --quiet HEAD -- "$ZIG_PROJECT_DIR" "$C_ABI_HEADER" "$C_ABI_CONSUMER" ||
-  void 'subject build mutated tracked source inputs'
+# Revalidate the *recorded* subject revision and all non-generated
+# inputs after running subject-controlled build and tests, not merely HEAD.
+verify_subject_checkout
 verify_harness_checkout
 if bash "$PROVEN_TESTS_ROOT/integrations/contract/c-abi/run.sh" \
     "$C_ABI_HEADER" "$C_ABI_CONSUMER" "$C_ABI_ARCHIVE"; then
