@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: CC-BY-SA-4.0
+= Test & benchmark evidence observatory: strict or advisory
+:revdate: 2026-11-15
+
+== Contract
+
+The historical `actions/tests-benches-check` action printed fake “N/A”
+test/benchmark metrics and ended with a success-shaped message without
+running or validating anything. It is an *advisory observatory*, not a
+test runner or a benchmark runner. Neither a README mention nor a dashboard
+file constitutes executed evidence.
+
+Without a report the action explicitly returns `not_assessed`. In its
+default advisory mode that is a completed *observation*, not a pass. When
+`require-evidence: true`, a missing report or unavailable validator exits
+2 (“NO CHECK”), and a rejected/empty/failing report exits 1. Only a
+structurally validated report with at least one passing test, zero failures
+and zero errors returns `validated_report` in strict mode. Skipped tests
+still occupy no new lattice cells; the report may contain legitimate skips.
+
+The action requires a report in the *Proven-Tests schema_version 2* format.
+The `proven-evidence emit` Rust CLI in
+`hyperpolymath/proven-tests-and-benches/integrations/contract/proven-tests/downstream/rust/proven-evidence`
+validates tier/fixture obligations and recomputes the report summary. A
+caller must build that CLI from an **immutable reviewed revision** and supply
+its executable as `validator-path`, along with an actual run report.
+
+== Boundary
+
+* `validated_report` means the provided document conforms to the
+  versioned report contract. It does **not** authenticate the run that
+  produced the report, prove the code, or establish full coverage.
+* The caller must independently bind the test run to the subject commit
+  and retain the runner receipt. Do not supply a locally invented report.
+* `covered-cells` is category/aspect occupancy, **not source line
+  coverage**, and a single test does not populate 238 cells.
+* This action has no benchmark input and **does not measure benchmarks**.
+  Baseline, variance, p95, regression and reproducibility are outstanding
+  separate obligations; no number is synthesized.
+* This action is deliberately not placed in the default estate gate; the
+  consumer must select strict semantics and proven test-run wiring.
+
+== Test layers
+
+. `actions/tests-benches-check/test.sh` is the harness adapter's
+  silence/firing/void control (a test double validates its plumbing, not
+  the Rust evidence algorithm).
+. The normative validator's actual independent regression suite lives in
+  the Proven-Tests repository, including overclaimed coverage,
+  skipped/debt entries, and proof-tier lies.
+. A production consumer must additionally execute real tests, build the
+  pinned validator, and record the commit and required check outcomes.
+. This action must not be promoted to an enforcing estate check without
+  a live consumer canary and completed review.
+
+== OPSM integration prerequisites
+
+OPSM currently emits `opsm_ex/proven-report.json` from ExUnit and a
+local 17×14 summary; this is **not automatically the schema-v2 contract**.
+First implement and test a *truthful* adapter from those per-test events to
+schema v2, explicitly marking unproven/provisional evidence, and preserve
+any skipped/errored test state. It must not synthesize a proof ladder.
+The dependency on `libproven` currently blocks all ExUnit tests before
+the reporter can run, so strict mode would correctly fail until that
+upstream build blocker is repaired. Never use a fake report to pass it.
