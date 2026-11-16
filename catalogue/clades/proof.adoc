@@ -79,7 +79,7 @@ Check every MANIFEST module under the kernel flags, refuse unlisted .agda files,
 
 Compile listed .v files with coqc, then re-check the compiled modules out of process with coqchk: no axiom, Admitted lemma, type-in-type, unsafe fixpoint or assumed positivity, module-wide, after planted controls.
 
-*Assurance boundary:* Pinned Coq 8.18.0 (coqc and coqchk) from the Ubuntu 24.04 archive is required. Nothing the file prints is evidence. Axioms of the whole Require closure count, used or not. Code a file runs at compile time is trusted not to tamper with the runner. Required names are checked for existence only.
+*Assurance boundary:* Pinned Coq 8.18.0 (coqc and coqchk) from the Ubuntu 24.04 archive is required. Nothing the file prints is evidence. Axioms of the whole Require closure count, used or not. coqchk's summary cannot see functor bodies or sealed modules, so the gate refuses, by text and fail-closed, module type ascription, functors, Unset Guard/Positivity/Universe Checking, bypass_check, Load, Add LoadPath and Declare ML Module (comments included). Code a file runs at compile time is trusted not to tamper with the runner. Required names are checked for existence only.
 
 * link:../../actions/rocq-check/action.yml[Action definition and inputs]
 * link:../../.github/workflows/rocq-gate.yml[Reusable workflow]
@@ -92,7 +92,7 @@ Compile listed .v files with coqc, then re-check the compiled modules out of pro
 
 Compile listed non-Lake .lean files to .olean, then run the gate's own checker out of process: replay every constant through the kernel and collect the axioms of every safe constant, module-wide, after planted controls.
 
-*Assurance boundary:* Pinned Lean 4.15.0 is required. Nothing the file prints is evidence. Trusted: the lean binary and library, importModules running no initializer, the kernel. Code a file runs at compile time is trusted not to tamper with the runner. Lake projects are proof-runner-check territory. Required names are checked for existence only.
+*Assurance boundary:* Pinned Lean 4.15.0 is required. Nothing the file prints is evidence. Trusted: the lean binary and library, importModules running no initializer, the kernel. Only Lean's own generated C.injEq lemmas (verified identical by regeneration) are excused as roots; their axioms still count when an authored constant uses them. Code a file runs at compile time is trusted not to tamper with the runner. Lake projects are proof-runner-check territory. Required names are checked for existence only.
 
 * link:../../actions/lean-axioms-check/action.yml[Action definition and inputs]
 * link:../../.github/workflows/lean-axioms-gate.yml[Reusable workflow]

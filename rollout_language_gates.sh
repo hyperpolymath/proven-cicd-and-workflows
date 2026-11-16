@@ -13,9 +13,9 @@
 #   over a miniKanren) or a Rust kanren
 #   crate                               -> kanren-gate.yml
 #   .agda file                          -> agda-gate.yml
-#   Coq .v file (Require/Definition/Lemma/
-#   Theorem/Print Assumptions/Qed,
-#   so Verilog is not caught)           -> rocq-gate.yml
+#   Coq .v file (Coq sentences: Require,
+#   Definition, Lemma, Qed. ..; a file
+#   with endmodule is Verilog)          -> rocq-gate.yml
 #   .lean file outside any Lake project -> lean-axioms-gate.yml
 #   .tla file                           -> tla-gate.yml
 #
@@ -64,7 +64,18 @@ has_kanren() { grep -rlE --include='*.scm' --include='*.ss' --include='*.sls' --
 # Trees the prover gates never look in: fetched dependencies and build output.
 prune_find() { find "$1" \( -name .git -o -name _build -o -name build -o -name target -o -name node_modules -o -name .cicd-suite -o -name .lake \) -prune -o "${@:2}"; }
 has_agda() { [ -n "$(prune_find "$1" -type f -name '*.agda' -print | head -n 1)" ]; }
-has_rocq() { [ -n "$(prune_find "$1" -type f -name '*.v' -print0 | xargs -0 -r grep -lE '^[[:space:]]*(Require[[:space:]]|Require$|Definition[[:space:]]|Print[[:space:]]+Assumptions[[:space:]]|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require|Lemma[[:space:]]|Theorem[[:space:]]|Qed\.)' 2>/dev/null | head -n 1)" ]; }
+# Coq-specific sentences only, so prose in a Verilog comment ("Definition of the
+# interface") does not match; and a file with `endmodule` is Verilog, whatever
+# its comments say.
+coq_marker='^[[:space:]]*(Require[[:space:]]+(Import|Export)[[:space:]]|Require[[:space:]]+[A-Za-z_][A-Za-z0-9_'"'"']*(\.[A-Za-z0-9_'"'"']+)+\.[[:space:]]*$|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require[[:space:]]|(Definition|Lemma|Theorem|Fixpoint|Inductive)[[:space:]]+[A-Za-z_][A-Za-z0-9_'"'"']*[[:space:]]*(:|:=|\()|Print[[:space:]]+Assumptions[[:space:]]+[A-Za-z_][A-Za-z0-9_.'"'"']*[[:space:]]*\.|Qed\.[[:space:]]*$|Proof\.)'
+has_rocq() {
+  local f
+  while IFS= read -r -d '' f; do
+    grep -qE '^[[:space:]]*endmodule' "$f" 2>/dev/null && continue
+    grep -qE "$coq_marker" "$f" 2>/dev/null && return 0
+  done < <(prune_find "$1" -type f -name '*.v' -print0)
+  return 1
+}
 has_tla()   { [ -n "$(prune_find "$1" -type f -name '*.tla' -print | head -n 1)" ]; }
 # A .lean file counts when no lakefile sits in its directory or above it: Lake
 # projects are proof-runner-check's, not lean-axioms-gate's.

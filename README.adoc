@@ -516,20 +516,37 @@ checking was off) and no inductive whose positivity is assumed. The judgement is
 module-wide: a theorem needs no `+Print Assumptions+` to be covered. Nothing the
 file prints is read, so a `+Notation+` that makes `+Check+` print "Closed under
 the global context" over a real Axiom fails. A summary in an unexpected shape is
-exit 2. `+required_theorems+` (empty by default) must each resolve to a constant
+exit 2. coqchk's summary cannot see an axiom inside a functor body that is never
+instantiated, nor an unsafe fixpoint hidden by a sealed module, so the gate
+refuses, fail-closed and by text, any `+Module M : S+` or `+<: S+`, any
+functor `+Module F (X : T)+`, `+Unset Guard/Positivity/Universe Checking+`,
+`+#[bypass_check]+`, `+Load+`, `+Add LoadPath+` and `+Declare ML Module+`. The
+scan is of the raw text, comments included: a false refusal is accepted, a
+false pass is not. The probe module for required names has a name no listed
+file has. `+required_theorems+` (empty by default) must each resolve to a constant
 of a listed module, judged by the exit code of a file of the gate's own; a name
 may resolve to an abbreviation. `+allowed_axioms+` (empty by default) lists full
 names as coqchk prints them. Axioms of the whole `+Require+` closure count, used
 or not. Planted controls: closed theorems accepted, with and without a print; an
 Axiom, an Admitted lemma, a Parameter, an ill-typed file, disabled guard,
-universe and positivity checking, and the Notation forge refused.
+universe and positivity checking, the Notation forge, a sealed module and a
+functor body refused.
 * *Lean axioms.* `+lean -o+` compiles each standalone file in `+files+`. Then the
 gate's own checker, run with `+lean --run+` from a fresh directory, loads the
 compiled module with `+importModules+` (no initializer is enabled) and replays
 every constant through the kernel (`+Lean.Environment.replay+`, as lean4checker
 does). A declaration added without the kernel (`+debug.skipKernelTC+`) is
-rejected. It then collects the axioms of every safe constant of the module. Any
-axiom not in `+allowed_axioms+` fails, and `+sorryAx+` is never allowable. The
+rejected. It then collects the axioms of every AUTHORED safe constant of the module. A
+constant is not authored only when the checker has verified that it is the lemma
+Lean generates: `+<ctor>.injEq+` for a constructor of an inductive type declared in
+the module, with the same universe parameters, type and proof term as Lean's own
+generator produces when the checker runs it again. Name shape alone does not
+qualify. Such a lemma carries `+propext+`, so its axioms still count whenever an
+authored constant uses it. In hvn-dehallucinator that excuses 14 theorems.
+`+<ctor>.inj+` carried no axiom there and stays a root. Any axiom not in
+`+allowed_axioms+` fails, and `+sorryAx+` is never allowable. The planted controls
+run with no allowance, whatever the caller allows. The checker takes its
+search path from the running verified `+lean+`, never from a `+lean+` on PATH. The
 gate judges by the checker's exit code. Nothing lean prints while compiling is
 read, so a `+#eval+` printing the clean line, or `+elab_rules+` rewriting
 `+#print axioms+`, fails. `+required_theorems+` must each resolve to a constant
@@ -537,9 +554,9 @@ of a listed module, exactly or as a component suffix. Planted controls: clean
 theorems accepted, with and without a print; a sorry, a classical proof, a
 declared axiom, an axiom used by an unprinted theorem, an ill-typed file, the
 `+#eval+` forge, the `+elab_rules+` forge and a `+skipKernelTC+` declaration
-refused. Note: constructor-injectivity theorems (`+S.mk.injEq+`) that Lean
-generates for structures use `+propext+`, so a module with a structure needs
-`+allowed_axioms: propext+` or a different definition.
+refused: and a structure, whose generated lemmas carry propext, accepted; a hand-written
+use of that lemma, a fake `+Foo.injEq+`, and hand-written `+injEq+` lemmas with a
+different type or with Lean's type and a proof through an axiom refused.
 * *TLA+.* TLC runs each config in `+must_pass+`, which must complete with no
 error. Each `+must_refute+` entry (`+<config>.cfg:<Invariant>+`) must be
 refuted by exactly that invariant: TLC exit status 12 (safety violation) and its
@@ -567,7 +584,8 @@ runs `+lake build+` on a Lake project (a `+lakefile.lean+` or `+lakefile.toml+`)
 with whatever Lean is on PATH. It proves the project builds. It does not judge
 axioms: a `+sorry+` is a warning, and the build still exits 0. `+lean-axioms-gate+`
 takes plain `+.lean+` files that no Lake project owns, runs the pinned Lean 4.15.0
-on each, and judges the axiom report of every printed theorem. Its detect step
+on each, and judges the compiled module: a kernel replay of every constant, and
+the axioms of every authored constant, module-wide (see the Lean bullet above). Its detect step
 ignores files inside a Lake project. A Lake project that needs the axiom check
 is not covered by either gate today.
 

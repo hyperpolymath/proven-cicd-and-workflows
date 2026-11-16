@@ -128,9 +128,7 @@ expect "fixture skip-kernel: a declaration added with debug.skipKernelTC" 1 'ker
 fresh_fixture
 write Ok.lean 'structure S where' '  x : Nat' '  y : Nat' 'theorem ok : True := trivial'
 run_phase prove
-expect "fixture generated-propext: the injEq theorem Lean generates for a structure uses propext" 1 'propext'
-run_phase prove ALLOWED_AXIOMS=propext
-expect "propext named in allowed_axioms is not counted" 0 'finds no disallowed axiom'
+expect "fixture generated-injeq: the injEq theorem Lean generates for a structure (propext) is not an authored root" 0 'generated S.mk.injEq'
 
 fresh_fixture
 lean_fixture "$FIX/proofs/Ok.lean" "" 'axiom cheat : False
@@ -187,6 +185,44 @@ expect "detect: standalone .lean files and an empty list" 1 'names none'
 run_phase prove REQUIRED_THEOREMS='bad name;'
 expect "a required name that is not an identifier is exit 2" 2 'is not an identifier'
 
+echo "== authored declarations: only Lean's own generated lemma is excused =="
+fresh_fixture
+write Ok.lean 'structure S where' '  x : Nat' 'theorem t (a b : Nat) : (S.mk a = S.mk b) = (a = b) := S.mk.injEq a b'
+run_phase prove
+expect "fixture hand-uses-injeq: an authored theorem that uses a generated injEq still reports propext" 1 'not allowed: [propext]'
+
+fresh_fixture
+write Ok.lean 'axiom cheat : False' 'theorem Foo.injEq : False := cheat'
+run_phase prove
+expect "fixture fake-injeq: Foo.injEq where Foo is not a constructor, using an axiom" 1 'not allowed: [cheat]'
+
+fresh_fixture
+write Ok.lean 'set_option genInjectivity false in' 'structure S where' '  x : Nat' 'theorem S.mk.injEq : 1 = 1 := by have _ := Classical.em True; rfl'
+run_phase prove
+expect "fixture genoff-injeq: a hand-written injEq whose type differs, using an axiom" 1 'not allowed:'
+grep -q 'differs from what Lean generates' "$OUT" && ok "the differing injEq is named" || bad "differing injEq not named"
+
+fresh_fixture
+write Ok.lean 'set_option genInjectivity false in' 'structure S where' '  x : Nat' \
+  'theorem S.mk.injEq (x x_1 : Nat) : (S.mk x = S.mk x_1) = (x = x_1) := by' '  have _ := Classical.em True' '  exact propext ⟨fun h => by cases h; rfl, fun h => by subst h; rfl⟩'
+run_phase prove
+expect "fixture sametype-injeq: Lean's type, a hand-written proof through an axiom" 1 'not allowed:'
+
+echo "== controls are judged with no allowance, whatever the caller allows =="
+fresh_fixture
+run_phase prove ALLOWED_AXIOMS=planted_cheat
+expect "fixture allowance-vs-controls: a caller allowing the planted axiom still gets the control refused" 0 'finds no disallowed axiom'
+run_phase prove ALLOWED_AXIOMS="propext Classical.choice Quot.sound"
+expect "fixture allowance-classical: a caller allowing classical reasoning still gets the Classical control refused" 0 'finds no disallowed axiom'
+write Ok.lean 'theorem em2 (p : Prop) : p ∨ ¬p := Classical.em p'
+run_phase prove ALLOWED_AXIOMS="propext Classical.choice Quot.sound"
+expect "and the caller's own classical file passes under that allowance" 0 'finds no disallowed axiom'
+
+echo "== the sysroot comes from the verified binary, not from PATH =="
+fresh_fixture
+run_phase prove PATH=/usr/bin:/bin
+expect "fixture sysroot: the pinned lean is not on PATH" 0 'finds no disallowed axiom'
+
 echo "== Lake projects belong to proof-runner-check, not to this gate =="
 fresh_fixture
 mkdir -p "$FIX/proj/sub"
@@ -226,12 +262,14 @@ mutant() { # mutant <label> <old-text> <new-text> <want-text>: literal replace
   RC=$?
   expect "$1" 2 "$4"
 }
-mutant "a gate that ignores its checker's exit code" 'run_checker "$scratch" check "GateMod$i" "$allowed_csv" || rc=$?' 'run_checker "$scratch" check "GateMod$i" "$allowed_csv" || true' 'was ACCEPTED'
-mutant "a checker that skips the kernel replay" 'let env ← try base.replay consts catch e =>' 'let env ← try importModules #[{ module := modStr.toName }] {} 0 catch e =>' 'planted SkipKernel control was ACCEPTED'
+mutant "a gate that ignores its checker's exit code" 'run_checker "$scratch" check "GateMod$i" "$JUDGE_ALLOWED" || rc=$?' 'run_checker "$scratch" check "GateMod$i" "$allowed_csv" || true' 'was ACCEPTED'
+mutant "a checker that skips the kernel replay" '        let e ← onFreshThread (base.replay consts)' '        let e ← importModules #[{ module := modStr.toName }] {} 0' 'planted SkipKernel control was ACCEPTED'
 mutant "a checker that ignores axioms" 'let bad := st.axioms.filter (!allowed.contains ·)' 'let bad : Array Name := #[]' 'was ACCEPTED'
 mutant "a checker that collects no axioms" 'roots.forM CollectAxioms.collect' '(#[] : Array Name).forM CollectAxioms.collect' 'was ACCEPTED'
 mutant "a checker that resolves every name" 'unless md.constNames.any (endsWith · r.toName) do' 'unless true do' 'resolved a name that does not exist'
-mutant "a gate that reads lean messages instead of the checker" 'run_checker "$scratch" check "GateMod$i" "$allowed_csv" || rc=$?' 'grep -q "does not depend on any axioms" "$scratch/GateMod$i.log" || rc=1' 'planted NoPrint control was refused'
+mutant "a gate that reads lean messages instead of the checker" 'run_checker "$scratch" check "GateMod$i" "$JUDGE_ALLOWED" || rc=$?' 'grep -q "does not depend on any axioms" "$scratch/GateMod$i.log" || rc=1' 'planted NoPrint control was refused'
+mutant "a checker that trusts the name shape of injEq" "        if ci.levelParams == ci1.levelParams && ci.type.eqv ci1.type"$'\n'"            && ci.value!.eqv ci1.value! then" '        if true then' 'planted GenOffInjEq control was ACCEPTED'
+mutant "a checker that compares types but not proof terms" "ci.type.eqv ci1.type"$'\n'"            && ci.value!.eqv ci1.value! then" 'ci.type.eqv ci1.type then' 'planted SameTypeInjEq control was ACCEPTED'
 mutant "a true control that is in fact false" 'theorem planted_true : True := trivial' 'theorem planted_true : True := sorry' 'was refused'
 mutant "an axiom control that is in fact proved" 'axiom planted_cheat : False\ntheorem planted_axiom : False := planted_cheat' 'theorem planted_axiom : True := trivial' 'planted Axiom control was ACCEPTED'
 mutant "an ill-typed control that is well typed" 'planted_ill_typed : False := trivial' 'planted_ill_typed : True := trivial' 'planted IllTyped control was ACCEPTED'

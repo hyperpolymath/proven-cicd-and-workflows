@@ -19,10 +19,21 @@
 #      and replays every constant of it through the kernel
 #      (Lean.Environment.replay, as lean4checker does): a declaration added
 #      without the kernel is rejected;
-#   b. collects the axioms reachable from every safe constant of the module
-#      (Lean.CollectAxioms; unsafe and partial constants, which replay also
-#      skips, include the compiler's own auxiliary axioms), module-wide: a theorem needs no #print axioms to be
-#      covered. Any axiom not in ALLOWED_AXIOMS fails; sorryAx is never allowable;
+#   b. collects the axioms reachable from every AUTHORED safe constant of the
+#      module (Lean.CollectAxioms), module-wide: a theorem needs no #print axioms
+#      to be covered. Unsafe and partial constants, which replay also skips,
+#      include the compiler's own auxiliary axioms and are not roots. A constant
+#      is not authored only when the checker has verified that it IS the lemma
+#      Lean generates for a constructor of this module: `<ctor>.injEq`, where
+#      <ctor> is a constructor of an inductive type declared in this module, and
+#      its universe parameters, type and proof term are identical (Expr.eqv) to
+#      what Lean's own mkInjectiveTheorems produces, regenerated in the checker.
+#      Name shape alone is not enough. Such constants are not roots, but their
+#      axioms count whenever an authored constant uses them. Only this family is
+#      excluded: it is the generated lemma that carries propext in practice
+#      (hvn-dehallucinator: 14 of them). `<ctor>.inj` carried no axiom there and
+#      stays a root. Any axiom not in ALLOWED_AXIOMS fails;
+#      sorryAx is never allowable;
 #   c. resolves each required name to a constant of the module, exactly or as a
 #      component suffix (the bare name under any namespace).
 # The gate judges by the checker's EXIT CODE (0 pass, 1 verdict failure, anything
@@ -172,12 +183,85 @@ def endsWith (n suffix : Name) : Bool :=
   n.components.reverse.take sr.length == sr
 
 def loadModule (modStr : String) : IO ModuleData := do
-  initSearchPath (← findSysroot)
+  -- The search path comes from the running (verified) lean binary, never from a
+  -- `lean` found on PATH.
+  initSearchPath (← getBuildDir)
   let (md, _) ← readModuleData (← findOLean modStr.toName)
   return md
 
+/-- The `C.inj` and `C.injEq` constants of the module whose prefix `C` is a
+constructor of an inductive type declared in the same module. Name shape only:
+each is verified below before it is treated as generated. Both are taken out of
+the environment the generator runs in (it would refuse to redeclare them); only
+`injEq` is ever excused as a root. -/
+def injCandidates (consts : Std.HashMap Name ConstantInfo) : Array Name :=
+  consts.fold (init := #[]) fun acc n ci =>
+    match n with
+    | .str p s =>
+      if (s == "inj" || s == "injEq") && ci.isTheorem && !ci.isUnsafe then
+        match consts[p]? with
+        | some (.ctorInfo cv) =>
+          match consts[cv.induct]? with
+          | some (.inductInfo _) => acc.push n
+          | _ => acc
+        | _ => acc
+      else acc
+    | _ => acc
+
+/-- Candidates and every constant of the module that uses one, transitively. -/
+def dependents (consts : Std.HashMap Name ConstantInfo) (cands : Array Name) : NameSet := Id.run do
+  let mut dep : NameSet := cands.foldl (·.insert ·) {}
+  let mut changed := true
+  while changed do
+    changed := false
+    for (n, ci) in consts.toList do
+      unless dep.contains n do
+        if ci.getUsedConstantsAsSet.any dep.contains then
+          dep := dep.insert n
+          changed := true
+  return dep
+
+/-- Run `act` on a fresh OS thread. The kernel's heartbeat counter is per thread
+and is not reset between declarations, so one long replay can exhaust it for the
+next. -/
+def onFreshThread (act : IO α) : IO α := do
+  let t ← IO.asTask act Task.Priority.dedicated
+  match t.get with
+  | .ok a => pure a
+  | .error e => throw e
+
+/-- Replay the module's constants through the kernel in two passes, so that
+Lean's own injectivity theorems can be regenerated in between. Pass one replays
+every constant that does not (transitively) use a candidate `inj`/`injEq`
+theorem and regenerates Lean's own theorems for every inductive type of the
+module in that environment. Pass two replays the rest on top. Returns the final
+environment and the environment holding the regenerated theorems. -/
+def replayAndRegenerate (base : Environment) (consts : Std.HashMap Name ConstantInfo)
+    (dep : NameSet) : IO (Environment × Environment) := do
+  let mut keep : Std.HashMap Name ConstantInfo := {}
+  let mut rest : Std.HashMap Name ConstantInfo := {}
+  for (n, ci) in consts.toList do
+    if dep.contains n then rest := rest.insert n ci else keep := keep.insert n ci
+  let (env0, env1) ← onFreshThread do
+    let env0 ← base.replay keep
+    let mut st : Core.State := { env := env0 }
+    for (n, ci) in keep.toList do
+      if let .inductInfo _ := ci then
+        -- The heartbeat budget counts from now, as in a fresh command.
+        let ctx : Core.Context :=
+          { fileName := "<gate>", fileMap := default, initHeartbeats := (← IO.getNumHeartbeats) }
+        let ((), st') ← (Lean.Meta.mkInjectiveTheorems n |>.run').toIO ctx st
+        st := st'
+    return (env0, st.env)
+  let env ← onFreshThread (env0.replay rest)
+  return (env, env1)
+
 /-- Replay every constant of the module through the kernel; then every axiom
-reachable from any constant of the module must be allowed. -/
+reachable from any AUTHORED constant of the module must be allowed. A constant is
+not authored when it is the very lemma Lean generates for a constructor of the
+module: same name shape, same universe parameters, same type and same proof term
+as Lean's own generator produces. Its axioms still count whenever any authored
+constant uses it. -/
 def check (modStr allowedStr : String) : IO UInt32 := do
   let allowed : List Name := (allowedStr.splitOn ",").filter (· ≠ "") |>.map String.toName
   if allowed.contains `sorryAx then
@@ -187,20 +271,43 @@ def check (modStr allowedStr : String) : IO UInt32 := do
   let base ← importModules md.imports {} 0
   let mut consts : Std.HashMap Name ConstantInfo := {}
   for n in md.constNames, ci in md.constants do consts := consts.insert n ci
-  let env ← try base.replay consts catch e =>
-    return (← verdict false s!"kernel replay rejected the module: {e}")
+  let cands := injCandidates consts
+  let (env, env1) ← try
+      if cands.isEmpty then
+        let e ← onFreshThread (base.replay consts)
+        pure (e, e)
+      else replayAndRegenerate base consts (dependents consts cands)
+    catch e =>
+      return (← verdict false s!"kernel replay rejected the module (or regenerating Lean's injectivity theorems failed): {e}")
   IO.println s!"gate-checker: replayed {consts.size} constants of {modStr} through the kernel"
-  -- Roots: the constants the kernel checked. Unsafe and partial constants are
+  -- Which injectivity theorems are Lean's own?
+  let mut generated : NameSet := {}
+  if !cands.isEmpty then
+    for c in cands do
+      match consts[c]?, env1.find? c with
+      | some ci, some ci1 =>
+        if ci.levelParams == ci1.levelParams && ci.type.eqv ci1.type
+            && ci.value!.eqv ci1.value! then
+          if c.getString! == "injEq" then
+            generated := generated.insert c
+            IO.println s!"gate-checker: generated {c} (identical to Lean's own); not an authored root"
+          else
+            IO.println s!"gate-checker: generated {c} (identical to Lean's own); kept as a root"
+        else
+          IO.println s!"gate-checker: {c} differs from what Lean generates; treated as authored"
+      | _, _ => IO.println s!"gate-checker: {c} is not generated by Lean here; treated as authored"
+  -- Roots: authored constants the kernel checked. Unsafe and partial constants are
   -- skipped by replay and cannot be used by a safe one; they include the
   -- compiler's own auxiliary constants (_cstage1, _elambda_N), which are axioms.
-  let roots := (md.constNames.zip md.constants).filter (fun (_, ci) => !ci.isUnsafe && !ci.isPartial) |>.map (·.1)
+  let roots := (md.constNames.zip md.constants).filter
+    (fun (n, ci) => !ci.isUnsafe && !ci.isPartial && !generated.contains n) |>.map (·.1)
   let ((), st) := ((roots.forM CollectAxioms.collect).run env).run {}
   for a in st.axioms do
     IO.println s!"gate-checker: axiom {a}{if allowed.contains a then " (allowed)" else ""}"
   let bad := st.axioms.filter (!allowed.contains ·)
   if !bad.isEmpty then
     return (← verdict false s!"module uses axiom(s) not allowed: {bad.toList}")
-  verdict true s!"{consts.size} constants replayed, no disallowed axiom"
+  verdict true s!"{consts.size} constants replayed, no disallowed axiom ({generated.size} generated injectivity theorem(s) not counted as roots)"
 
 /-- Every name must resolve to a constant of the module (exact, or a component suffix). -/
 def resolve (modStr : String) (names : List String) : IO UInt32 := do
@@ -249,6 +356,10 @@ trap 'rm -rf "$work"' EXIT
 
 DEFECT=""
 DEFECT_KIND=""   # compile | check
+# The axioms a judged module may use. The planted controls are judged with NONE,
+# whatever the caller allows; the caller's files are judged with ALLOWED_AXIOMS.
+JUDGE_ALLOWED=""
+JUDGE_SHOW=0   # 1: print which constants the checker excused or flagged
 CHK_LOG=""
 # run_checker <scratch> <args...>: run the gate's own checker, in a fresh
 # directory written after the caller's code has run. Prints its output. Returns
@@ -285,10 +396,11 @@ judge_set() {
   i=0
   for f in "$@"; do
     rc=0
-    run_checker "$scratch" check "GateMod$i" "$allowed_csv" || rc=$?
+    run_checker "$scratch" check "GateMod$i" "$JUDGE_ALLOWED" || rc=$?
     if [ "$rc" -ne 0 ]; then
       DEFECT="the checker refused $f: $(grep -E 'FAIL' "$CHK_LOG" | head -n 2 | tr '\n' ' ')"; DEFECT_KIND=check; return 1
     fi
+    [ "$JUDGE_SHOW" != 1 ] || { grep -E "gate-checker: (generated|\S+ differs|axiom)" "$CHK_LOG" | sed "s/^/        /" || true; }
     i=$((i+1))
   done
   return 0
@@ -330,16 +442,22 @@ run_cmd liftCoreM (addDecl (.thmDecl { name := `planted_bad, levelParams := [], 
 #print axioms planted_bad
 LEAN
 
+printf 'structure PlantedS where\n  x : Nat\n  y : Nat\ntheorem planted_ok : True := trivial\n' > "$ctl/Structure.lean"
+printf 'structure PlantedS where\n  x : Nat\ntheorem planted_uses (a b : Nat) : (PlantedS.mk a = PlantedS.mk b) = (a = b) := PlantedS.mk.injEq a b\n' > "$ctl/HandUsesInjEq.lean"
+printf 'axiom planted_cheat : False\ntheorem PlantedFoo.injEq : False := planted_cheat\n' > "$ctl/FakeInjEq.lean"
+printf 'set_option genInjectivity false in\nstructure PlantedS where\n  x : Nat\ntheorem PlantedS.mk.injEq : 1 = 1 := by have _ := Classical.em True; rfl\n' > "$ctl/GenOffInjEq.lean"
+printf 'set_option genInjectivity false in\nstructure PlantedS where\n  x : Nat\ntheorem PlantedS.mk.injEq (x x_1 : Nat) : (PlantedS.mk x = PlantedS.mk x_1) = (x = x_1) := by\n  have _ := Classical.em True\n  exact propext ⟨fun h => by cases h; rfl, fun h => by subst h; rfl⟩\n' > "$ctl/SameTypeInjEq.lean"
+JUDGE_ALLOWED=""
 echo "::group::planted control: axiom-free modules must be accepted"
-for c in True NoPrint; do
+for c in True NoPrint Structure; do
   if ! judge_set "$work/s-$c" "$ctl/$c.lean"; then
     echo "::endgroup::"
     die2 "the planted $c control was refused ($DEFECT). The toolchain is broken, so a red on the caller's files would be misattributed"
   fi
 done
 echo "::endgroup::"
-echo "planted control: an axiom-free theorem, with and without a #print axioms, accepted — the oracle can say yes."
-for c in Sorry:check Classical:check Axiom:check AxiomUnprinted:check IllTyped:compile EvalForge:check MacroForge:check SkipKernel:check; do
+echo "planted control: an axiom-free theorem, with and without a #print axioms, accepted (a structure, whose generated injectivity theorems use propext, included) — the oracle can say yes."
+for c in Sorry:check Classical:check Axiom:check AxiomUnprinted:check IllTyped:compile EvalForge:check MacroForge:check SkipKernel:check HandUsesInjEq:check FakeInjEq:check GenOffInjEq:check SameTypeInjEq:check; do
   name="${c%%:*}"; kind="${c##*:}"
   if judge_set "$work/s-$name" "$ctl/$name.lean"; then
     die2 "the planted $name control was ACCEPTED. This gate cannot say no; every verdict it gives is VOID"
@@ -356,7 +474,9 @@ fi
 echo "::endgroup::"
 echo "planted control: a name that exists resolves and one that does not is refused — resolution can say no."
 
-# ---- the caller's files ----------------------------------------------------
+# ---- the caller's files -------------------------------------------------
+JUDGE_ALLOWED="$allowed_csv"
+JUDGE_SHOW=1
 fail=0
 missing=0
 for f in "${listed[@]}"; do

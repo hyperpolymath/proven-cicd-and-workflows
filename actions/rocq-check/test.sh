@@ -170,6 +170,63 @@ expect "detect: .v files and an empty list" 1 'names none'
 run_phase prove REQUIRED_THEOREMS='bad name;'
 expect "a required name that is not an identifier is exit 2" 2 'is not an identifier'
 
+echo "== what coqchk's summary cannot see: sealed modules, functor bodies (refused fail-closed) =="
+fresh_fixture
+write Ok.v 'Module Type S.' '  Parameter bad : False.' 'End S.' 'Module M : S.' '  Unset Guard Checking.' \
+  '  Fixpoint loop (n : nat) : False := loop n.' '  Set Guard Checking.' '  Lemma bad : False. Proof. exact (loop 0). Qed.' 'End M.'
+run_phase prove REQUIRED_THEOREMS=M.bad
+expect "fixture sealed-module: an unsafe fixpoint hidden by Module M : S" 1 'module type ascription'
+
+fresh_fixture
+write Ok.v 'Module Type E. End E.' 'Module F (X : E).' '  Axiom cheat : False.' 'End F.' 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove
+expect "fixture functor-body: an axiom inside an uninstantiated functor" 1 'a functor'
+
+fresh_fixture
+write Ok.v 'Module Type E. End E.' 'Module F' '  (X : E).' '  Axiom cheat : False.' 'End F.'
+run_phase prove
+expect "a functor header broken over two lines is still seen" 1 'a functor'
+
+fresh_fixture
+write Ok.v 'Module Type S. Parameter p : nat. End S.' 'Module M <: S. Definition p := 1. End M.'
+run_phase prove
+expect "Module M <: S is refused too" 1 'module type ascription'
+
+fresh_fixture
+write Other.v 'Definition other : nat := 1.'
+write Ok.v 'Load "Other".'
+run_phase prove FILES="proofs/Other.v proofs/Ok.v"
+expect "Load runs commands the scan cannot see" 1 'Load, Add LoadPath'
+
+fresh_fixture
+write Ok.v 'Unset Guard Checking.' 'Set Guard Checking.' 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove
+expect "Unset Guard Checking is refused even when nothing used it" 1 'Unset Guard/Positivity/Universe'
+
+fresh_fixture
+write Ok.v '#[bypass_check(positivity)] Inductive pb : Type := mk : (pb -> False) -> pb.'
+run_phase prove
+expect "#[bypass_check] is refused (coqchk sees the flag)" 1 'unsafe (co)fixpoints'
+
+fresh_fixture
+write Ok.v 'Module Type T. End T.' 'Module Type F (X : T). End F.' 'Module M. Definition d := 1. End M.' 'Definition Module_x : nat := 1.'
+run_phase prove REQUIRED_THEOREMS=M.d
+expect "plain modules, module types, module type functors and similar names are not refused" 0 '1 required theorem(s) resolved'
+
+echo "== controls are judged with no allowance, whatever the caller allows =="
+fresh_fixture
+run_phase prove ALLOWED_AXIOMS="Axiom.cheat Admitted.planted_admitted Parameter.planted_param"
+expect "fixture allowance-vs-controls: a caller allowing the planted axioms still gets the controls refused" 0 'coqchk accepts them'
+
+echo "== the probe module cannot collide with a listed module =="
+fresh_fixture
+write GateRequired.v 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove FILES=proofs/GateRequired.v REQUIRED_THEOREMS=ok
+expect "fixture probe-collision: a listed file named like the old probe" 0 '1 required theorem(s) resolved'
+write GateProbe.v 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove FILES=proofs/GateProbe.v REQUIRED_THEOREMS=ok
+expect "a listed file named like the current probe" 0 '1 required theorem(s) resolved'
+
 echo "== two files, dependency order =="
 fresh_fixture
 printf 'Lemma base : True. Proof. exact I. Qed.\n' > "$FIX/proofs/Base.v"
@@ -212,12 +269,13 @@ mutant() { # mutant <label> <old-text> <new-text> <want-text>: literal replace
   expect "$1" 2 "$4"
 }
 mutant "a judge that ignores axioms" 'axioms) if is_allowed "$name"; then continue; fi; axioms="$axioms $name" ;;' 'axioms) : ;;' 'was ACCEPTED'
-mutant "a judge that ignores type-in-type" 'tit) tit="$tit $name" ;;' 'tit) : ;;' 'planted TypeInType control was ACCEPTED'
-mutant "a judge that ignores unsafe fixpoints" 'unsafe) unsafe="$unsafe $name" ;;' 'unsafe) : ;;' 'planted GuardOff control was ACCEPTED'
-mutant "a judge that ignores assumed positivity" 'pos) pos="$pos $name" ;;' 'pos) : ;;' 'planted PositivityOff control was ACCEPTED'
+mutant "a judge that ignores type-in-type" 'tit) tit="$tit $name" ;;' 'tit) : ;;' 'wrong stage'
+mutant "a judge that ignores unsafe fixpoints" 'unsafe) unsafe="$unsafe $name" ;;' 'unsafe) : ;;' 'wrong stage'
+mutant "a judge that ignores assumed positivity" 'pos) pos="$pos $name" ;;' 'pos) : ;;' 'wrong stage'
 mutant "a judge that never runs coqchk" '(cd "$scratch" && "$coqchk_bin" -o "${mods[@]}") > "$scratch/coqchk.log" 2>&1 || rc=$?' ': > "$scratch/coqchk.log"' "summary is not in the expected shape"
 mutant "a judge that trusts a clean-looking coqchk exit code only" 'parse_summary "$scratch/coqchk.log" "$rows" ||' 'true ||' 'was ACCEPTED'
-mutant "an existence check that ignores the exit code" '(cd "$scratch" && "$coqc_bin" GateRequired.v) > "$scratch/GateRequired.log" 2>&1' '(cd "$scratch" && "$coqc_bin" GateRequired.v) > "$scratch/GateRequired.log" 2>&1; true' 'resolved a name that does not exist'
+mutant "an existence check that ignores the exit code" '(cd "$scratch" && "$coqc_bin" "$probe_mod.v") > "$scratch/$probe_mod.log" 2>&1' '(cd "$scratch" && "$coqc_bin" "$probe_mod.v") > "$scratch/$probe_mod.log" 2>&1; true' 'resolved a name that does not exist'
+mutant "a judge without the text rule" 'if [ -n "$why" ]; then DEFECT="$f: $why"; DEFECT_KIND=text; return 1; fi' ':' 'planted Sealed control was ACCEPTED'
 mutant "a true control that is in fact false" 'Lemma planted_true : True.' 'Lemma planted_true : False.' 'was refused'
 mutant "an axiom control that is in fact closed" "Axiom cheat : False.\\nLemma planted_axiom : False.\\nProof. exact cheat. Qed.\\n" "Lemma planted_axiom : True.\\nProof. exact I. Qed.\\n" 'planted Axiom control was ACCEPTED'
 mutant "an ill-typed control that is well typed" 'Lemma planted_ill_typed : False.' 'Lemma planted_ill_typed : True.' 'planted IllTyped control was ACCEPTED'

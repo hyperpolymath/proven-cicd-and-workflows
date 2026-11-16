@@ -31,6 +31,8 @@ on:
       - "actions/lean-axioms-check/**"
       - "actions/tla-check/**"
       - "scripts/verify-suite-checkout.sh"
+      - "rollout_language_gates.sh"
+      - "tests/rollout-detection.sh"
       - "scripts/deonboard-workflow.sh"
       - "actions/zig-unified-api-adapter-check/**"
       - "tests/zig-ffi-scope.sh"
@@ -61,6 +63,8 @@ on:
       - "actions/lean-axioms-check/**"
       - "actions/tla-check/**"
       - "scripts/verify-suite-checkout.sh"
+      - "rollout_language_gates.sh"
+      - "tests/rollout-detection.sh"
       - "scripts/deonboard-workflow.sh"
       - "actions/zig-unified-api-adapter-check/**"
       - "tests/zig-ffi-scope.sh"
@@ -98,7 +102,7 @@ jobs:
   gates:
     name: Each gate can fail for what it checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
     steps:
@@ -146,6 +150,8 @@ jobs:
         run: bash tests/suite-source-compatibility.sh
       - name: Zig FFI scope distinguishes CLI I/O and fails closed
         run: bash tests/zig-ffi-scope.sh
+      - name: Rollout detectors select the right gate, and not Verilog
+        run: bash tests/rollout-detection.sh
       - name: Rust gate
         run: bash actions/rust-ci-check/test.sh
       - name: Scoped Rust documentation still rejects broken doctests

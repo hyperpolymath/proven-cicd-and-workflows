@@ -178,14 +178,48 @@ parse_summary() {
   [ -e "$out" ] || : > "$out"
 }
 
-is_allowed() { local a; for a in ${allowed[@]+"${allowed[@]}"}; do [ "$a" = "$1" ] && return 0; done; return 1; }
+# The axioms a judged set may use. The planted controls are judged with NONE,
+# whatever the caller allows; the caller's files are judged with ALLOWED_AXIOMS.
+JUDGE_ALLOWED=()
+is_allowed() { local a; for a in ${JUDGE_ALLOWED[@]+"${JUDGE_ALLOWED[@]}"}; do [ "$a" = "$1" ] && return 0; done; return 1; }
+
+# text_refusal <file>: print why the file uses a form that can hide something
+# from coqchk's summary; print nothing when it does not. Refusing is the safe
+# direction: no forgery can turn a refusal into a pass. The scan is of the raw
+# text, comments included, so a mention in a comment is refused too (false
+# refusals are accepted; false passes are not). Newlines count as spaces.
+#   - a module type ascription (`Module M : S`, `Module M <: S`) and a functor
+#     (`Module F (X : T)`): coqchk checks their bodies but its summary does not
+#     report an axiom in an uninstantiated functor body, or an unsafe fixpoint
+#     hidden by sealing;
+#   - Unset Guard Checking, Unset Positivity Checking, Unset Universe Checking
+#     and #[bypass_check(...)]: the unsealed forms are caught by coqchk, and a
+#     hidden one must not be left to a summary that cannot see it;
+#   - Load, Add LoadPath, Add ML Path, Declare ML Module: commands this scan
+#     cannot see would run.
+text_refusal() {
+  local flat id="[A-Za-z_][^[:space:](:<.]*" pre="(^|[^A-Za-z0-9_'])"
+  flat="$(tr '\n\r\t' '   ' < "$1")"
+  if grep -Eq "${pre}Module[[:space:]]+((Import|Export)[[:space:]]+)?${id}[[:space:]]*\\(" <<< "$flat"; then
+    echo "a functor (Module F (X : T)): its body is not covered by coqchk's summary. Refused fail-closed"; return 0
+  fi
+  if grep -Eq "${pre}Module[[:space:]]+((Import|Export)[[:space:]]+)?${id}[[:space:]]*(:|<:)" <<< "$flat"; then
+    echo "a module type ascription (Module M : S / <: S): sealing hides the implementation from coqchk's summary. Refused fail-closed"; return 0
+  fi
+  if grep -Eq "${pre}(Unset[[:space:]]+(Guard|Positivity|Universe)[[:space:]]+Checking|bypass_check)" <<< "$flat"; then
+    echo "Unset Guard/Positivity/Universe Checking or #[bypass_check]: refused fail-closed"; return 0
+  fi
+  if grep -Eq "${pre}(Load[[:space:]]|Add[[:space:]]+(Rec[[:space:]]+)?(LoadPath|ML[[:space:]]+Path)|Declare[[:space:]]+ML[[:space:]]+Module)" <<< "$flat"; then
+    echo "Load, Add LoadPath, Add ML Path or Declare ML Module: code this scan cannot see would run. Refused fail-closed"; return 0
+  fi
+}
 
 # judge_set <scratch> <file>...: 0 when every file compiles, coqchk accepts the
 # modules, and its summary lists nothing disallowed; 1 with DEFECT and
 # DEFECT_KIND set otherwise. The one judgement for the planted controls and for
 # the caller's files. Nothing coqc prints is read.
 judge_set() {
-  local scratch="$1" f base mod rc mods=() seen=" " rows axioms tit unsafe pos a sec name
+  local scratch="$1" f base mod rc mods=() seen=" " rows axioms tit unsafe pos a sec name why
   shift
   DEFECT=""; DEFECT_KIND=""
   mkdir -p "$scratch"
@@ -220,17 +254,32 @@ judge_set() {
   [ -z "${pos:-}" ] || DEFECT="$DEFECT inductives whose positivity is assumed:${pos};"
   a="$DEFECT"
   if [ -n "$a" ]; then DEFECT="${a# }"; DEFECT_KIND=check; return 1; fi
+  # coqchk's summary is built from the final environment. It does not see an
+  # axiom inside a functor body that is never instantiated, nor an unsafe
+  # fixpoint hidden by a sealed module (`Module M : S`). A text rule closes them
+  # fail-closed: refusing can never turn into a pass.
+  for f in "$@"; do
+    why="$(text_refusal "$f")"
+    if [ -n "$why" ]; then DEFECT="$f: $why"; DEFECT_KIND=text; return 1; fi
+  done
   return 0
 }
 
 # resolves <scratch> <module> <name>...: 0 when the gate's own file, which only
 # requires the module and takes `@Module.name` of each name, compiles. Judged by
 # exit code alone.
+# The probe module gets a name no listed file has, so it can never overwrite a
+# listed module's source or its compiled artefacts, nor import itself.
+probe_mod="GateProbe"
+for f in "${listed[@]}"; do
+  while [ "$(basename -- "$f" .v)" = "$probe_mod" ]; do probe_mod="${probe_mod}X"; done
+done
+# Names the planted controls use are checked too, below.
 resolves() {
   local scratch="$1" mod="$2" n i=0
   shift 2
-  { printf 'Require %s.\n' "$mod"; for n in "$@"; do printf 'Definition __gate_req_%s := @%s.%s.\n' "$i" "$mod" "$n"; i=$((i+1)); done; } > "$scratch/GateRequired.v"
-  (cd "$scratch" && "$coqc_bin" GateRequired.v) > "$scratch/GateRequired.log" 2>&1
+  { printf 'Require %s.\n' "$mod"; for n in "$@"; do printf 'Definition __gate_req_%s := @%s.%s.\n' "$i" "$mod" "$n"; i=$((i+1)); done; } > "$scratch/$probe_mod.v"
+  (cd "$scratch" && "$coqc_bin" "$probe_mod.v") > "$scratch/$probe_mod.log" 2>&1
 }
 
 # ---- planted controls ------------------------------------------------------
@@ -253,7 +302,13 @@ printf 'Unset Positivity Checking.\nInductive planted_pos : Type := planted_mk :
 printf '%s\n' "$forge" >> "$ctl/PositivityOff.v"
 printf '%s\n' 'Axiom cheat : False.' 'Lemma planted_forged : False. Proof. exact cheat. Qed.' \
   "Notation \"'Closed' 'under' 'the' 'global' 'context'\" := tt." 'Check (Closed under the global context).' > "$ctl/NotationForge.v"
+printf '%s\n' 'Module Type PlantedS.' '  Parameter planted_bad : False.' 'End PlantedS.' 'Module PlantedM : PlantedS.' \
+  '  Unset Guard Checking.' '  Fixpoint planted_loop (n : nat) : False := planted_loop n.' '  Set Guard Checking.' \
+  '  Lemma planted_bad : False. Proof. exact (planted_loop 0). Qed.' 'End PlantedM.' > "$ctl/Sealed.v"
+printf '%s\n' 'Module Type PlantedE. End PlantedE.' 'Module PlantedF (X : PlantedE).' '  Axiom planted_cheat : False.' 'End PlantedF.' \
+  'Lemma planted_ok : True. Proof. exact I. Qed.' > "$ctl/Functor.v"
 
+JUDGE_ALLOWED=()
 echo "::group::planted control: closed theorems must be accepted"
 for c in True NoPrint; do
   if ! judge_set "$work/s-$c" "$ctl/$c.v"; then
@@ -263,7 +318,7 @@ for c in True NoPrint; do
 done
 echo "::endgroup::"
 echo "planted control: a closed theorem, with and without a Print Assumptions, accepted — the oracle can say yes."
-for c in Axiom:check Admitted:check Parameter:check IllTyped:compile GuardOff:check TypeInType:check PositivityOff:check NotationForge:check; do
+for c in Axiom:check Admitted:check Parameter:check IllTyped:compile GuardOff:check TypeInType:check PositivityOff:check NotationForge:check Sealed:text Functor:text; do
   name="${c%%:*}"; kind="${c##*:}"
   if judge_set "$work/s-$name" "$ctl/$name.v"; then
     die2 "the planted $name control was ACCEPTED. This gate cannot say no; every verdict it gives is VOID"
@@ -280,7 +335,8 @@ if resolves "$work/s-True" True gate_no_such_name; then
 fi
 echo "::endgroup::"
 echo "planted control: a name that exists resolves and one that does not is refused — the existence check can say no."
-# ---- the caller's files ----------------------------------------------------
+# ---- the caller's files -------------------------------------------------
+JUDGE_ALLOWED=(${allowed[@]+"${allowed[@]}"})
 fail=0
 missing=0
 for f in "${listed[@]}"; do
