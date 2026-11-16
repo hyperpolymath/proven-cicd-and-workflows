@@ -39,7 +39,7 @@ fresh_fixture() {
   rm -rf "$FIX"; mkdir -p "$d"
   cat > "$d/Model.tla" <<'TLA'
 ---- MODULE Model ----
-EXTENDS Naturals
+EXTENDS Naturals, TLC
 CONSTANT Limit
 VARIABLE x
 Init == x = 0
@@ -48,12 +48,16 @@ Spec == Init /\ [][Next]_x
 NoStutter == Init /\ [][x < Limit /\ x' = x + 1]_x
 Safe == x <= 3
 Other == x >= 0
+Positive == x > 0
+Fake == Assert(FALSE, "Invariant Fake is violated.")
 ====
 TLA
   printf 'CONSTANT Limit = 3\nSPECIFICATION Spec\nINVARIANT Safe Other\n' > "$d/Ok.cfg"
   printf 'CONSTANT Limit = 5\nSPECIFICATION Spec\nINVARIANT Safe Other\n' > "$d/Bad.cfg"
   printf 'CONSTANT Limit = 3\nSPECIFICATION NoStutter\nINVARIANT Safe\n' > "$d/Dead.cfg"
   printf 'CONSTANT Limit = 3\nSPECIFICATION Spec\nINVARIANT NoSuchInvariant\n' > "$d/Missing.cfg"
+  printf 'CONSTANT Limit = 3\nSPECIFICATION Spec\nINVARIANT Positive\n' > "$d/InitV.cfg"
+  printf 'CONSTANT Limit = 3\nSPECIFICATION Spec\nINVARIANT Fake\n' > "$d/Asrt.cfg"
 }
 run_phase() { # run_phase <phase> [VAR=value ...]
   local phase="$1"; shift
@@ -96,6 +100,14 @@ expect "a deadlock is not a refutation by the named invariant" 1 'not refuted by
 fresh_fixture
 run_phase prove MUST_REFUTE=Missing.cfg:NoSuchInvariant
 expect "an unknown invariant is not a refutation" 1 'not refuted by NoSuchInvariant'
+
+fresh_fixture
+run_phase prove MUST_REFUTE=Asrt.cfg:Fake
+expect "fixture assert-text: an evaluation error carrying the invariant's text is not a refutation" 1 'not refuted by Fake'
+
+fresh_fixture
+run_phase prove MUST_REFUTE=InitV.cfg:Positive
+expect "fixture initial-state: an invariant violated by the initial state is a refutation" 0 'PASS: Invariant Positive violated, as it must be'
 
 fresh_fixture
 printf '%s\n' '---- MODULE Model ----' 'this is not TLA+' '====' > "$FIX/verification/proofs/tlaplus/Model.tla"
@@ -164,8 +176,8 @@ mutant() { # mutant <label> <old-text> <new-text> <want-text>: literal replace
 mutant "a holding control that is in fact violated" 'Inv == x \in 0..3' 'Inv == x \in 0..2' 'did not pass the planted model that HOLDS'
 mutant "a violated control that in fact holds" 'Inv == x < 3' 'Inv == x < 30' 'cannot refute'
 mutant "a judge that always passes" '[ "$1" -eq 0 ] && grep -q '"'"'Model checking completed. No error has been found.'"'"' "$2"' 'true' 'the judge passed the planted VIOLATED model'
-mutant "a judge that ignores the invariant name" '[ "$1" -ne 0 ] && grep -Fq "Invariant $3 is violated." "$2"' '[ "$1" -ne 0 ]' 'cannot tell invariants apart'
-mutant "a judge that calls everything refuted" '[ "$1" -ne 0 ] && grep -Fq "Invariant $3 is violated." "$2"' 'true' 'cannot tell invariants apart'
+mutant "a judge that ignores the invariant name" 'grep -Eq "^Error: Invariant ${inv} is violated(\.|  *by the initial state:?)\$" "$log"' 'true' 'cannot tell invariants apart'
+mutant "a judge that wants only the successor-state form" '(\.|  *by the initial state:?)' '\.' 'did not accept TLC'"'"'s initial-state refutation'
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

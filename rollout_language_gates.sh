@@ -13,8 +13,9 @@
 #   over a miniKanren) or a Rust kanren
 #   crate                               -> kanren-gate.yml
 #   .agda file                          -> agda-gate.yml
-#   Coq .v file (Require/Lemma/Theorem/
-#   Qed, so Verilog is not caught)      -> rocq-gate.yml
+#   Coq .v file (Require/Definition/Lemma/
+#   Theorem/Print Assumptions/Qed,
+#   so Verilog is not caught)           -> rocq-gate.yml
 #   .lean file outside any Lake project -> lean-axioms-gate.yml
 #   .tla file                           -> tla-gate.yml
 #
@@ -63,7 +64,7 @@ has_kanren() { grep -rlE --include='*.scm' --include='*.ss' --include='*.sls' --
 # Trees the prover gates never look in: fetched dependencies and build output.
 prune_find() { find "$1" \( -name .git -o -name _build -o -name build -o -name target -o -name node_modules -o -name .cicd-suite -o -name .lake \) -prune -o "${@:2}"; }
 has_agda() { [ -n "$(prune_find "$1" -type f -name '*.agda' -print | head -n 1)" ]; }
-has_rocq() { [ -n "$(prune_find "$1" -type f -name '*.v' -print | xargs -r grep -lE '^[[:space:]]*(Require[[:space:]]+(Import|Export)|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require|Lemma[[:space:]]|Theorem[[:space:]]|Qed\.)' 2>/dev/null | head -n 1)" ]; }
+has_rocq() { [ -n "$(prune_find "$1" -type f -name '*.v' -print0 | xargs -0 -r grep -lE '^[[:space:]]*(Require[[:space:]]|Require$|Definition[[:space:]]|Print[[:space:]]+Assumptions[[:space:]]|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require|Lemma[[:space:]]|Theorem[[:space:]]|Qed\.)' 2>/dev/null | head -n 1)" ]; }
 has_tla()   { [ -n "$(prune_find "$1" -type f -name '*.tla' -print | head -n 1)" ]; }
 # A .lean file counts when no lakefile sits in its directory or above it: Lake
 # projects are proof-runner-check's, not lean-axioms-gate's.

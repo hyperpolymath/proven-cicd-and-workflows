@@ -32,8 +32,10 @@
 #          say no voids every verdict it gives: exit 2.
 #       3. MUST_PASS: each config must exit 0 and report "Model checking
 #          completed. No error has been found."
-#       4. MUST_REFUTE (<config>:<Invariant>): each config must exit non-zero
-#          and report "Invariant <Invariant> is violated." A must-refute config
+#       4. MUST_REFUTE (<config>:<Invariant>): each config must exit
+#          with exit status 12 (TLC safety violation) and report TLC's own
+#          "Invariant <Invariant> is violated." line, or the initial-state form
+#          "Invariant <Invariant> is violated by the initial state:". A must-refute config
 #          that passes fails the gate, as does one refuted by another invariant,
 #          a parse error or a deadlock.
 #
@@ -164,8 +166,16 @@ run_tlc() {
 judge_pass() { # <rc> <log>
   [ "$1" -eq 0 ] && grep -q 'Model checking completed. No error has been found.' "$2"
 }
+# TLC v1.7.4 exits 12 for a safety (invariant) violation. An evaluation error
+# (an Assert, a type error, a bad config) exits 75, 150 or 151; deadlock is 11.
+# The diagnostic must be TLC's own line, at the start of a line: a string that an
+# Assert prints sits inside quotes and cannot match. Two forms exist: a later
+# state, and the initial state.
+TLC_SAFETY_VIOLATION=12
 judge_refuted() { # <rc> <log> <invariant>
-  [ "$1" -ne 0 ] && grep -Fq "Invariant $3 is violated." "$2"
+  local rc="$1" log="$2" inv="$3"
+  [ "$rc" -eq "$TLC_SAFETY_VIOLATION" ] || return 1
+  grep -Eq "^Error: Invariant ${inv} is violated(\.|  *by the initial state:?)\$" "$log"
 }
 
 # ---- planted controls ------------------------------------------------------
@@ -191,6 +201,28 @@ Inv == x < 3
 ====
 TLA
 printf 'SPECIFICATION Spec\nINVARIANT Inv\n' > "$ctl/PlantedHolds.cfg"
+cat > "$ctl/PlantedInitial.tla" <<'TLA'
+---- MODULE PlantedInitial ----
+EXTENDS Naturals
+VARIABLE x
+Init == x = 0
+Next == x' = x
+Spec == Init /\ [][Next]_x
+Inv == x > 0
+====
+TLA
+cat > "$ctl/PlantedAssert.tla" <<'TLA'
+---- MODULE PlantedAssert ----
+EXTENDS Naturals, TLC
+VARIABLE x
+Init == x = 0
+Next == x' = x
+Spec == Init /\ [][Next]_x
+Inv == Assert(FALSE, "Invariant Inv is violated.")
+====
+TLA
+printf 'SPECIFICATION Spec\nINVARIANT Inv\n' > "$ctl/PlantedInitial.cfg"
+printf 'SPECIFICATION Spec\nINVARIANT Inv\n' > "$ctl/PlantedAssert.cfg"
 printf 'SPECIFICATION Spec\nINVARIANT Inv\n' > "$ctl/PlantedViolated.cfg"
 
 echo "::group::planted controls: TLC on a model that holds and on one that does not"
@@ -212,6 +244,13 @@ if judge_refuted "$rc_viol" "$work/violated.log" NotTheInvariant; then
 fi
 if judge_refuted "$rc_holds" "$work/holds.log" Inv; then
   die2 "the judge called the planted HOLDING model refuted. This gate cannot tell a pass from a refutation; every verdict it gives is VOID"
+fi
+rc_init="$(run_tlc "$ctl" PlantedInitial.tla PlantedInitial.cfg "$work/initial.log")"
+rc_assert="$(run_tlc "$ctl" PlantedAssert.tla PlantedAssert.cfg "$work/assert.log")"
+judge_refuted "$rc_init" "$work/initial.log" Inv \
+  || die2 "the judge did not accept TLC's initial-state refutation (exit $rc_init). A model refuted by its initial state would be failed wrongly"
+if judge_refuted "$rc_assert" "$work/assert.log" Inv; then
+  die2 "the judge accepted an Assert evaluation error that merely prints the invariant's text as a refutation. This gate cannot tell a violated invariant from a failed evaluation; every verdict it gives is VOID"
 fi
 echo "planted control: the judge refuses a violated model as a pass, a wrong invariant name, and a holding model as a refutation."
 

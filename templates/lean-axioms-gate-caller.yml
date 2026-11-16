@@ -32,5 +32,5 @@ jobs:
     uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/lean-axioms-gate.yml@__CICD_SUITE_SHA__ # cicd-suite main
     # Inputs (optional; the defaults are hvn-dehallucinator's layout):
     #   files: verification/proofs/lean4/Haruspex.lean   # whitespace-separated, no Lake project
-    #   required_theorems: "name1 name2"                 # each must appear in a #print axioms
+    #   required_theorems: "name1 name2"                 # the gate queries each itself
     #                                                    # (empty by default: name the theorems that matter)

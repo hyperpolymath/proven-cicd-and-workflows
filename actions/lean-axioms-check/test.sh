@@ -109,7 +109,24 @@ expect "a file with no #print axioms" 1 'no #print axioms'
 fresh_fixture
 lean_fixture "$FIX/proofs/Ok.lean" "" '-- #print axioms Fixture.sound_one'
 run_phase prove
-expect "more prints than reports" 1 'reports in proofs/Ok.lean are axiom-free'
+expect "a commented-out print is not a print and does not fail the file" 0 'every executed #print axioms is axiom-free'
+
+echo "== reports come from execution, not from the file's text =="
+fresh_fixture
+printf '%s\n' 'axiom cheat : False' 'theorem bad : False := cheat' 'theorem ok : True := trivial' \
+  '#print  axioms ok' '-- #print axioms bad' > "$FIX/proofs/Ok.lean"
+run_phase prove REQUIRED_THEOREMS=bad
+expect "fixture hidden-print: a commented print for a required theorem on an axiom" 1 'rests on an axiom'
+
+fresh_fixture
+printf '%s\n' 'theorem ok : True := trivial' '#print  axioms ok' > "$FIX/proofs/Ok.lean"
+run_phase prove REQUIRED_THEOREMS=ok
+expect "fixture extra-space-print: #print  axioms with two spaces is a print" 0 '1 required theorem(s) reported'
+
+fresh_fixture
+printf '%s\n' 'theorem ok : True := trivial' 'namespace A' 'namespace B' 'theorem unprinted : True := trivial' 'end B' 'end A' '#print axioms ok' > "$FIX/proofs/Ok.lean"
+run_phase prove REQUIRED_THEOREMS="ok unprinted"
+expect "fixture generated-query: a required theorem inside nested namespaces with no print is queried by the gate" 0 '2 required theorem(s) reported'
 
 fresh_fixture
 lean_fixture "$FIX/proofs/Ok.lean" "" 'theorem sec : True := trivial'
@@ -127,7 +144,7 @@ expect "detect: a listed file that does not exist" 1 'missing: proofs/Ghost.lean
 run_phase detect FILES=
 expect "detect: standalone .lean files and an empty list" 1 'names none'
 run_phase prove REQUIRED_THEOREMS='bad name;'
-expect "a required name that is not an identifier is exit 2" 2 'not a plain identifier'
+expect "a required name that is not an identifier is exit 2" 2 'is not an identifier'
 
 echo "== Lake projects belong to proof-runner-check, not to this gate =="
 fresh_fixture

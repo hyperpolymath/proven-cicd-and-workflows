@@ -34,18 +34,23 @@
 #          an ill-typed file and a file with no #print axioms must each be
 #          refused. A judge that cannot say no voids every verdict: exit 2.
 #       3. Each listed file is compiled standalone with `lean <file>` (imports
-#          are limited to the toolchain's own libraries). lean must succeed; the
-#          file must contain at least one `#print axioms`; no report may say
-#          "depends on axioms" (this catches sorryAx, Classical.choice, propext,
-#          Quot.sound and any declared axiom), no `declaration uses 'sorry'`
-#          warning may appear, and the number of "does not depend on any axioms"
-#          reports must equal the number of prints.
-#       4. REQUIRED_THEOREMS (optional, whitespace-separated names): each must
-#          appear in some `#print axioms` of a listed file, so a deleted print
-#          cannot hide a theorem.
+#          are limited to the toolchain's own libraries). lean must succeed; at
+#          least one `#print axioms` must have RUN; no report may say "depends on
+#          axioms" (this catches sorryAx, Classical.choice, propext, Quot.sound
+#          and any declared axiom); no `declaration uses 'sorry'` warning may
+#          appear. Reports are counted from lean's output, never from the text of
+#          the file: a commented-out print runs nothing, and `#print  axioms` with
+#          two spaces is a print.
+#       4. REQUIRED_THEOREMS (optional, whitespace-separated names; a dotted name
+#          is qualified): the gate asks for each report itself, appending
+#          `#print axioms <name>` and `#print axioms <ns>.<name>` for every
+#          namespace the file opens to a copy of a listed file. lean must print
+#          "'<candidate>' does not depend on any axioms" for one candidate. A name
+#          that resolves in no listed file has no report and fails, so a deleted
+#          print cannot hide a theorem, and a commented one cannot stand in for it.
 #
-# Not covered, by design: a theorem with no #print axioms is not examined.
-# Name every theorem that matters in REQUIRED_THEOREMS.
+# Not covered, by design: a theorem the caller does not name and does not print
+# is not examined. Name every theorem that matters in REQUIRED_THEOREMS.
 #
 # Exit codes: 0 silent, 1 defect, 2 NO CHECK WAS PERFORMED. 2 is never a pass.
 #
@@ -75,7 +80,7 @@ read -r -a listed <<< "${files_in//$'\n'/ }"
 read -r -a required <<< "${required_in//$'\n'/ }"
 for i in "${!listed[@]}"; do listed[i]="${listed[$i]#./}"; done
 for n in ${required[@]+"${required[@]}"}; do
-  [[ "$n" =~ ^[A-Za-z0-9_\']+$ ]] || die2 "required theorem name '$n' is not a plain identifier (letters, digits, _ and ')"
+  [[ "$n" =~ ^[A-Za-z_]([A-Za-z0-9_\'.]*[A-Za-z0-9_\'])?$ ]] || die2 "required theorem name '$n' is not an identifier (ASCII letters, digits, _ and ', with inner dots for a qualified name)"
 done
 
 # in_lake <file>: 0 when the file, or any directory above it up to the tree
@@ -153,12 +158,16 @@ work="$(mktemp -d)" || die2 "cannot create a temp directory"
 trap 'rm -rf "$work"' EXIT
 
 DEFECT=""
-# judge <file> <log>: 0 when the file compiles and every #print axioms in it
-# reports no axioms; 1 with DEFECT set otherwise. The one judgement used for
-# both the planted controls and the caller's files.
+JUDGE_CLEAN=0
+# judge <file> <log>: 0 when the file compiles, at least one #print axioms ran,
+# and every report lean printed says "does not depend on any axioms"; 1 with
+# DEFECT set otherwise. Reports are counted from lean's OUTPUT, never from the
+# text of the file: a commented-out print runs nothing, and `#print  axioms` with
+# two spaces is a print. The one judgement used for both the planted controls and
+# the caller's files.
 judge() {
-  local src="$1" log="$2" prints clean rc
-  DEFECT=""
+  local src="$1" log="$2" clean rc
+  DEFECT=""; JUDGE_CLEAN=0
   rc=0
   "$lean_bin" "$src" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then DEFECT="lean failed on $src (exit $rc)"; return 1; fi
@@ -166,11 +175,22 @@ judge() {
   if grep -q 'depends on axioms' "$log"; then
     DEFECT="a theorem in $src rests on an axiom ($(grep 'depends on axioms' "$log" | head -n 3 | tr '\n' ' '))"; return 1
   fi
-  prints="$(grep -o '#print axioms' "$src" | wc -l | tr -d ' ' || true)"
   clean="$(grep -c "does not depend on any axioms$" "$log" || true)"
-  if [ "${prints:-0}" -eq 0 ]; then DEFECT="no #print axioms in $src"; return 1; fi
-  if [ "$clean" != "$prints" ]; then DEFECT="$clean of $prints reports in $src are axiom-free"; return 1; fi
+  if [ "$clean" -eq 0 ]; then DEFECT="no #print axioms in $src was executed"; return 1; fi
+  JUDGE_CLEAN="$clean"
   return 0
+}
+
+# ns_prefixes <file>: every fully qualified namespace prefix the file opens, one
+# per line ("A", "A.B", ...). namespace, section and mutual push; end pops. It
+# only proposes names to query: a wrong guess is a query that does not resolve,
+# and lean's own output decides what was reported.
+ns_prefixes() {
+  awk '
+    /^[[:space:]]*namespace[[:space:]]+[A-Za-z_]/ { n++; st[n] = $2; p = ""; for (i = 1; i <= n; i++) if (st[i] != "") p = p (p == "" ? "" : ".") st[i]; print p; next }
+    /^[[:space:]]*(section|mutual)([[:space:]]|$)/ { n++; st[n] = ""; next }
+    /^[[:space:]]*end([[:space:]]|$)/ { if (n > 0) n-- }
+  ' "$1" | LC_ALL=C sort -u
 }
 
 # ---- planted controls ------------------------------------------------------
@@ -203,8 +223,7 @@ for f in "${listed[@]}"; do
   if [ ! -f "$f" ]; then echo "MISSING"; err "listed file '$f' does not exist"; fail=1; continue; fi
   log="$work/file-$(printf '%s' "$f" | tr '/' '_').log"
   if judge "$f" "$log"; then
-    n="$(grep -o '#print axioms' "$f" | wc -l | tr -d ' ' || true)"
-    echo "PASS ($n axiom-free)"
+    echo "PASS ($JUDGE_CLEAN axiom-free)"
   else
     echo "FAIL"
     sed 's/^/        /' "$log" | head -n 40
@@ -214,16 +233,48 @@ for f in "${listed[@]}"; do
 done
 
 # ---- required theorems -----------------------------------------------------
+# The gate asks for each report itself. For every listed file it appends one
+# `#print axioms <candidate>` per required name and per namespace prefix the file
+# opens (the bare name, A.name, A.B.name, ...) to a copy and runs lean. A name is
+# covered when lean printed "'<candidate>' does not depend on any axioms" for one
+# of its candidates. Any "depends on axioms" report fails. Candidates that do not
+# resolve are errors lean prints and we ignore: the plain compile was judged above.
 nreq=0
-for name in ${required[@]+"${required[@]}"}; do
-  found=0
-  for f in "${listed[@]}"; do
-    [ -f "$f" ] || continue
-    if grep -Eq "#print axioms[[:space:]]+([^[:space:]]*\.)?${name}([[:space:]]|\$)" "$f"; then found=1; break; fi
+remaining=()
+for q in ${required[@]+"${required[@]}"}; do remaining+=("$q"); done
+qn=0
+for f in "${listed[@]}"; do
+  [ "${#remaining[@]}" -gt 0 ] || break
+  [ -f "$f" ] || continue
+  prefixes="$(ns_prefixes "$f")"
+  qfile="$work/RequiredQueries-$qn.lean"; qlog="$work/RequiredQueries-$qn.log"; qn=$((qn+1))
+  { cat -- "$f"; printf '\n'
+    for q in "${remaining[@]}"; do
+      printf '#print axioms %s\n' "$q"
+      while IFS= read -r p; do [ -z "$p" ] || printf '#print axioms %s.%s\n' "$p" "$q"; done <<< "$prefixes"
+    done; } > "$qfile"
+  "$lean_bin" "$qfile" > "$qlog" 2>&1 || true
+  if grep -q 'depends on axioms' "$qlog"; then
+    grep 'depends on axioms' "$qlog" | head -n 3 | sed 's/^/        /'
+    err "a required theorem rests on an axiom (queried in $f: ${remaining[*]})"; fail=1
+    remaining=(); break
+  fi
+  still=()
+  for q in "${remaining[@]}"; do
+    hit=0
+    if grep -Fxq "'$q' does not depend on any axioms" "$qlog"; then hit=1; fi
+    while IFS= read -r p; do
+      [ -z "$p" ] || ! grep -Fxq "'$p.$q' does not depend on any axioms" "$qlog" || hit=1
+    done <<< "$prefixes"
+    if [ "$hit" -eq 1 ]; then nreq=$((${nreq:-0} + 1)); else still+=("$q"); fi
   done
-  if [ "$found" -eq 0 ]; then err "no axiom report for required theorem '$name'"; fail=1; else nreq=$((nreq+1)); fi
+  remaining=()
+  for q in ${still[@]+"${still[@]}"}; do remaining+=("$q"); done
+done
+for q in ${remaining[@]+"${remaining[@]}"}; do
+  err "no axiom report for required theorem '$q' (it does not resolve in any listed file, or lean printed no report for it)"; fail=1
 done
 
 [ "$fail" -eq 0 ] || exit 1
-echo "lean-axioms-check[prove]: ${#listed[@]} file(s) compile; every #print axioms is axiom-free; $nreq required theorem(s) reported."
+echo "lean-axioms-check[prove]: ${#listed[@]} file(s) compile; every executed #print axioms is axiom-free; ${nreq:-0} required theorem(s) reported."
 exit 0

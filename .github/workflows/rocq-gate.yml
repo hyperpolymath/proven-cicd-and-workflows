@@ -42,7 +42,7 @@ on:
         required: false
         default: "verification/proofs/coq/Haruspex.v"
       required_theorems:
-        description: Whitespace-separated theorem names that must each appear in a Print Assumptions; empty for none
+        description: Whitespace-separated theorem names; the gate runs Print Assumptions on each itself and it must report closed; empty for none
         type: string
         required: false
         default: ""

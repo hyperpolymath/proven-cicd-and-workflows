@@ -89,7 +89,24 @@ expect "a file with no Print Assumptions" 1 'no Print Assumptions'
 fresh_fixture
 rocq_fixture "$FIX/proofs/Ok.v" "" '(* Print Assumptions sound_one. *)'
 run_phase prove
-expect "more prints than reports" 1 'reports in proofs/Ok.v are closed'
+expect "a commented-out print is not a print and does not fail the file" 0 'every executed Print Assumptions is closed'
+
+echo "== reports come from execution, not from the file's text =="
+fresh_fixture
+printf '%s\n' 'Axiom cheat : False.' 'Lemma bad : False. Proof. exact cheat. Qed.' \
+  'Lemma ok : True. Proof. exact I. Qed.' 'Print  Assumptions ok.' '(* Print Assumptions bad. *)' > "$FIX/proofs/Ok.v"
+run_phase prove REQUIRED_THEOREMS=bad
+expect "fixture hidden-print: a commented print for a required theorem on an Axiom" 1 'rests on an assumption'
+
+fresh_fixture
+printf '%s\n' 'Lemma ok : True. Proof. exact I. Qed.' 'Print  Assumptions ok.' > "$FIX/proofs/Ok.v"
+run_phase prove REQUIRED_THEOREMS=ok
+expect "fixture extra-space-print: Print  Assumptions with two spaces is a print" 0 '1 required theorem(s) reported'
+
+fresh_fixture
+printf '%s\n' 'Lemma ok : True. Proof. exact I. Qed.' 'Lemma unprinted : True. Proof. exact I. Qed.' 'Print Assumptions ok.' > "$FIX/proofs/Ok.v"
+run_phase prove REQUIRED_THEOREMS="ok unprinted"
+expect "fixture generated-query: a required closed theorem with no print is queried by the gate" 0 '2 required theorem(s) reported'
 
 fresh_fixture
 rocq_fixture "$FIX/proofs/Ok.v" "" 'Section S. Variable P : Prop. Lemma sec : P -> P. Proof. intro h; exact h. Qed. Print Assumptions sec. End S.'
@@ -111,7 +128,7 @@ expect "detect: a listed file that does not exist" 1 'missing: proofs/Ghost.v'
 run_phase detect FILES=
 expect "detect: .v files and an empty list" 1 'names none'
 run_phase prove REQUIRED_THEOREMS='bad name;'
-expect "a required name that is not an identifier is exit 2" 2 'not a plain identifier'
+expect "a required name that is not an identifier is exit 2" 2 'is not an identifier'
 
 echo "== two files, dependency order =="
 fresh_fixture

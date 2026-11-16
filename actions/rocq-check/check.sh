@@ -25,17 +25,20 @@
 #          it gives: exit 2.
 #       3. Each listed file, in order, in a scratch directory (no .vo or .glob
 #          litter in the tree; a dependency must be listed before its
-#          dependents): coqc must compile it; it must contain at least one
-#          `Print Assumptions`; the number of "Closed under the global context"
-#          reports must equal the number of prints (a compile cut short, or a
-#          killed one, prints fewer); no report may list Axioms, Opaque
-#          constants or Section Variables.
-#       4. REQUIRED_THEOREMS (optional, whitespace-separated names): each must
-#          appear in some `Print Assumptions` of a listed file, so a deleted
-#          print cannot hide a theorem.
+#          dependents): coqc must compile it; at least one `Print Assumptions`
+#          must have RUN; and no report coqc printed may list Axioms, Opaque
+#          constants or Section Variables. Reports are counted from coqc's
+#          output, never from the text of the file: a commented-out print runs
+#          nothing, and `Print  Assumptions` with two spaces is a print.
+#       4. REQUIRED_THEOREMS (optional, whitespace-separated names; a dotted
+#          name is qualified): the gate asks for each report itself, appending
+#          `Print Assumptions <name>.` to a copy of a listed file that compiled.
+#          coqc must run it and report it closed. A name that resolves in no
+#          listed file has no report and fails, so a deleted print cannot hide
+#          a theorem, and a commented one cannot stand in for it.
 #
-# Not covered, by design: a theorem with no Print Assumptions is not examined.
-# Name every theorem that matters in REQUIRED_THEOREMS.
+# Not covered, by design: a theorem the caller does not name and does not print
+# is not examined. Name every theorem that matters in REQUIRED_THEOREMS.
 #
 # Exit codes: 0 silent, 1 defect, 2 NO CHECK WAS PERFORMED. 2 is never a pass.
 #
@@ -64,7 +67,7 @@ read -r -a listed <<< "${files_in//$'\n'/ }"
 read -r -a required <<< "${required_in//$'\n'/ }"
 for i in "${!listed[@]}"; do listed[i]="${listed[$i]#./}"; done
 for n in ${required[@]+"${required[@]}"}; do
-  [[ "$n" =~ ^[A-Za-z0-9_\']+$ ]] || die2 "required theorem name '$n' is not a plain identifier (letters, digits, _ and ')"
+  [[ "$n" =~ ^[A-Za-z_]([A-Za-z0-9_\'.]*[A-Za-z0-9_\'])?$ ]] || die2 "required theorem name '$n' is not an identifier (letters, digits, _ and ', with inner dots for a qualified name)"
 done
 
 all_v() {
@@ -128,12 +131,16 @@ work="$(mktemp -d)" || die2 "cannot create a temp directory"
 trap 'rm -rf "$work"' EXIT
 
 DEFECT=""
-# judge <source-file> <scratch-dir>: 0 when the file compiles and every
-# Print Assumptions in it is closed; 1 with DEFECT set otherwise. The one
-# judgement used for both the planted controls and the caller's files.
+JUDGE_CLOSED=0
+# judge <source-file> <scratch-dir>: 0 when the file compiles, at least one
+# Print Assumptions ran, and every report coqc printed is closed; 1 with DEFECT
+# set otherwise. Reports are counted from coqc's OUTPUT, never from the text of
+# the file: a commented-out print runs nothing, and `Print  Assumptions` with two
+# spaces is a print. The one judgement used for both the planted controls and the
+# caller's files.
 judge() {
-  local src="$1" scratch="$2" base prints closed log rc
-  DEFECT=""
+  local src="$1" scratch="$2" base closed log rc
+  DEFECT=""; JUDGE_CLOSED=0
   base="$(basename -- "$src")"
   mkdir -p "$scratch"
   cp -- "$src" "$scratch/$base"
@@ -141,14 +148,27 @@ judge() {
   rc=0
   (cd "$scratch" && "$coqc_bin" "$base") > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then DEFECT="coqc failed on $src (exit $rc)"; return 1; fi
-  prints="$(grep -o 'Print Assumptions' "$src" | wc -l | tr -d ' ' || true)"
   closed="$(grep -c '^Closed under the global context$' "$log" || true)"
   if grep -Eq '^(Axioms|Opaque constants|Section Variables):' "$log"; then
     DEFECT="a theorem in $src rests on an assumption"; return 1
   fi
-  if [ "${prints:-0}" -eq 0 ]; then DEFECT="no Print Assumptions in $src"; return 1; fi
-  if [ "$closed" != "$prints" ]; then DEFECT="$closed of $prints reports in $src are closed"; return 1; fi
+  if [ "$closed" -eq 0 ]; then DEFECT="no Print Assumptions in $src was executed"; return 1; fi
+  JUDGE_CLOSED="$closed"
   return 0
+}
+
+# query_run <source-file> <scratch-dir> <name>...: compile a copy of the file with
+# one generated `Print Assumptions <name>.` per name appended. The reports come
+# from coqc running those queries, not from anything the file says. Sets
+# QUERY_RC, QUERY_LOG.
+QUERY_RC=0; QUERY_LOG=""
+query_run() {
+  local src="$1" scratch="$2" q
+  shift 2
+  { cat -- "$src"; printf '\n'; for q in "$@"; do printf 'Print Assumptions %s.\n' "$q"; done; } > "$scratch/RequiredQueries.v"
+  QUERY_LOG="$scratch/RequiredQueries.log"
+  QUERY_RC=0
+  (cd "$scratch" && "$coqc_bin" RequiredQueries.v) > "$QUERY_LOG" 2>&1 || QUERY_RC=$?
 }
 
 # ---- planted controls ------------------------------------------------------
@@ -175,12 +195,13 @@ done
 
 # ---- the caller's files ----------------------------------------------------
 fail=0
+declare -A closed_of=()
 for f in "${listed[@]}"; do
   printf '  %-60s ' "$f"
   if [ ! -f "$f" ]; then echo "MISSING"; err "listed file '$f' does not exist"; fail=1; continue; fi
   if judge "$f" "$work/files"; then
-    n="$(grep -o 'Print Assumptions' "$f" | wc -l | tr -d ' ' || true)"
-    echo "PASS ($n closed)"
+    closed_of["$f"]="$JUDGE_CLOSED"
+    echo "PASS ($JUDGE_CLOSED closed)"
   else
     echo "FAIL"
     sed 's/^/        /' "$work/files/$(basename -- "$f").log" | head -n 40
@@ -190,16 +211,51 @@ for f in "${listed[@]}"; do
 done
 
 # ---- required theorems -----------------------------------------------------
+# Each required name is queried by the gate itself, in a copy of a listed file
+# that compiled: coqc must run `Print Assumptions <name>.` and report it closed.
+# One compile asks for every name still open; if any name does not resolve in
+# that file the compile fails and the names are asked one at a time. A name that
+# resolves in no listed file has no report, and fails.
 nreq=0
-for name in ${required[@]+"${required[@]}"}; do
-  found=0
-  for f in "${listed[@]}"; do
-    [ -f "$f" ] || continue
-    if grep -Eq "Print Assumptions[[:space:]]+([A-Za-z0-9_']+\.)*${name}[[:space:]]*\.([[:space:]]|\$)" "$f"; then found=1; break; fi
+remaining=()
+for q in ${required[@]+"${required[@]}"}; do remaining+=("$q"); done
+for f in "${listed[@]}"; do
+  [ "${#remaining[@]}" -gt 0 ] || break
+  [ -n "${closed_of[$f]+x}" ] || continue
+  base_closed="${closed_of[$f]}"
+  query_run "$f" "$work/files" "${remaining[@]}"
+  if [ "$QUERY_RC" -eq 0 ]; then
+    if grep -Eq '^(Axioms|Opaque constants|Section Variables):' "$QUERY_LOG"; then
+      sed 's/^/        /' "$QUERY_LOG" | head -n 40
+      err "a required theorem rests on an assumption (queried in $f: ${remaining[*]})"; fail=1
+    elif [ "$(grep -c '^Closed under the global context$' "$QUERY_LOG" || true)" -ne $((base_closed + ${#remaining[@]})) ]; then
+      err "the queries for ${remaining[*]} did not each report closed in $f"; fail=1
+    else
+      nreq=$((nreq + ${#remaining[@]}))
+    fi
+    remaining=()
+    continue
+  fi
+  still=()
+  for q in "${remaining[@]}"; do
+    query_run "$f" "$work/files" "$q"
+    if [ "$QUERY_RC" -ne 0 ]; then still+=("$q"); continue; fi
+    if grep -Eq '^(Axioms|Opaque constants|Section Variables):' "$QUERY_LOG"; then
+      sed 's/^/        /' "$QUERY_LOG" | head -n 40
+      err "a required theorem rests on an assumption (queried in $f: $q)"; fail=1
+    elif [ "$(grep -c '^Closed under the global context$' "$QUERY_LOG" || true)" -ne $((base_closed + 1)) ]; then
+      err "the query for $q did not report closed in $f"; fail=1
+    else
+      nreq=$((nreq + 1))
+    fi
   done
-  if [ "$found" -eq 0 ]; then err "no assumption report for required theorem '$name'"; fail=1; else nreq=$((nreq+1)); fi
+  remaining=()
+  for q in ${still[@]+"${still[@]}"}; do remaining+=("$q"); done
+done
+for q in ${remaining[@]+"${remaining[@]}"}; do
+  err "no assumption report for required theorem '$q' (it does not resolve in any listed file that compiled)"; fail=1
 done
 
 [ "$fail" -eq 0 ] || exit 1
-echo "rocq-check[prove]: ${#listed[@]} file(s) compile; every Print Assumptions is closed; $nreq required theorem(s) reported."
+echo "rocq-check[prove]: ${#listed[@]} file(s) compile; every executed Print Assumptions is closed; $nreq required theorem(s) reported."
 exit 0

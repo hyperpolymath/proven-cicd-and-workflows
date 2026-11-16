@@ -38,7 +38,9 @@
 #          must exist.
 #       5. The reject directory (REJECT_DIR, optional): every fixture must be
 #          refused with a type error at the one line it marks `-- refused here`.
-#          A scope error, an unsolved meta, a parse error or a missing marker is
+#          Fixtures are found recursively; each is checked with its own directory
+#          as an include root, so a nested fixture declares `module Name` for
+#          Name.agda. A scope error, an unsolved meta, a parse error or a missing marker is
 #          a broken fixture, not a rejection, and fails the gate.
 #
 # MANIFEST line: <source-root>|<module-relative-to-source-root>|gated|quarantine|<note>
@@ -89,8 +91,9 @@ all_agda() {
   find . \( -name .git -o -name _build -o -name build -o -name .cicd-suite -o -name node_modules \) -prune -o \
     -type f -name '*.agda' -print | sed 's#^\./##' | LC_ALL=C sort
 }
-under() { # <path> <dir> -> 0 when path is inside dir
+under() { # <path> <dir> -> 0 when path is inside dir; "." is the tree root
   [ -n "$2" ] || return 1
+  [ "$2" = . ] && return 0
   case "$1" in "$2"/*) return 0 ;; *) return 1 ;; esac
 }
 manifest_rows() { # prints "root|rel|status|note" for each non-comment, non-blank line
@@ -301,8 +304,10 @@ while IFS='|' read -r mroot mrel mstatus mnote; do
     gated|quarantine) ;;
     *) err "$manifest: '$mroot|$mrel' has status '$mstatus'; it must be 'gated' or 'quarantine' (a typo must not quarantine a module silently)"; fail=1; continue ;;
   esac
-  mroot="$(trim_slashes "$mroot")"
-  printf '%s/%s\n' "$mroot" "$mrel" >> "$listed"
+  mroot="$(trim_slashes "$mroot")"; [ -n "$mroot" ] || mroot=.
+  # One normal form for listed and discovered paths: no leading "./", and a
+  # root of "." contributes nothing.
+  if [ "$mroot" = . ] || [ -z "$mroot" ]; then printf '%s\n' "${mrel#./}" >> "$listed"; else printf '%s/%s\n' "$mroot" "${mrel#./}" >> "$listed"; fi
   printf '  %-34s %-24s ' "$mroot" "$mrel"
   if [ ! -f "$mroot/$mrel" ]; then
     echo "MISSING"; err "$manifest lists '$mroot/$mrel', which does not exist (stale entry)"; fail=1; continue
@@ -357,7 +362,7 @@ if [ -n "$reject_dir" ]; then
   echo "=== expected rejections ($reject_dir) ==="
   rejects=()
   if [ -d "$reject_dir" ]; then
-    while IFS= read -r f; do rejects+=("$f"); done < <(find "$reject_dir" -maxdepth 1 -type f -name '*.agda' | LC_ALL=C sort)
+    while IFS= read -r f; do rejects+=("$f"); done < <(find "$reject_dir" -type f -name '*.agda' | LC_ALL=C sort)
   fi
   if [ "${#rejects[@]}" -eq 0 ]; then
     err "no expected-rejection modules under '$reject_dir'. Set reject_dir: '' if the tree has none; an empty set proves nothing."
@@ -365,8 +370,8 @@ if [ -n "$reject_dir" ]; then
   fi
   for file in "${rejects[@]}"; do
     name="$(basename -- "$file" .agda)"
-    log="$work/reject-$name.log"
-    if "$agda_bin" "${flags[@]}" "${includes[@]}" -i "$root/$reject_dir" "$file" > "$log" 2>&1; then
+    log="$work/reject-$(printf '%s' "$file" | tr '/' '_').log"
+    if "$agda_bin" "${flags[@]}" "${includes[@]}" -i "$root/$(dirname -- "$file")" "$file" > "$log" 2>&1; then
       cat "$log"; err "invalid proof accepted: $name"; fail=1; continue
     fi
     why="$(refusal_defect "$file" "$log")"

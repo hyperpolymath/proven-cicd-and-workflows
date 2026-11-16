@@ -44,7 +44,7 @@ on:
         required: false
         default: "verification/proofs/lean4/Haruspex.lean"
       required_theorems:
-        description: Whitespace-separated theorem names that must each appear in a #print axioms; empty for none
+        description: Whitespace-separated theorem names; the gate runs #print axioms on each itself and it must report no axioms; empty for none
         type: string
         required: false
         default: ""

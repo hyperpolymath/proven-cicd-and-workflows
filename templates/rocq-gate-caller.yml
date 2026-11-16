@@ -29,5 +29,5 @@ jobs:
     uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/rocq-gate.yml@__CICD_SUITE_SHA__ # cicd-suite main
     # Inputs (optional; the defaults are hvn-dehallucinator's layout):
     #   files: verification/proofs/coq/Haruspex.v   # whitespace-separated, dependencies first
-    #   required_theorems: "name1 name2"             # each must appear in a Print Assumptions
+    #   required_theorems: "name1 name2"             # the gate queries each itself
     #                                               # (empty by default: name the theorems that matter)

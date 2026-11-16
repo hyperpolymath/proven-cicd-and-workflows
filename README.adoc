@@ -502,27 +502,34 @@ The full digests are in the header of each `+check.sh+`.
 under `+proof_dir+` that the `+MANIFEST+` does not list, and on a `+.agda+`
 file outside every configured directory. Optional pinned siblings come from a
 caller script (`+siblings_script+`); the gate cannot verify what that script
-fetches. Every fixture in `+reject_dir+` must be refused with a type error on
-the one line it marks `+-- refused here+`. A scope or parse error does not
+fetches. Every fixture under `+reject_dir+` (found recursively) must be refused with a
+type error on the one line it marks `+-- refused here+`. A scope or parse error does not
 count. Inputs: `+manifest+`, `+proof_dir+`, `+include_dirs+`, `+siblings_script+`,
 `+siblings_include_glob+`, `+reject_dir+`. Planted controls: a true module
 accepted, a false one refused on its marked line, a postulate refused under
 `+--safe+`.
 * *Rocq.* `+coqc+` compiles each file in `+files+`. Every `+Print Assumptions+`
-must report "Closed under the global context", and the reports must equal the
-prints. `+required_theorems+` (empty by default) names theorems that must each
-be printed. A theorem with no `+Print Assumptions+` is not examined. Planted
+that runs must report "Closed under the global context", and at least one must
+run. Reports are counted from coqc's output, not from the file's text, so a
+commented-out print counts for nothing. `+required_theorems+` (empty by default)
+names theorems. The gate appends a `+Print Assumptions <name>.+` query for each
+and coqc must report it closed. A theorem the caller neither names nor prints
+is not examined. Planted
 controls: a closed theorem accepted; an Axiom, an Admitted theorem, an
 ill-typed file and an unprinted file refused.
 * *Lean axioms.* `+lean+` compiles each standalone file in `+files+`. Every
 `+#print axioms+` must report "does not depend on any axioms". A `+sorry+`,
 `+Classical.choice+`, `+propext+`, `+Quot.sound+` or a declared axiom fails.
-Reports must equal prints. `+required_theorems+` works as for Rocq. Planted
+Reports are counted from lean's output, not from the file's text. `+required_theorems+`
+works as for Rocq: the gate appends `+#print axioms+` queries for each name, bare
+and under every namespace the file opens. Planted
 controls: an axiom-free theorem accepted; a sorry, a classical proof, a
 declared axiom, an ill-typed file and an unprinted file refused.
 * *TLA+.* TLC runs each config in `+must_pass+`, which must complete with no
 error. Each `+must_refute+` entry (`+<config>.cfg:<Invariant>+`) must be
-refuted by exactly that invariant. A must-refute config that passes fails the
+refuted by exactly that invariant: TLC exit status 12 (safety violation) and its
+own "Invariant X is violated." line, or the initial-state form. An evaluation
+error that only prints that text is not a refutation. A must-refute config that passes fails the
 gate, as does one that fails some other way. A model check is tested at its
 declared bounds, not proven. Planted controls: a holding model passes; a
 violating model is refuted by its invariant and by no other name.

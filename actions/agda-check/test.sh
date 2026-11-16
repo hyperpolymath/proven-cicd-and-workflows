@@ -141,6 +141,31 @@ expect "detect: a .agda file outside every configured directory" 1 'stray: Stray
 run_phase detect INCLUDE_DIRS=.
 expect "detect: the include directories cover it" 0 'units='
 
+echo "== coverage at the tree root, and nested reject fixtures =="
+rootfix() { # a tree whose proofs live at the root
+  rm -rf "$FIX"; mkdir -p "$FIX"
+  good_module Good "$FIX/Good.agda"
+  printf '.|Good.agda|gated| at the root\n' > "$FIX/MANIFEST"
+}
+rootfix
+run_phase prove MANIFEST=MANIFEST PROOF_DIR=. INCLUDE_DIRS=. REJECT_DIR=
+expect "proof_dir '.' with every root module listed passes" 0 '1 gated module(s) check'
+good_module Orphan "$FIX/Orphan.agda"
+run_phase prove MANIFEST=MANIFEST PROOF_DIR=. INCLUDE_DIRS=. REJECT_DIR=
+expect "fixture root-orphan: proof_dir '.' and a root-level module the MANIFEST does not list" 1 'unlisted: Orphan.agda'
+
+fresh_fixture
+mkdir -p "$FIX/tests/reject/nested"
+good_module Accepted "$FIX/tests/reject/nested/Accepted.agda"
+run_phase prove
+expect "fixture nested-reject: an accepted module under tests/reject/nested" 1 'invalid proof accepted: Accepted'
+
+fresh_fixture
+mkdir -p "$FIX/tests/reject/nested"
+reject_module Deep "$FIX/tests/reject/nested/Deep.agda"
+run_phase prove
+expect "a nested reject fixture that is refused on its marked line is counted" 0 '2 expected rejection(s) refused'
+
 echo "== siblings =="
 fresh_fixture
 mkdir -p "$FIX/scripts"
