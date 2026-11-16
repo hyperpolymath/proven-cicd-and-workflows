@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MPL-2.0
+# Lean Axioms Gate — thin caller of the estate's Lean Axioms gate in
+# hyperpolymath/proven-cicd-and-workflows. Enforcing, for standalone
+# (non-Lake) files: the pinned Lean 4.15.0 compiles each listed file, every
+# #print axioms must report "does not depend on any axioms" (a sorry,
+# Classical.choice, propext, Quot.sound or a declared axiom fails), and
+# reports must equal prints. Lake projects are proof-runner-check's, which
+# builds them and does not judge axioms. Planted controls prove the judge can
+# say no before its green is credited.
+#
+# Require `lean-axioms / Lean axioms verdict`.
+#
+# Full-SHA pin, DE-ONBOARDED from actions.lock, no `secrets:` — see
+# rust-ci.yml in this directory for why. This gate calls no other reusable
+# workflow, so `contents: read` is all it holds.
+name: Lean Axioms Gate
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lean-axioms:
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/lean-axioms-gate.yml@__CICD_SUITE_SHA__ # cicd-suite main
+    # Inputs (optional; the defaults are hvn-dehallucinator's layout):
+    #   files: verification/proofs/lean4/Haruspex.lean   # whitespace-separated, no Lake project
+    #   required_theorems: "name1 name2"                 # each must appear in a #print axioms
+    #                                                    # (empty by default: name the theorems that matter)

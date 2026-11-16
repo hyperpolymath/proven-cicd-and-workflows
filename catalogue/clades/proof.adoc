@@ -59,6 +59,58 @@ Detect relations, require goal-level tests and run applicable relational tests.
 * link:../../.github/workflows/kanren-gate.yml[Reusable workflow]
 * link:../../templates/kanren-gate-caller.yml[Caller template]
 
+[[agda]]
+== Agda kernel proof
+
+*`agda` · proof-executor · enforcing*
+
+Check every MANIFEST module under the kernel flags, refuse unlisted .agda files, require reject fixtures to be refused on their marked line, after planted controls.
+
+*Assurance boundary:* Pinned Agda 2.6.3 from the Ubuntu 24.04 archive and a MANIFEST are required; siblings come from a caller script the gate cannot verify; absence of the toolchain is exit 2, not success.
+
+* link:../../actions/agda-check/action.yml[Action definition and inputs]
+* link:../../.github/workflows/agda-gate.yml[Reusable workflow]
+* link:../../templates/agda-gate-caller.yml[Caller template]
+
+[[rocq]]
+== Rocq assumptions
+
+*`rocq` · proof-executor · enforcing*
+
+Compile listed .v files with coqc and require every Print Assumptions to be closed, reports to equal prints and named theorems to be printed, after planted controls.
+
+*Assurance boundary:* Pinned Coq 8.18.0 from the Ubuntu 24.04 archive is required; a theorem with no Print Assumptions is not examined, so name the theorems that matter.
+
+* link:../../actions/rocq-check/action.yml[Action definition and inputs]
+* link:../../.github/workflows/rocq-gate.yml[Reusable workflow]
+* link:../../templates/rocq-gate-caller.yml[Caller template]
+
+[[lean-axioms]]
+== Lean axioms (standalone files)
+
+*`lean-axioms` · proof-executor · enforcing*
+
+Compile listed non-Lake .lean files and require every #print axioms to report no axioms, reports to equal prints and named theorems to be printed, after planted controls.
+
+*Assurance boundary:* Pinned Lean 4.15.0 is required; Lake projects are proof-runner-check territory and are not judged here; a theorem with no #print axioms is not examined.
+
+* link:../../actions/lean-axioms-check/action.yml[Action definition and inputs]
+* link:../../.github/workflows/lean-axioms-gate.yml[Reusable workflow]
+* link:../../templates/lean-axioms-gate-caller.yml[Caller template]
+
+[[tla]]
+== TLA+ model check
+
+*`tla` · proof-executor · enforcing*
+
+Run TLC on listed configs: must-pass configs must pass and must-refute configs must be refuted by the invariant named, after planted controls.
+
+*Assurance boundary:* Pinned tla2tools.jar v1.7.4 and Java 21 are required; a model check is tested at its declared bounds, not proven.
+
+* link:../../actions/tla-check/action.yml[Action definition and inputs]
+* link:../../.github/workflows/tla-gate.yml[Reusable workflow]
+* link:../../templates/tla-gate-caller.yml[Caller template]
+
 [[proof-runner]]
 == Idris2 & Lean proof runner
 

@@ -12,6 +12,16 @@
 #   relational Scheme (run*/fresh/conde
 #   over a miniKanren) or a Rust kanren
 #   crate                               -> kanren-gate.yml
+#   .agda file                          -> agda-gate.yml
+#   Coq .v file (Require/Lemma/Theorem/
+#   Qed, so Verilog is not caught)      -> rocq-gate.yml
+#   .lean file outside any Lake project -> lean-axioms-gate.yml
+#   .tla file                           -> tla-gate.yml
+#
+# The four prover gates (agda, rocq, lean-axioms, tla) default to the layout of
+# hvn-dehallucinator. A caller written for another layout must set the inputs
+# its template lists; until it does, the detect job fails loudly rather than
+# stay green over sources it cannot find.
 #
 # Each caller is de-onboarded from actions.lock (scripts/deonboard-workflow.sh,
 # needs mikefarah yq v4), and templates/track-estate-audit.yml is (re)written
@@ -26,7 +36,7 @@ repos="${HYPER_REPOS:-/home/hyperpolymath/developer/hyper-repos}"
 
 git -C "$suite" fetch --quiet origin main
 sha=$(git -C "$suite" rev-parse origin/main)
-for wf in rust-ci creusot-gate spark-gate kanren-gate; do
+for wf in rust-ci creusot-gate spark-gate kanren-gate agda-gate rocq-gate lean-axioms-gate tla-gate; do
   if ! git -C "$suite" show "$sha:.github/workflows/$wf.yml" 2>/dev/null | grep -qE '^[[:space:]]+workflow_call:'; then
     echo "cicd-suite ${sha:0:7}: .github/workflows/$wf.yml has no workflow_call trigger; refusing to roll out." >&2
     exit 1
@@ -50,6 +60,26 @@ has_kanren() { grep -rlE --include='*.scm' --include='*.ss' --include='*.sls' --
                  | xargs -r grep -liE 'minikanren|mini-kanren|microkanren|mk\.scm' 2>/dev/null | grep -q . \
                || grep -rlE --include=Cargo.toml '^[[:space:]]*(canrun|ukanren|kanren|mukanren|minikanren)[[:space:]]*=' "$1" 2>/dev/null | grep -q .; }
 
+# Trees the prover gates never look in: fetched dependencies and build output.
+prune_find() { find "$1" \( -name .git -o -name _build -o -name build -o -name target -o -name node_modules -o -name .cicd-suite -o -name .lake \) -prune -o "${@:2}"; }
+has_agda() { [ -n "$(prune_find "$1" -type f -name '*.agda' -print | head -n 1)" ]; }
+has_rocq() { [ -n "$(prune_find "$1" -type f -name '*.v' -print | xargs -r grep -lE '^[[:space:]]*(Require[[:space:]]+(Import|Export)|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require|Lemma[[:space:]]|Theorem[[:space:]]|Qed\.)' 2>/dev/null | head -n 1)" ]; }
+has_tla()   { [ -n "$(prune_find "$1" -type f -name '*.tla' -print | head -n 1)" ]; }
+# A .lean file counts when no lakefile sits in its directory or above it: Lake
+# projects are proof-runner-check's, not lean-axioms-gate's.
+has_lean() {
+  local root="$1" f d
+  while IFS= read -r f; do
+    d="$(dirname "$f")"
+    while :; do
+      if [ -f "$d/lakefile.lean" ] || [ -f "$d/lakefile.toml" ]; then break; fi
+      if [ "$d" = "$root" ] || [ "$d" = / ] || [ "$d" = . ]; then return 0; fi
+      d="$(dirname "$d")"
+    done
+  done < <(prune_find "$root" -type f -name '*.lean' -print)
+  return 1
+}
+
 for repo in "$repos"/*; do
   [ -d "$repo/.git" ] || continue
   [ "$(basename "$repo")" != "cicd-suite" ] || continue
@@ -62,6 +92,10 @@ for repo in "$repos"/*; do
   fi
   if has_spark "$repo"; then install_caller "$repo" spark-gate-caller.yml spark-gate.yml; any=1; fi
   if has_kanren "$repo"; then install_caller "$repo" kanren-gate-caller.yml kanren-gate.yml; any=1; fi
+  if has_agda "$repo"; then install_caller "$repo" agda-gate-caller.yml agda-gate.yml; any=1; fi
+  if has_rocq "$repo"; then install_caller "$repo" rocq-gate-caller.yml rocq-gate.yml; any=1; fi
+  if has_lean "$repo"; then install_caller "$repo" lean-axioms-gate-caller.yml lean-axioms-gate.yml; any=1; fi
+  if has_tla "$repo"; then install_caller "$repo" tla-gate-caller.yml tla-gate.yml; any=1; fi
   if [ "$any" -eq 1 ]; then
     cp "$suite/templates/track-estate-audit.yml" "$repo/.github/workflows/track-estate-audit.yml"
     echo "   wrote .github/workflows/track-estate-audit.yml (tracks every cicd-suite pin)"

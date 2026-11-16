@@ -6,7 +6,7 @@
 
 *Repository assurance, organised by purpose. Discover by clade; choose by nature; adopt with evidence.*
 
-*32 composite actions · 1 stamped templates · 8 clades · two independent discovery axes.*
+*36 composite actions · 1 stamped templates · 8 clades · two independent discovery axes.*
 
 This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartridge implementation, or a certification scheme. Inspired by BoJ's separation of capability domain from interface/type, it groups existing CI/CD building blocks without moving their paths or changing their behaviour.
 
@@ -27,7 +27,7 @@ This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartrid
 |<<covenant,Covenant — governance & provenance>> |Establish repository identity, policy documents, attribution and licensing. |4 |4 |0 |0 |0
 |<<forge,Forge — source & build hygiene>> |Control source debt, document formats, language policy and task-runner syntax. |4 |4 |0 |0 |0
 |<<schema,Schema — manifests & contracts>> |Validate structured manifests and executable contract declarations. |2 |1 |1 |0 |0
-|<<proof,Proof — languages & verification>> |Compile, test, inspect interfaces and execute proof tools where applicable. |7 |6 |1 |0 |0
+|<<proof,Proof — languages & verification>> |Compile, test, inspect interfaces and execute proof tools where applicable. |11 |10 |1 |0 |0
 |<<bridge,Bridge — ecosystem integration>> |Connect BoJ capabilities and external analysis tools to repository checks. |2 |1 |1 |0 |0
 |<<observatory,Observatory — advisory signals>> |Discover useful signals without presenting warnings or heuristics as certification. |8 |0 |0 |8 |0
 |<<frontier,Frontier — unfinished capabilities>> |Visible roadmap boundaries: not implemented assurance and not recommended gates. |2 |0 |0 |0 |2
@@ -35,7 +35,7 @@ This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartrid
 
 == Read the assurance labels
 
-* *Enforcing (20):* can reject a subject. This is not a guarantee of completeness, applicability, production readiness or formal verification.
+* *Enforcing (24):* can reject a subject. This is not a guarantee of completeness, applicability, production readiness or formal verification.
 * *Tool-dependent (3):* requires explicitly supplied validators/toolchains; inspect applicability and not-run behaviour before adoption.
 * *Advisory (8):* signals and warnings, not an assurance verdict. Some current outputs are simulated or heuristic; each card names the boundary.
 * *Stub (2):* unfinished integration or placeholder. Do not deploy as evidence of a completed check.
@@ -52,7 +52,7 @@ Nature is a separate axis: a policy-pattern scan is not a compiler, a receipt ve
 |integration |2 |link:actions/boj-cartridge-check/action.yml[BoJ cartridge applicability] · link:actions/custom-tools-check/action.yml[Pons & Panic Attack]
 |placeholder |2 |link:actions/prat-check/action.yml[PRAT testing placeholder] · link:actions/semantic-audit-check/action.yml[Semantic audit placeholder]
 |policy-gate |10 |link:actions/secrets-check/action.yml[Private-key material] · link:actions/vaulted-tokens-check/action.yml[Vaulted token format] · link:actions/required-files-check/action.yml[Repository foundations] · link:actions/spdx-license-check/action.yml[Licensing & SPDX] · link:actions/affirmation-check/action.yml[Affirmation snapshots] · link:actions/code-hygiene-check/action.yml[Source debt & proof escapes] · link:actions/formatting-check/action.yml[Document format policy] · link:actions/linguist-check/action.yml[Language inventory policy] · link:actions/idris2-abi-check/action.yml[Idris2 ABI source policy] · link:actions/zig-unified-api-adapter-check/action.yml[Zig adapter source policy]
-|proof-executor |3 |link:actions/creusot-check/action.yml[Rust deductive verification] · link:actions/spark-check/action.yml[Ada/SPARK proof] · link:actions/proof-runner-check/action.yml[Idris2 & Lean proof runner]
+|proof-executor |7 |link:actions/creusot-check/action.yml[Rust deductive verification] · link:actions/spark-check/action.yml[Ada/SPARK proof] · link:actions/agda-check/action.yml[Agda kernel proof] · link:actions/rocq-check/action.yml[Rocq assumptions] · link:actions/lean-axioms-check/action.yml[Lean axioms (standalone files)] · link:actions/tla-check/action.yml[TLA+ model check] · link:actions/proof-runner-check/action.yml[Idris2 & Lean proof runner]
 |receipt-verifier |1 |link:actions/sonarcloud-result-check/action.yml[Authoritative SonarCloud receipt]
 |scanner |1 |link:actions/secret-scan-check/action.yml[Bounded secret scanning]
 |validator |4 |link:actions/referencing-check/action.yml[Citation metadata] · link:actions/recipes-set-check/action.yml[Task-runner syntax] · link:actions/manifest-check/action.yml[DEED & K9 manifests] · link:actions/contractile-validation-check/action.yml[Contractile declarations]
@@ -125,7 +125,7 @@ link:catalogue/clades/schema.adoc[Explore this clade — 2 capabilities]
 
 Compile, test, inspect interfaces and execute proof tools where applicable.
 
-link:catalogue/clades/proof.adoc[Explore this clade — 7 capabilities]
+link:catalogue/clades/proof.adoc[Explore this clade — 11 capabilities]
 
 [cols="2,2,2,5",options="header"]
 |===
@@ -134,6 +134,10 @@ link:catalogue/clades/proof.adoc[Explore this clade — 7 capabilities]
 |link:actions/creusot-check/action.yml[Rust deductive verification] |proof-executor |enforcing |Inspect verification claims, run planted controls and execute Creusot obligations.
 |link:actions/spark-check/action.yml[Ada/SPARK proof] |proof-executor |enforcing |Inspect SPARK projects, run planted controls and execute GNATprove.
 |link:actions/kanren-check/action.yml[Relational-code checks] |build-test |enforcing |Detect relations, require goal-level tests and run applicable relational tests.
+|link:actions/agda-check/action.yml[Agda kernel proof] |proof-executor |enforcing |Check every MANIFEST module under the kernel flags, refuse unlisted .agda files, require reject fixtures to be refused on their marked line, after planted controls.
+|link:actions/rocq-check/action.yml[Rocq assumptions] |proof-executor |enforcing |Compile listed .v files with coqc and require every Print Assumptions to be closed, reports to equal prints and named theorems to be printed, after planted controls.
+|link:actions/lean-axioms-check/action.yml[Lean axioms (standalone files)] |proof-executor |enforcing |Compile listed non-Lake .lean files and require every #print axioms to report no axioms, reports to equal prints and named theorems to be printed, after planted controls.
+|link:actions/tla-check/action.yml[TLA+ model check] |proof-executor |enforcing |Run TLC on listed configs: must-pass configs must pass and must-refute configs must be refuted by the invariant named, after planted controls.
 |link:actions/proof-runner-check/action.yml[Idris2 & Lean proof runner] |proof-executor |tool-dependent |Run applicable Idris2 project typechecks and Lean lake builds.
 |link:actions/idris2-abi-check/action.yml[Idris2 ABI source policy] |policy-gate |enforcing |When abi.ipkg exists, scan selected ABI source paths for prohibited IO/unsafe patterns.
 |link:actions/zig-unified-api-adapter-check/action.yml[Zig adapter source policy] |policy-gate |enforcing |Scan Zig files for direct std.fs/std.io usage prohibited by estate adapter policy.

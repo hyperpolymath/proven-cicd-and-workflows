@@ -38,7 +38,7 @@ publication. See the checkpoint for the exact remaining boundary.
 
 == Discover the suite
 
-Start with the link:CATALOGUE.adoc[*CI/CD Capability Atlas*]: *32 composite actions
+Start with the link:CATALOGUE.adoc[*CI/CD Capability Atlas*]: *36 composite actions
 in 8 clades*, organised by both purpose and nature. Each capability has a source
 link, an assurance boundary and a status: enforcing, tool-dependent, advisory or
 unfinished. Reusable workflows and caller templates are linked where provided.
@@ -148,6 +148,14 @@ The four language gates added 2026-10-14 (Rust CI, Creusot, SPARK, miniKanren)
 are enforcing by construction — every `+check.sh+` exits 1 on a defect and 2
 when no check could be performed — and are classified tier by tier in
 _Language gates_ below.
+
+Four prover gates were added 2026-11-16 (Agda, Rocq, Lean axioms, TLA+). All
+four are *enforcing*: each `+check.sh+` exits 1 on a defect and 2 when no check
+could be performed. None is advisory and none is a stub. Each runs planted
+controls first, so a prover that cannot say no gives exit 2, not green. They
+are listed under _Prover gates_ below. Enforcing is not the same as proven:
+a green tick means the pinned tool accepted what the caller listed, nothing
+more.
 
 `+formatting+` and `+recipes-set+` moved out of the toothless column;
 the remaining advisory seven are advisory _by design_, which is
@@ -419,7 +427,9 @@ exercised against stand-in oracles there; the planted controls in the
 check scripts exercise the real provers on every live run.
 
 Consuming. `+templates/rust-ci-caller.yml+`, `+creusot-gate-caller.yml+`,
-`+spark-gate-caller.yml+` and `+kanren-gate-caller.yml+` become
+`+spark-gate-caller.yml+`, `+kanren-gate-caller.yml+` and the four prover callers
+(`+agda-gate-caller.yml+`, `+rocq-gate-caller.yml+`, `+lean-axioms-gate-caller.yml+`,
+`+tla-gate-caller.yml+`) become
 `+.github/workflows/<name>.yml+` with `+__CICD_SUITE_SHA__+` replaced;
 `+scripts/deonboard-workflow.sh <repo> <workflow-path>+` de-onboards each
 (the estate-audit script now delegates to it);
@@ -437,6 +447,99 @@ contract on the runner, the gate reports VOID rather than green. The
 first live subject for SPARK is cicd-squabbler's
 `+spark/squabble_gate.gpr+`; no repository in the first rollout carries
 Creusot obligations yet.
+
+==== Prover gates (Agda, Rocq, Lean axioms, TLA+)
+
+Added 2026-11-16, built from the proof gates in
+`+metadatastician/hvn-dehallucinator+`'s own `+proof-kernel.yml+`. Same shape as
+the language gates above: a reusable workflow called at a full SHA that checks
+this repository out at the caller's pin and runs `+scripts/verify-suite-checkout.sh+`
+first; one `+actions/<x>-check/+` per prover (`+action.yml+`, `+check.sh+`,
+`+test.sh+`); one thin caller template. They do not use the stamped "proven
+content" pattern, which is for the lock and pin gates.
+
+Every gate has three jobs. `+detect+` counts the sources. `+prove+` asserts
+the pinned toolchain, runs planted controls, then judges the caller's files.
+`+verdict+` is the one context to require. A skipped `+prove+` with sources
+present is VOID, not green. A toolchain that is not the pinned build is exit 2.
+Defaults reproduce hvn-dehallucinator's layout; another layout sets the inputs.
+
+[cols="1,2,2",options="header"]
+|===
+|Gate |Require this check context |Pinned toolchain
+
+|`+agda-gate.yml+` +
+`+templates/agda-gate-caller.yml+`
+|`+agda / Agda verdict+`
+|Agda 2.6.3: Ubuntu 24.04 `+agda-bin 2.6.3-1build1+`, `+/usr/bin/agda+` at
+sha256 `+852806…af00d+`
+
+|`+rocq-gate.yml+` +
+`+templates/rocq-gate-caller.yml+`
+|`+rocq / Rocq verdict+`
+|Coq 8.18.0: `+coq 8.18.0+dfsg-1build2+`, `+/usr/bin/coqc+` at sha256
+`+f14ab0…3ec+`
+
+|`+lean-axioms-gate.yml+` +
+`+templates/lean-axioms-gate-caller.yml+`
+|`+lean-axioms / Lean axioms verdict+`
+|Lean 4.15.0: archive `+lean-4.15.0-linux.tar.zst+` at sha256 `+af71a2…85c9+`,
+`+bin/lean+` at sha256 `+eacf75…a215+`
+
+|`+tla-gate.yml+` +
+`+templates/tla-gate-caller.yml+`
+|`+tla / TLA+ verdict+`
+|`+tla2tools.jar+` v1.7.4 at sha256 `+936a26…0e88+`; Java 21 from
+`+openjdk-21-jre-headless+` (version asserted, digest printed, not pinned:
+the archive ships security rebuilds)
+|===
+
+The full digests are in the header of each `+check.sh+`.
+
+* *Agda.* Checks every module the `+MANIFEST+` lists under `+agda --safe
+--without-K --cubical-compatible --no-libraries --ignore-interfaces
+--double-check+` (standards PROOF-POLICY §2.1). Fails on any `+.agda+` file
+under `+proof_dir+` that the `+MANIFEST+` does not list, and on a `+.agda+`
+file outside every configured directory. Optional pinned siblings come from a
+caller script (`+siblings_script+`); the gate cannot verify what that script
+fetches. Every fixture in `+reject_dir+` must be refused with a type error on
+the one line it marks `+-- refused here+`. A scope or parse error does not
+count. Inputs: `+manifest+`, `+proof_dir+`, `+include_dirs+`, `+siblings_script+`,
+`+siblings_include_glob+`, `+reject_dir+`. Planted controls: a true module
+accepted, a false one refused on its marked line, a postulate refused under
+`+--safe+`.
+* *Rocq.* `+coqc+` compiles each file in `+files+`. Every `+Print Assumptions+`
+must report "Closed under the global context", and the reports must equal the
+prints. `+required_theorems+` (empty by default) names theorems that must each
+be printed. A theorem with no `+Print Assumptions+` is not examined. Planted
+controls: a closed theorem accepted; an Axiom, an Admitted theorem, an
+ill-typed file and an unprinted file refused.
+* *Lean axioms.* `+lean+` compiles each standalone file in `+files+`. Every
+`+#print axioms+` must report "does not depend on any axioms". A `+sorry+`,
+`+Classical.choice+`, `+propext+`, `+Quot.sound+` or a declared axiom fails.
+Reports must equal prints. `+required_theorems+` works as for Rocq. Planted
+controls: an axiom-free theorem accepted; a sorry, a classical proof, a
+declared axiom, an ill-typed file and an unprinted file refused.
+* *TLA+.* TLC runs each config in `+must_pass+`, which must complete with no
+error. Each `+must_refute+` entry (`+<config>.cfg:<Invariant>+`) must be
+refuted by exactly that invariant. A must-refute config that passes fails the
+gate, as does one that fails some other way. A model check is tested at its
+declared bounds, not proven. Planted controls: a holding model passes; a
+violating model is refuted by its invariant and by no other name.
+
+_Lean axioms and proof-runner-check._ They do not overlap. `+proof-runner-check+`
+runs `+lake build+` on a Lake project (a `+lakefile.lean+` or `+lakefile.toml+`)
+with whatever Lean is on PATH. It proves the project builds. It does not judge
+axioms: a `+sorry+` is a warning, and the build still exits 0. `+lean-axioms-gate+`
+takes plain `+.lean+` files that no Lake project owns, runs the pinned Lean 4.15.0
+on each, and judges the axiom report of every printed theorem. Its detect step
+ignores files inside a Lake project. A Lake project that needs the axiom check
+is not covered by either gate today.
+
+Not witnessed live (2026-11-16). The four `+test.sh+` suites ran against the
+real pinned tools in the authoring environment. The reusable workflows have
+not yet run on a GitHub runner; the first run proves the apt installs, the Lean
+archive fetch and the jar fetch.
 
 ==== What a gate may use, and what a consumer's lock must hold
 

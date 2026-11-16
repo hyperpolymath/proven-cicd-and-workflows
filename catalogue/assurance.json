@@ -168,6 +168,42 @@
       "consumer_receipts": []
     },
     {
+      "id": "agda",
+      "test_paths": [
+        "actions/agda-check/test.sh"
+      ],
+      "coverage": "controls-linked",
+      "evidence_note": "test.sh runs the real pinned Agda 2.6.3 against planted defects and kills mutants of the planted controls. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Not yet run on a GitHub runner; no consumer receipt.",
+      "consumer_receipts": []
+    },
+    {
+      "id": "rocq",
+      "test_paths": [
+        "actions/rocq-check/test.sh"
+      ],
+      "coverage": "controls-linked",
+      "evidence_note": "test.sh runs the real pinned Coq 8.18.0 against planted defects and kills mutants of the planted controls. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Not yet run on a GitHub runner; no consumer receipt.",
+      "consumer_receipts": []
+    },
+    {
+      "id": "lean-axioms",
+      "test_paths": [
+        "actions/lean-axioms-check/test.sh"
+      ],
+      "coverage": "controls-linked",
+      "evidence_note": "test.sh runs the real pinned Lean 4.15.0 against planted defects and kills mutants of the planted controls. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Not yet run on a GitHub runner; no consumer receipt.",
+      "consumer_receipts": []
+    },
+    {
+      "id": "tla",
+      "test_paths": [
+        "actions/tla-check/test.sh"
+      ],
+      "coverage": "controls-linked",
+      "evidence_note": "test.sh runs the real pinned TLC v1.7.4 on Java 21 against planted defects and kills mutants of the planted controls and judgements. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Not yet run on a GitHub runner; no consumer receipt.",
+      "consumer_receipts": []
+    },
+    {
       "id": "proof-runner",
       "test_paths": [
         "tests/pass-on-absence.sh"

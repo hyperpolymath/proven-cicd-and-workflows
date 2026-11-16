@@ -234,6 +234,54 @@
       "template": "templates/kanren-gate-caller.yml"
     },
     {
+      "id": "agda",
+      "clade": "proof",
+      "status": "enforcing",
+      "nature": "proof-executor",
+      "title": "Agda kernel proof",
+      "summary": "Check every MANIFEST module under the kernel flags, refuse unlisted .agda files, require reject fixtures to be refused on their marked line, after planted controls.",
+      "limitations": "Pinned Agda 2.6.3 from the Ubuntu 24.04 archive and a MANIFEST are required; siblings come from a caller script the gate cannot verify; absence of the toolchain is exit 2, not success.",
+      "path": "actions/agda-check/action.yml",
+      "workflow": ".github/workflows/agda-gate.yml",
+      "template": "templates/agda-gate-caller.yml"
+    },
+    {
+      "id": "rocq",
+      "clade": "proof",
+      "status": "enforcing",
+      "nature": "proof-executor",
+      "title": "Rocq assumptions",
+      "summary": "Compile listed .v files with coqc and require every Print Assumptions to be closed, reports to equal prints and named theorems to be printed, after planted controls.",
+      "limitations": "Pinned Coq 8.18.0 from the Ubuntu 24.04 archive is required; a theorem with no Print Assumptions is not examined, so name the theorems that matter.",
+      "path": "actions/rocq-check/action.yml",
+      "workflow": ".github/workflows/rocq-gate.yml",
+      "template": "templates/rocq-gate-caller.yml"
+    },
+    {
+      "id": "lean-axioms",
+      "clade": "proof",
+      "status": "enforcing",
+      "nature": "proof-executor",
+      "title": "Lean axioms (standalone files)",
+      "summary": "Compile listed non-Lake .lean files and require every #print axioms to report no axioms, reports to equal prints and named theorems to be printed, after planted controls.",
+      "limitations": "Pinned Lean 4.15.0 is required; Lake projects are proof-runner-check territory and are not judged here; a theorem with no #print axioms is not examined.",
+      "path": "actions/lean-axioms-check/action.yml",
+      "workflow": ".github/workflows/lean-axioms-gate.yml",
+      "template": "templates/lean-axioms-gate-caller.yml"
+    },
+    {
+      "id": "tla",
+      "clade": "proof",
+      "status": "enforcing",
+      "nature": "proof-executor",
+      "title": "TLA+ model check",
+      "summary": "Run TLC on listed configs: must-pass configs must pass and must-refute configs must be refuted by the invariant named, after planted controls.",
+      "limitations": "Pinned tla2tools.jar v1.7.4 and Java 21 are required; a model check is tested at its declared bounds, not proven.",
+      "path": "actions/tla-check/action.yml",
+      "workflow": ".github/workflows/tla-gate.yml",
+      "template": "templates/tla-gate-caller.yml"
+    },
+    {
       "id": "proof-runner",
       "clade": "proof",
       "status": "tool-dependent",

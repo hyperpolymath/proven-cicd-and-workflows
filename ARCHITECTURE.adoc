@@ -18,12 +18,20 @@ actions/rust-ci-check/               the strict Rust gate (resolve.sh, check.sh,
 actions/creusot-check/               Creusot: detect · theatre · prove (planted controls)
 actions/spark-check/                 SPARK: detect · GNATprove (planted controls)
 actions/kanren-check/                miniKanren: detect · run · purity
+actions/agda-check/                  Agda: detect · kernel flags · MANIFEST · reject set (planted controls)
+actions/rocq-check/                  Rocq: detect · coqc · Print Assumptions (planted controls)
+actions/lean-axioms-check/           Lean, non-Lake files: detect · #print axioms (planted controls)
+actions/tla-check/                   TLA+: detect · TLC must-pass and must-refute (planted controls)
 .github/workflows/rust-ci.yml         reusable; jobs run the scripts above
 .github/workflows/creusot-gate.yml    reusable
 .github/workflows/spark-gate.yml      reusable; theatre half is standards' gate, nested
 .github/workflows/kanren-gate.yml     reusable
+.github/workflows/agda-gate.yml       reusable; pinned Agda 2.6.3
+.github/workflows/rocq-gate.yml       reusable; pinned Coq 8.18.0
+.github/workflows/lean-axioms-gate.yml  reusable; pinned Lean 4.15.0
+.github/workflows/tla-gate.yml        reusable; pinned TLC v1.7.4 on Java 21
 .github/workflows/language-gates-self-test.yml  each gate's test.sh, every PR
-templates/*-caller.yml                the thin callers for the four gates
+templates/*-caller.yml                the thin callers for the eight language and prover gates
 scripts/verify-suite-checkout.sh      proves the self-checkout is the caller's pin
 scripts/deonboard-workflow.sh         the one de-onboard implementation, every caller
 rollout_language_gates.sh             installs the callers by what a tree contains

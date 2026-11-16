@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MPL-2.0
+name: 'Rocq Assumptions Gate'
+description: >-
+  Rocq (Coq) recheck gate: detect counts the .v sources and refuses a list it
+  cannot read; prove asserts the pinned Coq 8.18.0 (package and SHA-256), runs
+  planted controls through the same judgement (a closed theorem accepted; an
+  Axiom, an Admitted theorem, an ill-typed file and an unprinted file refused),
+  then compiles each listed file with coqc and requires every Print Assumptions
+  to report "Closed under the global context", the number of reports to equal
+  the number of prints, and optionally a named set of theorems to be printed.
+  The reusable workflow .github/workflows/rocq-gate.yml installs Coq and runs
+  both phases.
+inputs:
+  phase:
+    description: 'detect | prove'
+    required: true
+  working_directory:
+    description: 'Tree root'
+    required: false
+    default: '.'
+  files:
+    description: 'Whitespace-separated .v files to compile, dependencies first'
+    required: false
+    default: 'verification/proofs/coq/Haruspex.v'
+  required_theorems:
+    description: 'Whitespace-separated theorem names that must each appear in a Print Assumptions; empty for none'
+    required: false
+    default: ''
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Rocq gate phase
+      shell: bash
+      env:
+        ROCQ_GATE_PHASE: ${{ inputs.phase }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        FILES: ${{ inputs.files }}
+        REQUIRED_THEOREMS: ${{ inputs.required_theorems }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh"
