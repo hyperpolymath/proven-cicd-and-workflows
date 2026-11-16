@@ -182,7 +182,7 @@
         "actions/rocq-check/test.sh"
       ],
       "coverage": "controls-linked",
-      "evidence_note": "test.sh runs the real pinned Coq 8.18.0 against planted defects and kills mutants of the planted controls. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Provenance: this row is attributed to commit ded4561153520157b0f42cd86a596c69fa101a26, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Not yet run on a GitHub runner; no consumer receipt.",
+      "evidence_note": "test.sh runs the real pinned coqc and coqchk 8.18.0 against planted defects and forgeries (a Notation that forges coqc output, disabled guard, universe and positivity checking, an Admitted lemma nobody prints) and kills mutants of the judgement. Run against hvn-dehallucinator main 94b0f4e with default inputs and its 26 required names, locally: passes, module-wide. Provenance: this row is attributed to commit 5f20cce4fbab15bd9e07f815369663c483e132fd, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Not yet run on a GitHub runner; no consumer receipt.",
       "consumer_receipts": []
     },
     {
@@ -191,7 +191,7 @@
         "actions/lean-axioms-check/test.sh"
       ],
       "coverage": "controls-linked",
-      "evidence_note": "test.sh runs the real pinned Lean 4.15.0 against planted defects and kills mutants of the planted controls. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Provenance: this row is attributed to commit ded4561153520157b0f42cd86a596c69fa101a26, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Not yet run on a GitHub runner; no consumer receipt.",
+      "evidence_note": "test.sh runs the real pinned Lean 4.15.0 and the gate checker against planted defects and forgeries (#eval, elab_rules, debug.skipKernelTC, an axiom used by an unprinted theorem) and kills mutants of the judgement. Run against hvn-dehallucinator main 94b0f4e, locally: refused module-wide on propext used by 14 generated injEq theorems; not allow-listed, pending an owner decision. Provenance: this row is attributed to commit 5f20cce4fbab15bd9e07f815369663c483e132fd, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Not yet run on a GitHub runner; no consumer receipt.",
       "consumer_receipts": []
     },
     {
@@ -200,7 +200,7 @@
         "actions/tla-check/test.sh"
       ],
       "coverage": "controls-linked",
-      "evidence_note": "test.sh runs the real pinned TLC v1.7.4 on Java 21 against planted defects and kills mutants of the planted controls and judgements. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Provenance: this row is attributed to commit ded4561153520157b0f42cd86a596c69fa101a26, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Not yet run on a GitHub runner; no consumer receipt.",
+      "evidence_note": "test.sh runs the real pinned TLC v1.7.4 on Java 21 against planted defects, an Assert forgery, a PrintT forgery and an initial-state refutation, and kills mutants of the judgement. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Provenance: this row is attributed to commit 5f20cce4fbab15bd9e07f815369663c483e132fd, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Not yet run on a GitHub runner; no consumer receipt.",
       "consumer_receipts": []
     },
     {
