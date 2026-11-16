@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: MPL-2.0
 name: 'Rocq Assumptions Gate'
 description: >-
-  Rocq (Coq) recheck gate: detect counts the .v sources and refuses a list it
-  cannot read; prove asserts the pinned Coq 8.18.0 (package and SHA-256), runs
-  planted controls through the same judgement (a closed theorem accepted; an
-  Axiom, an Admitted theorem, an ill-typed file and an unprinted file refused),
-  then compiles each listed file with coqc and requires every Print Assumptions
-  to report "Closed under the global context", the number of reports to equal
-  the number of prints, and optionally a named set of theorems to be printed.
-  The reusable workflow .github/workflows/rocq-gate.yml installs Coq and runs
-  both phases.
+  Rocq (Coq) gate: detect counts the .v sources and refuses a list it cannot
+  read; prove asserts the pinned coqc and coqchk (Coq 8.18.0, SHA-256), runs
+  planted controls through the same judgement (a closed theorem accepted;
+  an Axiom, an Admitted lemma, a Parameter, an ill-typed file, disabled guard,
+  universe or positivity checking, and a Notation that forges coqc's output
+  refused), compiles each listed file with coqc, then re-checks the compiled
+  modules out of process with coqchk and reads its CONTEXT SUMMARY. Nothing the
+  file prints is evidence. Required theorems must resolve to a constant of a
+  listed module. The reusable workflow .github/workflows/rocq-gate.yml installs
+  Coq and runs both phases.
 inputs:
   phase:
     description: 'detect | prove'
@@ -23,7 +24,11 @@ inputs:
     required: false
     default: 'verification/proofs/coq/Haruspex.v'
   required_theorems:
-    description: 'Whitespace-separated theorem names; the gate runs Print Assumptions on each itself and it must report closed; empty for none'
+    description: 'Whitespace-separated theorem names that must each resolve to a constant of a listed module (existence only; axioms are judged module-wide); empty for none'
+    required: false
+    default: ''
+  allowed_axioms:
+    description: 'Whitespace-separated axiom names the module may use (full names as the checker prints them); empty for none. sorryAx is never allowable'
     required: false
     default: ''
 runs:
@@ -36,4 +41,5 @@ runs:
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         FILES: ${{ inputs.files }}
         REQUIRED_THEOREMS: ${{ inputs.required_theorems }}
+        ALLOWED_AXIOMS: ${{ inputs.allowed_axioms }}
       run: bash "$GITHUB_ACTION_PATH/check.sh"

@@ -50,6 +50,7 @@ Safe == x <= 3
 Other == x >= 0
 Positive == x > 0
 Fake == Assert(FALSE, "Invariant Fake is violated.")
+Forge == PrintT("\nError: Invariant Forge is violated.\n") /\ TRUE
 ====
 TLA
   printf 'CONSTANT Limit = 3\nSPECIFICATION Spec\nINVARIANT Safe Other\n' > "$d/Ok.cfg"
@@ -58,6 +59,7 @@ TLA
   printf 'CONSTANT Limit = 3\nSPECIFICATION Spec\nINVARIANT NoSuchInvariant\n' > "$d/Missing.cfg"
   printf 'CONSTANT Limit = 3\nSPECIFICATION Spec\nINVARIANT Positive\n' > "$d/InitV.cfg"
   printf 'CONSTANT Limit = 3\nSPECIFICATION Spec\nINVARIANT Fake\n' > "$d/Asrt.cfg"
+  printf 'CONSTANT Limit = 5\nSPECIFICATION Spec\nINVARIANT Forge Safe\n' > "$d/Forge.cfg"
 }
 run_phase() { # run_phase <phase> [VAR=value ...]
   local phase="$1"; shift
@@ -104,6 +106,11 @@ expect "an unknown invariant is not a refutation" 1 'not refuted by NoSuchInvari
 fresh_fixture
 run_phase prove MUST_REFUTE=Asrt.cfg:Fake
 expect "fixture assert-text: an evaluation error carrying the invariant's text is not a refutation" 1 'not refuted by Fake'
+
+fresh_fixture
+run_phase prove MUST_REFUTE=Forge.cfg:Forge
+expect "fixture print-forge: PrintT cannot start a line with Error:, so another invariant's exit 12 is not credited to Forge" 1 'not refuted by Forge'
+grep -q '^"\\nError: Invariant Forge is violated\.\\n"$' "$OUT" && ok "TLC printed the forged text quoted and escaped on one line" || bad "the forged PrintT line was not as expected"
 
 fresh_fixture
 run_phase prove MUST_REFUTE=InitV.cfg:Positive

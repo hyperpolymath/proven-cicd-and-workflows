@@ -6,19 +6,21 @@
 # under the exact composite shell. This test runs the REAL pinned Lean 4.15.0
 # (the gate refuses any other binary, so a stand-in is not possible); a missing
 # or wrong Lean is exit 2, never a skip. Put the pinned bin/lean on PATH or set
-# LEAN_BIN. A clean fixture must pass, then one defect at a time, each of which
-# the gate must fail: a sorry, Classical.choice, a declared axiom, a required
-# theorem that is not printed, a file that does not compile, a file with no
-# #print axioms, fewer reports than prints, a missing listed file, a wrong
-# binary. Then mutants of check.sh itself: each planted control, made vacuous,
-# must make the gate refuse (exit 2) rather than report green.
+# LEAN_BIN. CHECKER=<path> runs the same suite against another copy of check.sh,
+# which is how a before/after record is made.
 #
-# Ported from the Lean controls of hvn-dehallucinator's
-# tests/proofs/recheck_legs_test.sh.
+# The gate judges the compiled module with its own checker. So the forgeries here
+# are files whose own text lies: a `#eval` that prints the clean line (with a
+# required name that does not exist), `elab_rules` that rewrite `#print axioms`,
+# a declaration added with debug.skipKernelTC, an axiom used only by an unprinted
+# theorem, a commented-out or extra-space print. Each must be refused. A file with
+# no prints at all, and a clean module, must pass. Then mutants of check.sh
+# itself: each part of the judgement, made vacuous, must make the gate refuse
+# (exit 2) rather than report green.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-checker="$here/check.sh"
+checker="${CHECKER:-$here/check.sh}"
 PASS=0; FAIL=0
 ok()  { printf '  ok   %s\n' "$1"; PASS=$((PASS+1)); }
 bad() { printf '  FAIL %s\n' "$1"; FAIL=$((FAIL+1)); }
@@ -34,7 +36,7 @@ OUT="$WORK/out"
 FIX="$WORK/fixture"
 
 names=(sound_one sound_two haruspex)
-# lean <file> [skip-name] [extra]: a theorem and its #print axioms per name.
+# lean_fixture <file> [skip-name] [extra]: a theorem and its #print axioms per name.
 lean_fixture() {
   { echo 'namespace Fixture'
     for n in "${names[@]}"; do
@@ -55,46 +57,102 @@ run_phase() { # run_phase <phase> [VAR=value ...]
   RC=$?
 }
 expect() { # expect <name> <want-rc> <text>
-  if [ "$RC" -eq "$2" ] && grep -qF -- "$3" "$OUT"; then ok "$1 (exit $RC)"; else bad "$1: want exit $2 and \"$3\", got exit $RC"; sed 's/^/        /' "$OUT" | tail -n 15; fi
+  if [ "$RC" -eq "$2" ] && grep -qF -- "$3" "$OUT"; then ok "$1 (exit $RC)"; else bad "$1: want exit $2 and \"$3\", got exit $RC"; sed 's/^/        /' "$OUT" | tail -n 12; fi
 }
+write() { printf '%s\n' "${@:2}" > "$FIX/proofs/$1"; } # write <file> <line>...
 
 echo "== positive control: a clean tree passes =="
 fresh_fixture
 run_phase detect
 expect "detect on a clean tree" 0 'units=1'
 run_phase prove REQUIRED_THEOREMS="sound_one sound_two haruspex"
-expect "prove on a clean tree" 0 '3 required theorem(s) reported'
-grep -q 'axiom-free theorem accepted' "$OUT" && ok "the true planted control was exercised" || bad "no true control"
-for c in Sorry Classical Axiom IllTyped Unprinted; do
-  grep -q "$c refused" "$OUT" && ok "the $c planted control was exercised" || bad "the $c control was not run"
+expect "prove on a clean tree" 0 '3 required theorem(s) resolved'
+grep -q 'with and without a #print axioms, accepted' "$OUT" && ok "the true planted controls were exercised" || bad "no true control"
+for c in Sorry Classical Axiom AxiomUnprinted IllTyped EvalForge MacroForge SkipKernel; do
+  grep -q "planted control: $c refused" "$OUT" && ok "the $c planted control was exercised" || bad "the $c control was not run"
 done
-grep -q 'PASS (3 axiom-free)' "$OUT" && ok "the axiom-free count is reported" || bad "count not reported"
+grep -q 'resolution can say no' "$OUT" && ok "the resolution planted control was exercised" || bad "no resolution control"
+grep -q 'kernel replay ok, no disallowed axiom' "$OUT" && ok "the checker verdict is reported" || bad "verdict not reported"
 
-echo "== negative controls (each must fail the gate) =="
+echo "== a module is judged whole: prints are neither needed nor trusted =="
+fresh_fixture
+write Ok.lean 'theorem lonely : True := trivial'
+run_phase prove
+expect "a file with no #print axioms passes" 0 'finds no disallowed axiom'
+
+fresh_fixture
+lean_fixture "$FIX/proofs/Ok.lean" "" '-- #print axioms Fixture.sound_one'
+run_phase prove
+expect "a commented-out print does not matter" 0 'finds no disallowed axiom'
+
+fresh_fixture
+write Ok.lean 'theorem ok : True := trivial' '#print  axioms ok'
+run_phase prove REQUIRED_THEOREMS=ok
+expect "fixture extra-space-print: #print  axioms with two spaces" 0 '1 required theorem(s) resolved'
+
+fresh_fixture
+write Ok.lean 'theorem ok : True := trivial' 'namespace A' 'namespace B' 'theorem unprinted : True := trivial' 'end B' 'end A' '#print axioms ok'
+run_phase prove REQUIRED_THEOREMS="ok unprinted"
+expect "fixture generated-query: a required theorem under nested namespaces, never printed, exists" 0 '2 required theorem(s) resolved'
+
+fresh_fixture
+write Ok.lean 'axiom cheat : False' 'theorem bad : False := cheat' 'theorem ok : True := trivial' '#print  axioms ok' '-- #print axioms bad'
+run_phase prove REQUIRED_THEOREMS=bad
+expect "fixture hidden-print: an axiom under a commented print" 1 'not allowed: [cheat]'
+
+fresh_fixture
+write Ok.lean '#eval IO.println "'"'"'bad'"'"' does not depend on any axioms"' 'theorem ok : True := trivial' '#print axioms ok'
+run_phase prove REQUIRED_THEOREMS=bad
+expect "fixture eval-forge: #eval prints the clean line for an undefined required name" 1 "no axiom report for required theorem 'bad'"
+
+fresh_fixture
+write Ok.lean 'axiom cheat : False' 'theorem bad : False := cheat' \
+  '#eval IO.println "'"'"'bad'"'"' does not depend on any axioms"' '#eval IO.println "'"'"'ok'"'"' does not depend on any axioms"' 'theorem ok : True := trivial'
+run_phase prove REQUIRED_THEOREMS=bad
+expect "fixture eval-forge-axiom: #eval prints the clean line for a theorem on an axiom" 1 'not allowed: [cheat]'
+
+fresh_fixture
+write Ok.lean 'import Lean' 'open Lean Elab Command' 'axiom cheat : False' 'theorem bad : False := cheat' \
+  'elab_rules : command' "  | \`(#print axioms \$id:ident) => logInfo m!\"'{id.getId}' does not depend on any axioms\"" '#print axioms bad'
+run_phase prove REQUIRED_THEOREMS=bad
+expect "fixture macro-forge: elab_rules rewrite #print axioms" 1 'cheat'
+
+fresh_fixture
+write Ok.lean 'import Lean' 'open Lean Elab Command' \
+  'set_option debug.skipKernelTC true in' \
+  'run_cmd liftCoreM (addDecl (.thmDecl { name := `bad, levelParams := [], type := mkConst ``False, value := mkConst ``True.intro }))' \
+  '#print axioms bad'
+run_phase prove REQUIRED_THEOREMS=bad
+expect "fixture skip-kernel: a declaration added with debug.skipKernelTC" 1 'kernel replay rejected the module'
+
+fresh_fixture
+write Ok.lean 'structure S where' '  x : Nat' '  y : Nat' 'theorem ok : True := trivial'
+run_phase prove
+expect "fixture generated-propext: the injEq theorem Lean generates for a structure uses propext" 1 'propext'
+run_phase prove ALLOWED_AXIOMS=propext
+expect "propext named in allowed_axioms is not counted" 0 'finds no disallowed axiom'
+
+fresh_fixture
+lean_fixture "$FIX/proofs/Ok.lean" "" 'axiom cheat : False
+theorem sound_one_bad : False := cheat'
+run_phase prove
+expect "fixture axiom-unprinted: an axiom used by an unprinted theorem" 1 'Fixture.cheat'
+
+echo "== other defects =="
 fresh_fixture
 lean_fixture "$FIX/proofs/Ok.lean" sound_one 'theorem sound_one : False := sorry'
-echo '#print axioms Fixture.sound_one' >> "$FIX/proofs/Ok.lean"
 run_phase prove
-expect "a theorem left as sorry" 1 'contains a sorry'
+expect "a theorem left as sorry" 1 'sorryAx'
 
 fresh_fixture
 lean_fixture "$FIX/proofs/Ok.lean" sound_two 'theorem sound_two (p : Prop) : p ∨ ¬p := Classical.em p'
-echo '#print axioms Fixture.sound_two' >> "$FIX/proofs/Ok.lean"
 run_phase prove
-expect "a theorem using Classical.choice" 1 'rests on an axiom'
-grep -q 'Classical.choice' "$OUT" && ok "the axiom is named" || bad "axiom not named"
-
-fresh_fixture
-lean_fixture "$FIX/proofs/Ok.lean" sound_two 'axiom cheat : False
-theorem sound_two : False := cheat'
-echo '#print axioms Fixture.sound_two' >> "$FIX/proofs/Ok.lean"
-run_phase prove
-expect "a theorem resting on a declared axiom" 1 'rests on an axiom'
+expect "a theorem using Classical.choice" 1 'Classical.choice'
 
 fresh_fixture
 lean_fixture "$FIX/proofs/Ok.lean" haruspex
 run_phase prove REQUIRED_THEOREMS="sound_one haruspex"
-expect "a required theorem that is not printed" 1 "no axiom report for required theorem 'haruspex'"
+expect "a required theorem that does not exist" 1 "no axiom report for required theorem 'haruspex'"
 
 fresh_fixture
 lean_fixture "$FIX/proofs/Ok.lean" "" 'theorem broken : False := trivial'
@@ -102,39 +160,22 @@ run_phase prove
 expect "a file that does not compile" 1 'lean failed'
 
 fresh_fixture
-printf 'theorem lonely : True := trivial\n' > "$FIX/proofs/Ok.lean"
-run_phase prove
-expect "a file with no #print axioms" 1 'no #print axioms'
-
-fresh_fixture
-lean_fixture "$FIX/proofs/Ok.lean" "" '-- #print axioms Fixture.sound_one'
-run_phase prove
-expect "a commented-out print is not a print and does not fail the file" 0 'every executed #print axioms is axiom-free'
-
-echo "== reports come from execution, not from the file's text =="
-fresh_fixture
-printf '%s\n' 'axiom cheat : False' 'theorem bad : False := cheat' 'theorem ok : True := trivial' \
-  '#print  axioms ok' '-- #print axioms bad' > "$FIX/proofs/Ok.lean"
-run_phase prove REQUIRED_THEOREMS=bad
-expect "fixture hidden-print: a commented print for a required theorem on an axiom" 1 'rests on an axiom'
-
-fresh_fixture
-printf '%s\n' 'theorem ok : True := trivial' '#print  axioms ok' > "$FIX/proofs/Ok.lean"
-run_phase prove REQUIRED_THEOREMS=ok
-expect "fixture extra-space-print: #print  axioms with two spaces is a print" 0 '1 required theorem(s) reported'
-
-fresh_fixture
-printf '%s\n' 'theorem ok : True := trivial' 'namespace A' 'namespace B' 'theorem unprinted : True := trivial' 'end B' 'end A' '#print axioms ok' > "$FIX/proofs/Ok.lean"
-run_phase prove REQUIRED_THEOREMS="ok unprinted"
-expect "fixture generated-query: a required theorem inside nested namespaces with no print is queried by the gate" 0 '2 required theorem(s) reported'
-
-fresh_fixture
 lean_fixture "$FIX/proofs/Ok.lean" "" 'theorem sec : True := trivial'
-echo '#print axioms Fixture.sec' >> "$FIX/proofs/Ok.lean"
 run_phase prove REQUIRED_THEOREMS="sec"
-expect "a required name that is printed" 0 '1 required theorem(s) reported'
+expect "a required name that exists" 0 '1 required theorem(s) resolved'
 run_phase prove REQUIRED_THEOREMS="ec"
-expect "a required name must match whole identifiers" 1 "required theorem 'ec'"
+expect "a required name must match whole components" 1 "required theorem 'ec'"
+run_phase prove REQUIRED_THEOREMS="Fixture.sec"
+expect "a qualified required name" 0 '1 required theorem(s) resolved'
+
+fresh_fixture
+write Ok.lean 'axiom cheat : False' 'theorem bad : False := cheat'
+run_phase prove ALLOWED_AXIOMS=cheat
+expect "an allowed axiom is not counted" 0 'finds no disallowed axiom'
+run_phase prove ALLOWED_AXIOMS=other
+expect "an allowed name that is not the axiom does not help" 1 'not allowed: [cheat]'
+run_phase prove ALLOWED_AXIOMS=sorryAx
+expect "sorryAx is never allowable, even when named" 2 'sorryAx is never allowable'
 
 fresh_fixture
 run_phase prove FILES="proofs/Ok.lean proofs/Ghost.lean"
@@ -175,7 +216,7 @@ expect "detect on a tree with no .lean file is silent" 0 'units=0'
 run_phase prove FILES=
 expect "prove with nothing listed is exit 2, not green" 2 'NO CHECK WAS PERFORMED'
 
-echo "== mutants of check.sh: a vacuous planted control must be refused =="
+echo "== mutants of check.sh: a vacuous part of the judgement must be refused =="
 fresh_fixture
 mutant() { # mutant <label> <old-text> <new-text> <want-text>: literal replace
   local content; content="$(cat "$checker")"
@@ -185,12 +226,15 @@ mutant() { # mutant <label> <old-text> <new-text> <want-text>: literal replace
   RC=$?
   expect "$1" 2 "$4"
 }
-mutant "a sorry control that is in fact proved" 'planted_sorry : False := sorry' 'planted_sorry : True := trivial' 'planted Sorry control was ACCEPTED'
-mutant "a Classical control that is in fact constructive" 'planted_classical (p : Prop) : p ∨ ¬p := Classical.em p' 'planted_classical : True := trivial' 'planted Classical control was ACCEPTED'
+mutant "a gate that ignores its checker's exit code" 'run_checker "$scratch" check "GateMod$i" "$allowed_csv" || rc=$?' 'run_checker "$scratch" check "GateMod$i" "$allowed_csv" || true' 'was ACCEPTED'
+mutant "a checker that skips the kernel replay" 'let env ← try base.replay consts catch e =>' 'let env ← try importModules #[{ module := modStr.toName }] {} 0 catch e =>' 'planted SkipKernel control was ACCEPTED'
+mutant "a checker that ignores axioms" 'let bad := st.axioms.filter (!allowed.contains ·)' 'let bad : Array Name := #[]' 'was ACCEPTED'
+mutant "a checker that collects no axioms" 'roots.forM CollectAxioms.collect' '(#[] : Array Name).forM CollectAxioms.collect' 'was ACCEPTED'
+mutant "a checker that resolves every name" 'unless md.constNames.any (endsWith · r.toName) do' 'unless true do' 'resolved a name that does not exist'
+mutant "a gate that reads lean messages instead of the checker" 'run_checker "$scratch" check "GateMod$i" "$allowed_csv" || rc=$?' 'grep -q "does not depend on any axioms" "$scratch/GateMod$i.log" || rc=1' 'planted NoPrint control was refused'
+mutant "a true control that is in fact false" 'theorem planted_true : True := trivial' 'theorem planted_true : True := sorry' 'was refused'
 mutant "an axiom control that is in fact proved" 'axiom planted_cheat : False\ntheorem planted_axiom : False := planted_cheat' 'theorem planted_axiom : True := trivial' 'planted Axiom control was ACCEPTED'
 mutant "an ill-typed control that is well typed" 'planted_ill_typed : False := trivial' 'planted_ill_typed : True := trivial' 'planted IllTyped control was ACCEPTED'
-mutant "an unprinted control that is printed" 'theorem planted_unprinted : True := trivial\n'"'"' > "$ctl/Unprinted.lean"' 'theorem planted_unprinted : True := trivial\n#print axioms planted_unprinted\n'"'"' > "$ctl/Unprinted.lean"' 'planted Unprinted control was ACCEPTED'
-mutant "a true control that is in fact false" 'theorem planted_true : True := trivial' 'theorem planted_true : False := sorry' 'planted AXIOM-FREE theorem was refused'
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

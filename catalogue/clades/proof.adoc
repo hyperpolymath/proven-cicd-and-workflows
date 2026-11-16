@@ -73,13 +73,13 @@ Check every MANIFEST module under the kernel flags, refuse unlisted .agda files,
 * link:../../templates/agda-gate-caller.yml[Caller template]
 
 [[rocq]]
-== Rocq assumptions
+== Rocq module re-check
 
 *`rocq` · proof-executor · enforcing*
 
-Compile listed .v files with coqc and require every Print Assumptions to be closed, reports to equal prints and named theorems to be printed, after planted controls.
+Compile listed .v files with coqc, then re-check the compiled modules out of process with coqchk: no axiom, Admitted lemma, type-in-type, unsafe fixpoint or assumed positivity, module-wide, after planted controls.
 
-*Assurance boundary:* Pinned Coq 8.18.0 from the Ubuntu 24.04 archive is required; a theorem with no Print Assumptions is not examined, so name the theorems that matter.
+*Assurance boundary:* Pinned Coq 8.18.0 (coqc and coqchk) from the Ubuntu 24.04 archive is required. Nothing the file prints is evidence. Axioms of the whole Require closure count, used or not. Code a file runs at compile time is trusted not to tamper with the runner. Required names are checked for existence only.
 
 * link:../../actions/rocq-check/action.yml[Action definition and inputs]
 * link:../../.github/workflows/rocq-gate.yml[Reusable workflow]
@@ -90,9 +90,9 @@ Compile listed .v files with coqc and require every Print Assumptions to be clos
 
 *`lean-axioms` · proof-executor · enforcing*
 
-Compile listed non-Lake .lean files and require every #print axioms to report no axioms, reports to equal prints and named theorems to be printed, after planted controls.
+Compile listed non-Lake .lean files to .olean, then run the gate's own checker out of process: replay every constant through the kernel and collect the axioms of every safe constant, module-wide, after planted controls.
 
-*Assurance boundary:* Pinned Lean 4.15.0 is required; Lake projects are proof-runner-check territory and are not judged here; a theorem with no #print axioms is not examined.
+*Assurance boundary:* Pinned Lean 4.15.0 is required. Nothing the file prints is evidence. Trusted: the lean binary and library, importModules running no initializer, the kernel. Code a file runs at compile time is trusted not to tamper with the runner. Lake projects are proof-runner-check territory. Required names are checked for existence only.
 
 * link:../../actions/lean-axioms-check/action.yml[Action definition and inputs]
 * link:../../.github/workflows/lean-axioms-gate.yml[Reusable workflow]

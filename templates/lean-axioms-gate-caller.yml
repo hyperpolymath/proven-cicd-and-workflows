@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
 # Lean Axioms Gate — thin caller of the estate's Lean Axioms gate in
 # hyperpolymath/proven-cicd-and-workflows. Enforcing, for standalone
-# (non-Lake) files: the pinned Lean 4.15.0 compiles each listed file, every
-# #print axioms must report "does not depend on any axioms" (a sorry,
-# Classical.choice, propext, Quot.sound or a declared axiom fails), and
-# reports must equal prints. Lake projects are proof-runner-check's, which
-# builds them and does not judge axioms. Planted controls prove the judge can
-# say no before its green is credited.
+# (non-Lake) files: the pinned Lean 4.15.0 compiles each listed file, then the
+# gate's own checker re-checks the compiled module out of process: kernel
+# replay of every constant, and any axiom a safe constant uses (sorryAx,
+# Classical.choice, propext, Quot.sound, a declared axiom) fails, module-wide.
+# Nothing the file prints is evidence. Lake projects are proof-runner-check's,
+# which builds them and does not judge axioms. Planted controls prove the
+# judge can say no before its green is credited.
 #
 # Require `lean-axioms / Lean axioms verdict`.
 #
@@ -32,5 +33,6 @@ jobs:
     uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/lean-axioms-gate.yml@__CICD_SUITE_SHA__ # cicd-suite main
     # Inputs (optional; the defaults are hvn-dehallucinator's layout):
     #   files: verification/proofs/lean4/Haruspex.lean   # whitespace-separated, no Lake project
-    #   required_theorems: "name1 name2"                 # the gate queries each itself
+    #   required_theorems: "name1 name2"                 # each must exist in a listed module
+    #   allowed_axioms: ""                               # e.g. "propext"; sorryAx is never allowable
     #                                                    # (empty by default: name the theorems that matter)

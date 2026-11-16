@@ -9,12 +9,14 @@
 #            listed file does not exist
 #   prove    installs Lean 4.15.0 from the upstream release archive
 #            (lean-4.15.0-linux.tar.zst at its SHA-256), asserts bin/lean at
-#            its SHA-256, proves the judge can say no (an axiom-free theorem
-#            accepted; a sorry, Classical.choice, a declared axiom, an
-#            ill-typed file and an unprinted file refused), then compiles each
-#            listed file with lean and requires every `#print axioms` to report
-#            "does not depend on any axioms", reports equal to prints, and
-#            optionally a named set of theorems to be printed
+#            its SHA-256, proves the judge can say no (clean theorems accepted;
+#            a sorry, Classical.choice, a declared axiom, an ill-typed file, a
+#            `#eval` or `elab_rules` forgery of the clean line and a
+#            declaration added without the kernel refused), compiles each
+#            listed file to .olean, then runs the gate's own checker out of
+#            process: kernel replay of every constant and the axioms of every
+#            safe constant, module-wide. Nothing the file prints is evidence.
+#            Optionally a named set of theorems must exist
 #   verdict  one context to require; a skipped prove with sources present is
 #            VOID, not green
 #
@@ -44,7 +46,12 @@ on:
         required: false
         default: "verification/proofs/lean4/Haruspex.lean"
       required_theorems:
-        description: Whitespace-separated theorem names; the gate runs #print axioms on each itself and it must report no axioms; empty for none
+        description: Whitespace-separated theorem names that must each resolve to a constant of a listed module (existence only; axioms are judged module-wide); empty for none
+        type: string
+        required: false
+        default: ""
+      allowed_axioms:
+        description: Whitespace-separated axiom names the module may use (full names as the checker prints them); empty for none. sorryAx is never allowable
         type: string
         required: false
         default: ""
@@ -136,6 +143,7 @@ jobs:
           WORKING_DIRECTORY: ${{ inputs.working_directory }}
           FILES: ${{ inputs.files }}
           REQUIRED_THEOREMS: ${{ inputs.required_theorems }}
+          ALLOWED_AXIOMS: ${{ inputs.allowed_axioms }}
         run: bash .cicd-suite/actions/lean-axioms-check/check.sh | tee -a "$GITHUB_OUTPUT"
 
   prove:
@@ -228,6 +236,7 @@ jobs:
           WORKING_DIRECTORY: ${{ inputs.working_directory }}
           FILES: ${{ inputs.files }}
           REQUIRED_THEOREMS: ${{ inputs.required_theorems }}
+          ALLOWED_AXIOMS: ${{ inputs.allowed_axioms }}
         run: bash .cicd-suite/actions/lean-axioms-check/check.sh
 
   verdict:

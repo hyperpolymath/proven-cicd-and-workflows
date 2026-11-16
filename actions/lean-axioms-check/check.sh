@@ -3,18 +3,41 @@
 # Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath) <j.d.a.jewell@open.ac.uk>
 #
 # check.sh — the Lean axiom gate for standalone (non-Lake) files. lean compiles
-# the listed files, and every `#print axioms` must say the theorem depends on no
-# axioms. Generalised from the Lean leg of hvn-dehallucinator's
-# scripts/check-recheck-legs.sh (standards PROOF-POLICY section 2); the default
-# file list reproduces that leg.
+# the listed files to .olean; a checker program of the gate's own then re-checks
+# each compiled module out of process. Generalised from the Lean leg of
+# hvn-dehallucinator's scripts/check-recheck-legs.sh (standards PROOF-POLICY
+# section 2); the default file list reproduces that leg.
+#
+# Trust model. The verdict is made on the COMPILED artefact, never from text the
+# caller's file can print. A .lean file runs code at compile time: `#eval` can
+# print any line, and `elab_rules` or `macro_rules` can rewrite `#print axioms`
+# itself, so lean's messages and the file's own prints are not evidence and are
+# not read. Declarations can also be added without the kernel
+# (`set_option debug.skipKernelTC true`). So the gate's own checker
+# (Checker.lean, embedded below, written to a fresh directory after the compile):
+#   a. loads the compiled module with importModules, with no initializer enabled,
+#      and replays every constant of it through the kernel
+#      (Lean.Environment.replay, as lean4checker does): a declaration added
+#      without the kernel is rejected;
+#   b. collects the axioms reachable from every safe constant of the module
+#      (Lean.CollectAxioms; unsafe and partial constants, which replay also
+#      skips, include the compiler's own auxiliary axioms), module-wide: a theorem needs no #print axioms to be
+#      covered. Any axiom not in ALLOWED_AXIOMS fails; sorryAx is never allowable;
+#   c. resolves each required name to a constant of the module, exactly or as a
+#      component suffix (the bare name under any namespace).
+# The gate judges by the checker's EXIT CODE (0 pass, 1 verdict failure, anything
+# else: no check was performed). What stays trusted: the pinned lean binary and
+# the Lean library it ships, importModules not running initializers, the kernel,
+# and the runner. Code the file runs at compile time can touch the filesystem;
+# that is outside this gate's model.
 #
 # How this differs from proof-runner-check: that action runs `lake build` on a
 # Lake project (a lakefile.lean or lakefile.toml) with whatever Lean is on PATH.
 # It proves the project builds, and it does not look at axioms: a `sorry` is a
 # warning and `lake build` still exits 0. This gate takes plain files that no
-# Lake project owns, runs the pinned Lean 4.15.0 on each, and judges the axiom
-# report of every printed theorem. Detect ignores .lean files inside a Lake
-# project. The two gates do not overlap, and neither stands in for the other.
+# Lake project owns, runs the pinned Lean 4.15.0 on each, and judges the compiled
+# module. Detect ignores .lean files inside a Lake project. The two gates do not
+# overlap, and neither stands in for the other.
 #
 #   LEAN_GATE_PHASE=detect
 #       Prints `key=value` facts: lean_files (.lean files in the tree outside
@@ -26,37 +49,29 @@
 #   LEAN_GATE_PHASE=prove
 #       1. Toolchain: lean must be the pinned build (Lean 4.15.0; bin/lean at
 #          the pinned SHA-256; the workflow also checks the release archive,
-#          lean-4.15.0-linux.tar.zst, against its SHA-256). A mismatch is
-#          exit 2: no check was performed.
-#       2. Planted controls through the SAME judgement the caller's files get:
-#          an axiom-free theorem must be accepted; a sorry, a use of
-#          Classical.choice (with propext and Quot.sound), a declared axiom,
-#          an ill-typed file and a file with no #print axioms must each be
-#          refused. A judge that cannot say no voids every verdict: exit 2.
-#       3. Each listed file is compiled standalone with `lean <file>` (imports
-#          are limited to the toolchain's own libraries). lean must succeed; at
-#          least one `#print axioms` must have RUN; no report may say "depends on
-#          axioms" (this catches sorryAx, Classical.choice, propext, Quot.sound
-#          and any declared axiom); no `declaration uses 'sorry'` warning may
-#          appear. Reports are counted from lean's output, never from the text of
-#          the file: a commented-out print runs nothing, and `#print  axioms` with
-#          two spaces is a print.
+#          lean-4.15.0-linux.tar.zst, against its SHA-256). A mismatch is exit 2.
+#       2. Planted controls through the SAME judgement the caller's files get.
+#          Accepted: an axiom-free theorem, and one with no #print axioms at all.
+#          Refused: a sorry, Classical.choice, a declared axiom, an axiom used
+#          only by an unprinted theorem, an ill-typed file, a `#eval` that prints
+#          the clean line over an axiom, an `elab_rules` override of
+#          `#print axioms`, and a declaration added with
+#          `debug.skipKernelTC`. A required name that does not exist must fail
+#          to resolve even where `#eval` printed a line naming it. A judge that
+#          cannot say no voids every verdict it gives: exit 2.
+#       3. Each listed file is compiled standalone, as module GateMod<N> in a
+#          scratch directory, with `lean -R . -o GateMod<N>.olean` (imports are
+#          limited to the toolchain's own libraries), then judged as above.
 #       4. REQUIRED_THEOREMS (optional, whitespace-separated names; a dotted name
-#          is qualified): the gate asks for each report itself, appending
-#          `#print axioms <name>` and `#print axioms <ns>.<name>` for every
-#          namespace the file opens to a copy of a listed file. lean must print
-#          "'<candidate>' does not depend on any axioms" for one candidate. A name
-#          that resolves in no listed file has no report and fails, so a deleted
-#          print cannot hide a theorem, and a commented one cannot stand in for it.
-#
-# Not covered, by design: a theorem the caller does not name and does not print
-# is not examined. Name every theorem that matters in REQUIRED_THEOREMS.
+#          is qualified): each must resolve to a constant of a listed module.
+#          Existence is all this checks; axioms are judged module-wide.
 #
 # Exit codes: 0 silent, 1 defect, 2 NO CHECK WAS PERFORMED. 2 is never a pass.
 #
 # Env: WORKING_DIRECTORY (default "."), FILES (default
 #      verification/proofs/lean4/Haruspex.lean), REQUIRED_THEOREMS (default
-#      none), LEAN_BIN (default lean on PATH; the pin applies to what it
+#      none), ALLOWED_AXIOMS (whitespace-separated, default none; sorryAx is
+#      refused), LEAN_BIN (default lean on PATH; the pin applies to what it
 #      resolves to).
 set -uo pipefail
 
@@ -69,6 +84,7 @@ phase="${LEAN_GATE_PHASE:?LEAN_GATE_PHASE is required: detect|prove}"
 dir="${WORKING_DIRECTORY:-.}"
 files_in="${FILES-verification/proofs/lean4/Haruspex.lean}"
 required_in="${REQUIRED_THEOREMS-}"
+allowed_in="${ALLOWED_AXIOMS-}"
 lean_bin="${LEAN_BIN:-lean}"
 
 die2() { echo "::error::lean-axioms-check[$phase]: $* — NO CHECK WAS PERFORMED." >&2; exit 2; }
@@ -78,10 +94,16 @@ cd "$dir" 2>/dev/null || die2 "cannot enter $dir"
 
 read -r -a listed <<< "${files_in//$'\n'/ }"
 read -r -a required <<< "${required_in//$'\n'/ }"
+read -r -a allowed <<< "${allowed_in//$'\n'/ }"
 for i in "${!listed[@]}"; do listed[i]="${listed[$i]#./}"; done
-for n in ${required[@]+"${required[@]}"}; do
-  [[ "$n" =~ ^[A-Za-z_]([A-Za-z0-9_\'.]*[A-Za-z0-9_\'])?$ ]] || die2 "required theorem name '$n' is not an identifier (ASCII letters, digits, _ and ', with inner dots for a qualified name)"
+for n in ${required[@]+"${required[@]}"} ${allowed[@]+"${allowed[@]}"}; do
+  [[ "$n" =~ ^[A-Za-z_]([A-Za-z0-9_\'.]*[A-Za-z0-9_\'])?$ ]] || die2 "name '$n' is not an identifier (ASCII letters, digits, _ and ', with inner dots for a qualified name)"
 done
+allowed_csv=""
+for n in ${allowed[@]+"${allowed[@]}"}; do
+  [ "$n" != sorryAx ] || die2 "sorryAx is never allowable"
+done
+for n in ${allowed[@]+"${allowed[@]}"}; do allowed_csv="${allowed_csv:+$allowed_csv,}$n"; done
 
 # in_lake <file>: 0 when the file, or any directory above it up to the tree
 # root, holds a lakefile.lean or lakefile.toml.
@@ -132,6 +154,74 @@ if [ "$phase" = detect ]; then
 fi
 
 [ "$phase" = prove ] || { echo "::error::lean-axioms-check: unknown phase '$phase' (detect|prove)" >&2; exit 2; }
+# The gate's own checker. Written to a fresh directory AFTER the caller's file
+# has been compiled, and run with `lean --run`. It imports only Lean.
+write_checker() { # <dir>
+  mkdir -p "$1"
+  cat > "$1/Checker.lean" <<'LEAN'
+import Lean
+open Lean
+
+/-- Exit codes: 0 pass, 1 verdict failure, 3 the checker could not run. -/
+def verdict (ok : Bool) (msg : String) : IO UInt32 := do
+  IO.println s!"gate-checker: {if ok then "ok" else "FAIL"} {msg}"
+  return (if ok then 0 else 1)
+
+def endsWith (n suffix : Name) : Bool :=
+  let sr := suffix.components.reverse
+  n.components.reverse.take sr.length == sr
+
+def loadModule (modStr : String) : IO ModuleData := do
+  initSearchPath (← findSysroot)
+  let (md, _) ← readModuleData (← findOLean modStr.toName)
+  return md
+
+/-- Replay every constant of the module through the kernel; then every axiom
+reachable from any constant of the module must be allowed. -/
+def check (modStr allowedStr : String) : IO UInt32 := do
+  let allowed : List Name := (allowedStr.splitOn ",").filter (· ≠ "") |>.map String.toName
+  if allowed.contains `sorryAx then
+    return (← verdict false "sorryAx is never allowable")
+  let md ← loadModule modStr
+  -- No initializer is run: enableInitializersExecution is never called.
+  let base ← importModules md.imports {} 0
+  let mut consts : Std.HashMap Name ConstantInfo := {}
+  for n in md.constNames, ci in md.constants do consts := consts.insert n ci
+  let env ← try base.replay consts catch e =>
+    return (← verdict false s!"kernel replay rejected the module: {e}")
+  IO.println s!"gate-checker: replayed {consts.size} constants of {modStr} through the kernel"
+  -- Roots: the constants the kernel checked. Unsafe and partial constants are
+  -- skipped by replay and cannot be used by a safe one; they include the
+  -- compiler's own auxiliary constants (_cstage1, _elambda_N), which are axioms.
+  let roots := (md.constNames.zip md.constants).filter (fun (_, ci) => !ci.isUnsafe && !ci.isPartial) |>.map (·.1)
+  let ((), st) := ((roots.forM CollectAxioms.collect).run env).run {}
+  for a in st.axioms do
+    IO.println s!"gate-checker: axiom {a}{if allowed.contains a then " (allowed)" else ""}"
+  let bad := st.axioms.filter (!allowed.contains ·)
+  if !bad.isEmpty then
+    return (← verdict false s!"module uses axiom(s) not allowed: {bad.toList}")
+  verdict true s!"{consts.size} constants replayed, no disallowed axiom"
+
+/-- Every name must resolve to a constant of the module (exact, or a component suffix). -/
+def resolve (modStr : String) (names : List String) : IO UInt32 := do
+  let md ← loadModule modStr
+  for r in names do
+    unless md.constNames.any (endsWith · r.toName) do
+      return (← verdict false s!"required name '{r}' resolves to no constant of {modStr}")
+  verdict true s!"{names.length} required name(s) resolve in {modStr}"
+
+def main (args : List String) : IO UInt32 := do
+  try
+    match args with
+    | ["check", modStr, allowedStr] => check modStr allowedStr
+    | "resolve" :: modStr :: names => resolve modStr names
+    | _ => IO.println "gate-checker: ERROR usage"; return (3 : UInt32)
+  catch e =>
+    IO.println s!"gate-checker: ERROR {e}"
+    return (3 : UInt32)
+LEAN
+}
+
 
 # ---------------------------------------------------------------------------
 # prove
@@ -158,123 +248,151 @@ work="$(mktemp -d)" || die2 "cannot create a temp directory"
 trap 'rm -rf "$work"' EXIT
 
 DEFECT=""
-JUDGE_CLEAN=0
-# judge <file> <log>: 0 when the file compiles, at least one #print axioms ran,
-# and every report lean printed says "does not depend on any axioms"; 1 with
-# DEFECT set otherwise. Reports are counted from lean's OUTPUT, never from the
-# text of the file: a commented-out print runs nothing, and `#print  axioms` with
-# two spaces is a print. The one judgement used for both the planted controls and
-# the caller's files.
-judge() {
-  local src="$1" log="$2" clean rc
-  DEFECT=""; JUDGE_CLEAN=0
-  rc=0
-  "$lean_bin" "$src" > "$log" 2>&1 || rc=$?
-  if [ "$rc" -ne 0 ]; then DEFECT="lean failed on $src (exit $rc)"; return 1; fi
-  if grep -q "declaration uses 'sorry'" "$log"; then DEFECT="$src contains a sorry"; return 1; fi
-  if grep -q 'depends on axioms' "$log"; then
-    DEFECT="a theorem in $src rests on an axiom ($(grep 'depends on axioms' "$log" | head -n 3 | tr '\n' ' '))"; return 1
+DEFECT_KIND=""   # compile | check
+CHK_LOG=""
+# run_checker <scratch> <args...>: run the gate's own checker, in a fresh
+# directory written after the caller's code has run. Prints its output. Returns
+# its exit code: 0 pass, 1 verdict failure; any other code is exit 2 here.
+run_checker() {
+  local scratch="$1" rc=0
+  shift
+  rm -rf "$scratch/checker"; write_checker "$scratch/checker"
+  CHK_LOG="$scratch/checker.log"
+  (cd "$scratch/checker" && LEAN_PATH="$scratch" "$lean_bin" --run Checker.lean "$@") > "$CHK_LOG" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    sed 's/^/        /' "$CHK_LOG" | tail -n 20 >&2
+    die2 "the checker could not run (exit $rc)"
   fi
-  clean="$(grep -c "does not depend on any axioms$" "$log" || true)"
-  if [ "$clean" -eq 0 ]; then DEFECT="no #print axioms in $src was executed"; return 1; fi
-  JUDGE_CLEAN="$clean"
+  return "$rc"
+}
+
+# judge_set <scratch> <file>...: 0 when every file compiles and the checker
+# passes every compiled module; 1 with DEFECT and DEFECT_KIND set otherwise. The
+# one judgement for the planted controls and for the caller's files. Nothing
+# lean prints while compiling is read.
+judge_set() {
+  local scratch="$1" f i=0 rc
+  shift
+  DEFECT=""; DEFECT_KIND=""
+  mkdir -p "$scratch"
+  for f in "$@"; do
+    cp -- "$f" "$scratch/GateMod$i.lean"
+    rc=0
+    (cd "$scratch" && "$lean_bin" -R . -o "GateMod$i.olean" "GateMod$i.lean") > "$scratch/GateMod$i.log" 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then DEFECT="lean failed on $f (exit $rc)"; DEFECT_KIND=compile; return 1; fi
+    i=$((i+1))
+  done
+  i=0
+  for f in "$@"; do
+    rc=0
+    run_checker "$scratch" check "GateMod$i" "$allowed_csv" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      DEFECT="the checker refused $f: $(grep -E 'FAIL' "$CHK_LOG" | head -n 2 | tr '\n' ' ')"; DEFECT_KIND=check; return 1
+    fi
+    i=$((i+1))
+  done
   return 0
 }
 
-# ns_prefixes <file>: every fully qualified namespace prefix the file opens, one
-# per line ("A", "A.B", ...). namespace, section and mutual push; end pops. It
-# only proposes names to query: a wrong guess is a query that does not resolve,
-# and lean's own output decides what was reported.
-ns_prefixes() {
-  awk '
-    /^[[:space:]]*namespace[[:space:]]+[A-Za-z_]/ { n++; st[n] = $2; p = ""; for (i = 1; i <= n; i++) if (st[i] != "") p = p (p == "" ? "" : ".") st[i]; print p; next }
-    /^[[:space:]]*(section|mutual)([[:space:]]|$)/ { n++; st[n] = ""; next }
-    /^[[:space:]]*end([[:space:]]|$)/ { if (n > 0) n-- }
-  ' "$1" | LC_ALL=C sort -u
+# resolves <scratch> <index> <name>...: 0 when the checker finds every name among
+# the constants of compiled module GateMod<index>.
+resolves() {
+  local scratch="$1" idx="$2" rc=0
+  shift 2
+  run_checker "$scratch" resolve "GateMod$idx" "$@" || rc=$?
+  return "$rc"
 }
 
 # ---- planted controls ------------------------------------------------------
 ctl="$work/controls"; mkdir -p "$ctl"
 printf 'theorem planted_true : True := trivial\n#print axioms planted_true\n' > "$ctl/True.lean"
-printf 'theorem planted_sorry : False := sorry\n#print axioms planted_sorry\n' > "$ctl/Sorry.lean"
-printf 'theorem planted_classical (p : Prop) : p ∨ ¬p := Classical.em p\n#print axioms planted_classical\n' > "$ctl/Classical.lean"
+printf 'theorem planted_noprint : True := trivial\n' > "$ctl/NoPrint.lean"
+printf 'theorem planted_sorry : False := sorry\n' > "$ctl/Sorry.lean"
+printf 'theorem planted_classical (p : Prop) : p ∨ ¬p := Classical.em p\n' > "$ctl/Classical.lean"
 printf 'axiom planted_cheat : False\ntheorem planted_axiom : False := planted_cheat\n#print axioms planted_axiom\n' > "$ctl/Axiom.lean"
-printf 'theorem planted_ill_typed : False := trivial\n#print axioms planted_ill_typed\n' > "$ctl/IllTyped.lean"
-printf 'theorem planted_unprinted : True := trivial\n' > "$ctl/Unprinted.lean"
+printf 'axiom planted_cheat : False\ntheorem planted_unprinted : False := planted_cheat\ntheorem planted_fine : True := trivial\n#print axioms planted_fine\n' > "$ctl/AxiomUnprinted.lean"
+printf 'theorem planted_ill_typed : False := trivial\n' > "$ctl/IllTyped.lean"
+printf 'axiom planted_cheat : False\ntheorem planted_bad : False := planted_cheat\ntheorem planted_ok : True := trivial\n#eval IO.println "'"'"'planted_ok'"'"' does not depend on any axioms"\n#eval IO.println "'"'"'planted_bad'"'"' does not depend on any axioms"\n' > "$ctl/EvalForge.lean"
+cat > "$ctl/MacroForge.lean" <<'LEAN'
+import Lean
+open Lean Elab Command
+axiom planted_cheat : False
+theorem planted_bad : False := planted_cheat
+elab_rules : command
+  | `(#print axioms $id:ident) => logInfo m!"'{id.getId}' does not depend on any axioms"
+#print axioms planted_bad
+LEAN
+cat > "$ctl/SkipKernel.lean" <<'LEAN'
+import Lean
+open Lean Elab Command
+set_option debug.skipKernelTC true in
+run_cmd liftCoreM (addDecl (.thmDecl { name := `planted_bad, levelParams := [], type := mkConst ``False, value := mkConst ``True.intro }))
+#print axioms planted_bad
+LEAN
 
-echo "::group::planted control: an axiom-free theorem must be accepted"
-if ! judge "$ctl/True.lean" "$work/true.log"; then
-  echo "::endgroup::"; cat "$work/true.log"
-  die2 "the planted AXIOM-FREE theorem was refused ($DEFECT). The toolchain is broken, so a red on the caller's files would be misattributed"
+echo "::group::planted control: axiom-free modules must be accepted"
+for c in True NoPrint; do
+  if ! judge_set "$work/s-$c" "$ctl/$c.lean"; then
+    echo "::endgroup::"
+    die2 "the planted $c control was refused ($DEFECT). The toolchain is broken, so a red on the caller's files would be misattributed"
+  fi
+done
+echo "::endgroup::"
+echo "planted control: an axiom-free theorem, with and without a #print axioms, accepted — the oracle can say yes."
+for c in Sorry:check Classical:check Axiom:check AxiomUnprinted:check IllTyped:compile EvalForge:check MacroForge:check SkipKernel:check; do
+  name="${c%%:*}"; kind="${c##*:}"
+  if judge_set "$work/s-$name" "$ctl/$name.lean"; then
+    die2 "the planted $name control was ACCEPTED. This gate cannot say no; every verdict it gives is VOID"
+  fi
+  [ "$DEFECT_KIND" = "$kind" ] || die2 "the planted $name control was refused at the wrong stage ($DEFECT_KIND, expected $kind): $DEFECT"
+  echo "planted control: $name refused ($DEFECT) — the oracle can say no."
+done
+echo "::group::planted control: the gate's own name resolution"
+resolves "$work/s-True" 0 planted_true \
+  || { echo "::endgroup::"; die2 "the checker could not resolve the planted constant planted_true"; }
+if resolves "$work/s-EvalForge" 0 planted_ok planted_undefined_name; then
+  echo "::endgroup::"; die2 "the checker resolved a name that does not exist while #eval printed lines about other names. Resolution cannot say no; every verdict is VOID"
 fi
 echo "::endgroup::"
-echo "planted control: axiom-free theorem accepted — the oracle can say yes."
-for c in Sorry Classical Axiom IllTyped Unprinted; do
-  if judge "$ctl/$c.lean" "$work/$c.log"; then
-    die2 "the planted $c control was ACCEPTED. This gate cannot say no; every verdict it gives is VOID"
-  fi
-  echo "planted control: $c refused ($DEFECT) — the oracle can say no."
-done
+echo "planted control: a name that exists resolves and one that does not is refused — resolution can say no."
 
 # ---- the caller's files ----------------------------------------------------
 fail=0
+missing=0
 for f in "${listed[@]}"; do
-  printf '  %-60s ' "$f"
-  if [ ! -f "$f" ]; then echo "MISSING"; err "listed file '$f' does not exist"; fail=1; continue; fi
-  log="$work/file-$(printf '%s' "$f" | tr '/' '_').log"
-  if judge "$f" "$log"; then
-    echo "PASS ($JUDGE_CLEAN axiom-free)"
+  [ -f "$f" ] || { err "listed file '$f' does not exist"; fail=1; missing=1; }
+done
+if [ "$missing" -eq 0 ]; then
+  if judge_set "$work/files" "${listed[@]}"; then
+    printf '  %-60s checker: kernel replay ok, no disallowed axiom\n' "${listed[*]}"
   else
-    echo "FAIL"
-    sed 's/^/        /' "$log" | head -n 40
+    { sed 's/^/        /' "$work/files/checker.log" 2>/dev/null | head -n 40; } || true
     err "$DEFECT"
     fail=1
   fi
-done
+fi
 
 # ---- required theorems -----------------------------------------------------
-# The gate asks for each report itself. For every listed file it appends one
-# `#print axioms <candidate>` per required name and per namespace prefix the file
-# opens (the bare name, A.name, A.B.name, ...) to a copy and runs lean. A name is
-# covered when lean printed "'<candidate>' does not depend on any axioms" for one
-# of its candidates. Any "depends on axioms" report fails. Candidates that do not
-# resolve are errors lean prints and we ignore: the plain compile was judged above.
 nreq=0
-remaining=()
-for q in ${required[@]+"${required[@]}"}; do remaining+=("$q"); done
-qn=0
-for f in "${listed[@]}"; do
-  [ "${#remaining[@]}" -gt 0 ] || break
-  [ -f "$f" ] || continue
-  prefixes="$(ns_prefixes "$f")"
-  qfile="$work/RequiredQueries-$qn.lean"; qlog="$work/RequiredQueries-$qn.log"; qn=$((qn+1))
-  { cat -- "$f"; printf '\n'
+if [ "$fail" -eq 0 ] && [ "${#required[@]}" -gt 0 ]; then
+  remaining=("${required[@]}")
+  for idx in "${!listed[@]}"; do
+    [ "${#remaining[@]}" -gt 0 ] || break
+    if resolves "$work/files" "$idx" "${remaining[@]}"; then
+      nreq=$((nreq + ${#remaining[@]})); remaining=(); break
+    fi
+    still=()
     for q in "${remaining[@]}"; do
-      printf '#print axioms %s\n' "$q"
-      while IFS= read -r p; do [ -z "$p" ] || printf '#print axioms %s.%s\n' "$p" "$q"; done <<< "$prefixes"
-    done; } > "$qfile"
-  "$lean_bin" "$qfile" > "$qlog" 2>&1 || true
-  if grep -q 'depends on axioms' "$qlog"; then
-    grep 'depends on axioms' "$qlog" | head -n 3 | sed 's/^/        /'
-    err "a required theorem rests on an axiom (queried in $f: ${remaining[*]})"; fail=1
-    remaining=(); break
-  fi
-  still=()
-  for q in "${remaining[@]}"; do
-    hit=0
-    if grep -Fxq "'$q' does not depend on any axioms" "$qlog"; then hit=1; fi
-    while IFS= read -r p; do
-      [ -z "$p" ] || ! grep -Fxq "'$p.$q' does not depend on any axioms" "$qlog" || hit=1
-    done <<< "$prefixes"
-    if [ "$hit" -eq 1 ]; then nreq=$((${nreq:-0} + 1)); else still+=("$q"); fi
+      if resolves "$work/files" "$idx" "$q"; then nreq=$((nreq + 1)); else still+=("$q"); fi
+    done
+    remaining=()
+    for q in ${still[@]+"${still[@]}"}; do remaining+=("$q"); done
   done
-  remaining=()
-  for q in ${still[@]+"${still[@]}"}; do remaining+=("$q"); done
-done
-for q in ${remaining[@]+"${remaining[@]}"}; do
-  err "no axiom report for required theorem '$q' (it does not resolve in any listed file, or lean printed no report for it)"; fail=1
-done
+  for q in ${remaining[@]+"${remaining[@]}"}; do
+    err "no axiom report for required theorem '$q': it resolves to no constant of a listed module"; fail=1
+  done
+fi
 
 [ "$fail" -eq 0 ] || exit 1
-echo "lean-axioms-check[prove]: ${#listed[@]} file(s) compile; every executed #print axioms is axiom-free; ${nreq:-0} required theorem(s) reported."
+echo "lean-axioms-check[prove]: ${#listed[@]} file(s) compile; the checker replays them through the kernel and finds no disallowed axiom; $nreq required theorem(s) resolved."
 exit 0

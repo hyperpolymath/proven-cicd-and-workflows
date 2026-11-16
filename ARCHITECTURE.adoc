@@ -19,8 +19,8 @@ actions/creusot-check/               Creusot: detect · theatre · prove (plante
 actions/spark-check/                 SPARK: detect · GNATprove (planted controls)
 actions/kanren-check/                miniKanren: detect · run · purity
 actions/agda-check/                  Agda: detect · kernel flags · MANIFEST · reject set (planted controls)
-actions/rocq-check/                  Rocq: detect · coqc · Print Assumptions (planted controls)
-actions/lean-axioms-check/           Lean, non-Lake files: detect · #print axioms (planted controls)
+actions/rocq-check/                  Rocq: detect · coqc · coqchk re-check of the .vo (planted controls)
+actions/lean-axioms-check/           Lean, non-Lake files: detect · .olean · kernel-replay checker (planted controls)
 actions/tla-check/                   TLA+: detect · TLC must-pass and must-refute (planted controls)
 .github/workflows/rust-ci.yml         reusable; jobs run the scripts above
 .github/workflows/creusot-gate.yml    reusable
@@ -91,3 +91,13 @@ of them. It does not reach them at once: each caller pins a full SHA, and the
 weekly track bot moves that pin by PR, whose own audit run is the check. That
 PR is where a regression shows up, one repository at a time. `CODEOWNERS`
 requires review on everything under `actions/`.
+
+== Prover gates: what is judged
+
+The Rocq and Lean gates judge the compiled artefact, out of process, and never
+read what the prover printed while compiling the caller's file. A proof file
+runs code at compile time and can forge any line it prints. coqchk re-checks the
+.vo files; the gate's own checker (embedded in `lean-axioms-check/check.sh`)
+replays the .olean through the kernel and collects axioms module-wide. The
+trusted base is the pinned prover binaries, `importModules` running no
+initializer, and the runner. See the README, _Prover gates_.

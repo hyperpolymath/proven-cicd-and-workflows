@@ -478,7 +478,7 @@ sha256 `+852806…af00d+`
 `+templates/rocq-gate-caller.yml+`
 |`+rocq / Rocq verdict+`
 |Coq 8.18.0: `+coq 8.18.0+dfsg-1build2+`, `+/usr/bin/coqc+` at sha256
-`+f14ab0…3ec+`
+`+f14ab0…3ec+`, `+/usr/bin/coqchk+` at sha256 `+788a7a…c87+`
 
 |`+lean-axioms-gate.yml+` +
 `+templates/lean-axioms-gate-caller.yml+`
@@ -508,23 +508,38 @@ count. Inputs: `+manifest+`, `+proof_dir+`, `+include_dirs+`, `+siblings_script+
 `+siblings_include_glob+`, `+reject_dir+`. Planted controls: a true module
 accepted, a false one refused on its marked line, a postulate refused under
 `+--safe+`.
-* *Rocq.* `+coqc+` compiles each file in `+files+`. Every `+Print Assumptions+`
-that runs must report "Closed under the global context", and at least one must
-run. Reports are counted from coqc's output, not from the file's text, so a
-commented-out print counts for nothing. `+required_theorems+` (empty by default)
-names theorems. The gate appends a `+Print Assumptions <name>.+` query for each
-and coqc must report it closed. A theorem the caller neither names nor prints
-is not examined. Planted
-controls: a closed theorem accepted; an Axiom, an Admitted theorem, an
-ill-typed file and an unprinted file refused.
-* *Lean axioms.* `+lean+` compiles each standalone file in `+files+`. Every
-`+#print axioms+` must report "does not depend on any axioms". A `+sorry+`,
-`+Classical.choice+`, `+propext+`, `+Quot.sound+` or a declared axiom fails.
-Reports are counted from lean's output, not from the file's text. `+required_theorems+`
-works as for Rocq: the gate appends `+#print axioms+` queries for each name, bare
-and under every namespace the file opens. Planted
-controls: an axiom-free theorem accepted; a sorry, a classical proof, a
-declared axiom, an ill-typed file and an unprinted file refused.
+* *Rocq.* `+coqc+` compiles each file in `+files+`. Then `+coqchk -o+`, a separate
+program, re-checks the compiled modules and everything they `+Require+`. Its
+CONTEXT SUMMARY must list no axiom (an `+Admitted+` lemma and a `+Parameter+`
+are axioms), no constant relying on type-in-type, no unsafe (co)fixpoint (guard
+checking was off) and no inductive whose positivity is assumed. The judgement is
+module-wide: a theorem needs no `+Print Assumptions+` to be covered. Nothing the
+file prints is read, so a `+Notation+` that makes `+Check+` print "Closed under
+the global context" over a real Axiom fails. A summary in an unexpected shape is
+exit 2. `+required_theorems+` (empty by default) must each resolve to a constant
+of a listed module, judged by the exit code of a file of the gate's own; a name
+may resolve to an abbreviation. `+allowed_axioms+` (empty by default) lists full
+names as coqchk prints them. Axioms of the whole `+Require+` closure count, used
+or not. Planted controls: closed theorems accepted, with and without a print; an
+Axiom, an Admitted lemma, a Parameter, an ill-typed file, disabled guard,
+universe and positivity checking, and the Notation forge refused.
+* *Lean axioms.* `+lean -o+` compiles each standalone file in `+files+`. Then the
+gate's own checker, run with `+lean --run+` from a fresh directory, loads the
+compiled module with `+importModules+` (no initializer is enabled) and replays
+every constant through the kernel (`+Lean.Environment.replay+`, as lean4checker
+does). A declaration added without the kernel (`+debug.skipKernelTC+`) is
+rejected. It then collects the axioms of every safe constant of the module. Any
+axiom not in `+allowed_axioms+` fails, and `+sorryAx+` is never allowable. The
+gate judges by the checker's exit code. Nothing lean prints while compiling is
+read, so a `+#eval+` printing the clean line, or `+elab_rules+` rewriting
+`+#print axioms+`, fails. `+required_theorems+` must each resolve to a constant
+of a listed module, exactly or as a component suffix. Planted controls: clean
+theorems accepted, with and without a print; a sorry, a classical proof, a
+declared axiom, an axiom used by an unprinted theorem, an ill-typed file, the
+`+#eval+` forge, the `+elab_rules+` forge and a `+skipKernelTC+` declaration
+refused. Note: constructor-injectivity theorems (`+S.mk.injEq+`) that Lean
+generates for structures use `+propext+`, so a module with a structure needs
+`+allowed_axioms: propext+` or a different definition.
 * *TLA+.* TLC runs each config in `+must_pass+`, which must complete with no
 error. Each `+must_refute+` entry (`+<config>.cfg:<Invariant>+`) must be
 refuted by exactly that invariant: TLC exit status 12 (safety violation) and its
@@ -533,6 +548,19 @@ error that only prints that text is not a refutation. A must-refute config that 
 gate, as does one that fails some other way. A model check is tested at its
 declared bounds, not proven. Planted controls: a holding model passes; a
 violating model is refuted by its invariant and by no other name.
+
+_Trust model for Rocq and Lean._ A `+.v` or `+.lean` file runs code when it is
+compiled. It can print any line, rewrite what its own commands print, or add
+declarations the kernel never saw. So these two gates never read what the
+prover printed while compiling the caller's file, and never read the file's
+text for prints. They judge the compiled artefact with a separate program: coqchk
+for Rocq, the gate's own kernel-replay checker for Lean. What remains trusted:
+the pinned prover binaries (coqc, coqchk, lean) and the library Lean ships,
+`+importModules+` running no initializer, the kernel itself, and the runner.
+Code a file runs at compile time can write to the filesystem; that is outside
+this model. Agda and TLA+ already judge exit codes and TLC's own anchored
+output, which a file cannot forge. TLC's `+PrintT+` and `+Assert+` text is quoted
+and escaped, so it cannot start a line with `+Error:+`.
 
 _Lean axioms and proof-runner-check._ They do not overlap. `+proof-runner-check+`
 runs `+lake build+` on a Lake project (a `+lakefile.lean+` or `+lakefile.toml+`)

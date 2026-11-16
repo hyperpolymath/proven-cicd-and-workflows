@@ -8,12 +8,14 @@
 #            exist and no file is listed, or a listed file does not exist
 #   prove    installs Coq from the Ubuntu 24.04 archive, asserts the PINNED
 #            build (coq 8.18.0+dfsg-1build2, /usr/bin/coqc at its SHA-256),
-#            proves the judge can say no (a closed theorem accepted; an Axiom,
-#            an Admitted theorem, an ill-typed file and an unprinted file
-#            refused), then compiles each listed file with coqc and requires
-#            every `Print Assumptions` to report "Closed under the global
-#            context", reports equal to prints, and optionally a named set of
-#            theorems to be printed
+#            proves the judge can say no (closed theorems accepted; an Axiom,
+#            an Admitted lemma, disabled guard, universe or positivity
+#            checking, an ill-typed file and a Notation that forges coqc's
+#            output refused), compiles each listed file with coqc, then
+#            re-checks the modules out of process with coqchk (also pinned) and
+#            reads its CONTEXT SUMMARY: no axiom, no type-in-type, no unsafe
+#            fixpoint, no assumed positivity, module-wide. Nothing the file
+#            prints is evidence. Optionally a named set of theorems must exist
 #   verdict  one context to require; a skipped prove with sources present is
 #            VOID, not green
 #
@@ -42,7 +44,12 @@ on:
         required: false
         default: "verification/proofs/coq/Haruspex.v"
       required_theorems:
-        description: Whitespace-separated theorem names; the gate runs Print Assumptions on each itself and it must report closed; empty for none
+        description: Whitespace-separated theorem names that must each resolve to a constant of a listed module (existence only; axioms are judged module-wide); empty for none
+        type: string
+        required: false
+        default: ""
+      allowed_axioms:
+        description: Whitespace-separated axiom names the module may use (full names as the checker prints them); empty for none. sorryAx is never allowable
         type: string
         required: false
         default: ""
@@ -134,6 +141,7 @@ jobs:
           WORKING_DIRECTORY: ${{ inputs.working_directory }}
           FILES: ${{ inputs.files }}
           REQUIRED_THEOREMS: ${{ inputs.required_theorems }}
+          ALLOWED_AXIOMS: ${{ inputs.allowed_axioms }}
         run: bash .cicd-suite/actions/rocq-check/check.sh | tee -a "$GITHUB_OUTPUT"
 
   prove:
@@ -218,6 +226,7 @@ jobs:
           WORKING_DIRECTORY: ${{ inputs.working_directory }}
           FILES: ${{ inputs.files }}
           REQUIRED_THEOREMS: ${{ inputs.required_theorems }}
+          ALLOWED_AXIOMS: ${{ inputs.allowed_axioms }}
         run: bash .cicd-suite/actions/rocq-check/check.sh
 
   verdict:

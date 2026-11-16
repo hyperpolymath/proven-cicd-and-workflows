@@ -4,14 +4,16 @@ description: >-
   Lean axiom gate for standalone (non-Lake) files: detect counts the .lean
   sources outside any Lake project and refuses a list it cannot read; prove
   asserts the pinned Lean 4.15.0 (bin/lean SHA-256), runs planted controls
-  through the same judgement (an axiom-free theorem accepted; a sorry,
-  Classical.choice, a declared axiom, an ill-typed file and an unprinted file
-  refused), then compiles each listed file with lean and requires every
-  #print axioms to report "does not depend on any axioms", the number of
-  reports to equal the number of prints, and optionally a named set of
-  theorems to be printed. Lake projects belong to proof-runner-check, which
-  builds them and does not judge axioms. The reusable workflow
-  .github/workflows/lean-axioms-gate.yml installs Lean and runs both phases.
+  through the same judgement (a clean theorem accepted; a sorry, Classical.choice,
+  a declared or unprinted-axiom use, an ill-typed file, a #eval or elab_rules
+  forgery of the clean line, and a declaration added without the kernel
+  refused), compiles each listed file to .olean, then runs the gate's own checker
+  out of process: it replays every constant through the kernel and collects the
+  axioms of every safe constant, module-wide. Nothing the file prints is
+  evidence. Required theorems must resolve to a constant of a listed module. Lake
+  projects belong to proof-runner-check, which builds them and does not judge
+  axioms. The reusable workflow .github/workflows/lean-axioms-gate.yml installs
+  Lean and runs both phases.
 inputs:
   phase:
     description: 'detect | prove'
@@ -25,7 +27,11 @@ inputs:
     required: false
     default: 'verification/proofs/lean4/Haruspex.lean'
   required_theorems:
-    description: 'Whitespace-separated theorem names; the gate runs #print axioms on each itself and it must report no axioms; empty for none'
+    description: 'Whitespace-separated theorem names that must each resolve to a constant of a listed module (existence only; axioms are judged module-wide); empty for none'
+    required: false
+    default: ''
+  allowed_axioms:
+    description: 'Whitespace-separated axiom names the module may use (full names as the checker prints them); empty for none. sorryAx is never allowable'
     required: false
     default: ''
 runs:
@@ -38,4 +44,5 @@ runs:
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         FILES: ${{ inputs.files }}
         REQUIRED_THEOREMS: ${{ inputs.required_theorems }}
+        ALLOWED_AXIOMS: ${{ inputs.allowed_axioms }}
       run: bash "$GITHUB_ACTION_PATH/check.sh"
