@@ -103,10 +103,10 @@ jobs:
           set -euo pipefail
           path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
           [ -f "$path" ] || { echo "::error::caller workflow '$path' is not in the checkout, so the gate scripts cannot be pinned. NO CHECK WAS PERFORMED."; exit 2; }
-          shas="$(grep -oE "uses:[[:space:]]*hyperpolymath/cicd-suite/\.github/workflows/${SUITE_WORKFLOW}@[0-9a-f]{40}" "$path" | sed 's/.*@//' | sort -u || true)"
+          shas="$(grep -oE "uses:[[:space:]]*hyperpolymath/proven-cicd-and-workflows/\.github/workflows/${SUITE_WORKFLOW}@[0-9a-f]{40}" "$path" | sed 's/.*@//' | sort -u || true)"
           n="$(printf '%s' "$shas" | grep -c . || true)"
           if [ "$n" -ne 1 ]; then
-            echo "::error::$path pins hyperpolymath/cicd-suite/.github/workflows/${SUITE_WORKFLOW} at $n distinct full SHAs; exactly one is required (a branch or tag ref does not count). NO CHECK WAS PERFORMED."
+            echo "::error::$path pins hyperpolymath/proven-cicd-and-workflows/.github/workflows/${SUITE_WORKFLOW} at $n distinct full SHAs; exactly one is required (a branch or tag ref does not count). NO CHECK WAS PERFORMED."
             exit 2
           fi
           echo "sha=$shas" >> "$GITHUB_OUTPUT"
@@ -114,7 +114,7 @@ jobs:
       - name: Check out cicd-suite at that commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: hyperpolymath/cicd-suite
+          repository: hyperpolymath/proven-cicd-and-workflows
           ref: ${{ steps.suite.outputs.sha }}
           path: .cicd-suite
           persist-credentials: false
@@ -156,10 +156,10 @@ jobs:
           set -euo pipefail
           path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
           [ -f "$path" ] || { echo "::error::caller workflow '$path' is not in the checkout, so the gate scripts cannot be pinned. NO CHECK WAS PERFORMED."; exit 2; }
-          shas="$(grep -oE "uses:[[:space:]]*hyperpolymath/cicd-suite/\.github/workflows/${SUITE_WORKFLOW}@[0-9a-f]{40}" "$path" | sed 's/.*@//' | sort -u || true)"
+          shas="$(grep -oE "uses:[[:space:]]*hyperpolymath/proven-cicd-and-workflows/\.github/workflows/${SUITE_WORKFLOW}@[0-9a-f]{40}" "$path" | sed 's/.*@//' | sort -u || true)"
           n="$(printf '%s' "$shas" | grep -c . || true)"
           if [ "$n" -ne 1 ]; then
-            echo "::error::$path pins hyperpolymath/cicd-suite/.github/workflows/${SUITE_WORKFLOW} at $n distinct full SHAs; exactly one is required (a branch or tag ref does not count). NO CHECK WAS PERFORMED."
+            echo "::error::$path pins hyperpolymath/proven-cicd-and-workflows/.github/workflows/${SUITE_WORKFLOW} at $n distinct full SHAs; exactly one is required (a branch or tag ref does not count). NO CHECK WAS PERFORMED."
             exit 2
           fi
           echo "sha=$shas" >> "$GITHUB_OUTPUT"
@@ -167,7 +167,7 @@ jobs:
       - name: Check out cicd-suite at that commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: hyperpolymath/cicd-suite
+          repository: hyperpolymath/proven-cicd-and-workflows
           ref: ${{ steps.suite.outputs.sha }}
           path: .cicd-suite
           persist-credentials: false
@@ -225,10 +225,10 @@ jobs:
           set -euo pipefail
           path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
           [ -f "$path" ] || { echo "::error::caller workflow '$path' is not in the checkout, so the gate scripts cannot be pinned. NO CHECK WAS PERFORMED."; exit 2; }
-          shas="$(grep -oE "uses:[[:space:]]*hyperpolymath/cicd-suite/\.github/workflows/${SUITE_WORKFLOW}@[0-9a-f]{40}" "$path" | sed 's/.*@//' | sort -u || true)"
+          shas="$(grep -oE "uses:[[:space:]]*hyperpolymath/proven-cicd-and-workflows/\.github/workflows/${SUITE_WORKFLOW}@[0-9a-f]{40}" "$path" | sed 's/.*@//' | sort -u || true)"
           n="$(printf '%s' "$shas" | grep -c . || true)"
           if [ "$n" -ne 1 ]; then
-            echo "::error::$path pins hyperpolymath/cicd-suite/.github/workflows/${SUITE_WORKFLOW} at $n distinct full SHAs; exactly one is required (a branch or tag ref does not count). NO CHECK WAS PERFORMED."
+            echo "::error::$path pins hyperpolymath/proven-cicd-and-workflows/.github/workflows/${SUITE_WORKFLOW} at $n distinct full SHAs; exactly one is required (a branch or tag ref does not count). NO CHECK WAS PERFORMED."
             exit 2
           fi
           echo "sha=$shas" >> "$GITHUB_OUTPUT"
@@ -236,7 +236,7 @@ jobs:
       - name: Check out cicd-suite at that commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: hyperpolymath/cicd-suite
+          repository: hyperpolymath/proven-cicd-and-workflows
           ref: ${{ steps.suite.outputs.sha }}
           path: .cicd-suite
           persist-credentials: false
@@ -333,7 +333,7 @@ jobs:
       - name: Check out the resolved verdict implementation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: hyperpolymath/cicd-suite
+          repository: hyperpolymath/proven-cicd-and-workflows
           ref: ${{ needs.detect.outputs.suite_sha }}
           path: .cicd-suite
           persist-credentials: false
