@@ -165,6 +165,31 @@ expect "run on its 2nd attempt, latest jobs succeed" success 0
 mut_jb 'map(if .name == "Lint" then .conclusion = "failure" else . end)'
 expect "run on its 2nd attempt, a latest job failed" failure 1 "Lint (failure)"
 
+echo "== a run path may carry an @<ref> suffix (GitHub reports .github/workflows/build.yml@main) =="
+reset; expect "bare run path (control)" success 0
+mut_wr 'map(if .id == 11 then .path += "@main" else . end)'
+expect "ci-build.yml@main satisfies the ci-build.yml entry" success 0
+mut_wr 'map(if .id == 11 then .path += "@refs/heads/x" else . end)'
+expect "ci-build.yml@refs/heads/x satisfies the ci-build.yml entry" success 0
+mut_wr 'map(if .id == 11 then .path = ".github/workflows/ci-build2.yml@main" else . end)'
+expect "ci-build2.yml@main does not satisfy ci-build.yml" failure 1 "never reported: ci-build.yml:Build"
+mut_wr 'map(if .id == 11 then .path = ".github/workflows/other.yml@main" else . end)'
+expect "other.yml@main does not satisfy ci-build.yml" failure 1 "never reported: ci-build.yml:Build"
+mut_wr 'map(if .id == 11 then .path = ".github/workflows/ci-build@main.yml" else . end)'
+expect "an @ inside the file stem is not a ref suffix" failure 1 "never reported: ci-build.yml:Build"
+mut_wr 'map(if .id == 11 then .path = null else . end)'
+expect "a run with no path never satisfies an entry" failure 1 "never reported: ci-build.yml:Build"
+mut_wr 'map(if .id == 11 then .path += "@main" else . end)'
+mut_jb 'map(if .name == "Build" then .conclusion = "failure" else . end)'
+expect "a failed job of a ref-suffixed run path is still a failure" failure 1 "Build (failure)"
+PROFILE="$WORK/two.json"
+reset; mut_jb '. + [j(2001;"Build";21;"completed";"success")]'
+mut_wr 'map(if .id == 11 then .path += "@main" else . end) | . + [r(21;"Other build";6;"pull_request";"completed";"2026-11-17T10:00:09Z") | .path += "@refs/heads/x"]'
+expect "two producers, both paths ref-suffixed" success 0
+mut_wr 'map(if .id == 11 then .path += "@main" else . end) | . + [r(21;"Other build";6;"pull_request";"completed";"2026-11-17T10:00:09Z") | .path = ".github/workflows/third.yml@main"]'
+expect "two producers, the second's path is another file with a ref suffix" failure 1 "never reported: other-build.yml:Build"
+PROFILE="$FX/profile.json"
+
 echo "== large real-world inputs =="
 reset; mut_wr 'map(. + {pad: ("x" * 200000)})'
 expect "workflow runs whose members exceed one argv string (200 KB each)" success 0
@@ -219,17 +244,28 @@ cat > "$FAKEGH/bin/gh" <<'FAKEGH_EOF'
 # Listings for the sweep: pulls.json (open PRs), default_branch, default_sha, failpulls, faildefault.
 D=${FAKEGH_DIR:?}
 if [[ " $* " == *" -X POST "* ]]; then
-  state=''; desc=''; psha=''
-  for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; repos/*/statuses/*) psha=${a##*/} ;; esac; done
+  state=''; desc=''; psha=''; ctx=''
+  for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; context=*) ctx=${a#context=} ;; repos/*/statuses/*) psha=${a##*/} ;; esac; done
   [[ ! -f $D/failpost ]] || { echo "gh: HTTP 500 (post)" >&2; exit 1; }
   # a newer evaluator's write that lands just before this one (deterministic pause control)
-  if [[ -f $D/prepost ]]; then cat "$D/prepost" >> "$D/posts.log"; rm -f "$D/prepost"; fi
-  printf '%s\t%s\t%s\n' "$state" "$desc" "$psha" >> "$D/posts.log"; exit 0
+  if [[ -f $D/prepost ]]; then
+    cat "$D/prepost" >> "$D/posts.log"
+    awk -F'\t' -v s="$psha" -v c="$ctx" '{print s "\t" c "\t" $1 "\t" $2}' "$D/prepost" >> "$D/status.log"; rm -f "$D/prepost"
+  fi
+  printf '%s\t%s\t%s\n' "$state" "$desc" "$psha" >> "$D/posts.log"
+  printf '%s\t%s\t%s\t%s\n' "$psha" "$ctx" "$state" "$desc" >> "$D/status.log"; exit 0
 fi
 args="$*"
 jqarg='' ; prev=''
 for a in "$@"; do [[ $prev == --jq ]] && jqarg=$a; prev=$a; done
 case $args in
+  *"/commits/"*"/status?per_page=100"*)
+    # the combined status: the latest status per context of one commit, from status.log
+    [[ ! -f $D/failstatus ]] || { echo "gh: HTTP 500 (status)" >&2; exit 1; }
+    [[ ! -f $D/badstatus ]] || { echo "not json"; exit 0; }
+    echo "$args" >> "$D/status.reads"
+    sha=${args#*/commits/}; sha=${sha%%/*}
+    jq -R -s -c --arg sha "$sha" 'split("\n") | map(select(length > 0) | split("\t") | select(.[0] == $sha)) | reduce .[] as $r ({}; .[$r[1]] = {context: $r[1], state: $r[2], description: $r[3]}) | .[]' "$D/status.log" 2>/dev/null || true ;;
   *"actions/runs?head_sha"*)
     sha=${args#*head_sha=}; sha=${sha%%&*}; echo "$sha" > "$D/cursha"
     R=$D; [[ ! -d $D/by/$sha ]] || R=$D/by/$sha
@@ -259,7 +295,7 @@ SHA=$(printf 'a%.0s' $(seq 40))
 snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
   jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/runs.$1.json"
 }
-pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
+pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
   PUBOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
@@ -313,9 +349,10 @@ chk "settled after the correction: exit 0" "$RC" 0
 echo "-- the post-write verification is bounded at 5 rounds --"
 pubreset; for i in $(seq 1 3 16); do snap "$i" "map(.updated_at = \"g$i\")"; snap $((i+1)) "map(.updated_at = \"g$i\")"; snap $((i+2)) "map(.updated_at = \"v$i\")"; done
 publish
-chk "guard passes but the verify always moves: 5 verdict writes then one pending" "$NPOSTS" 6
-chk "the last write is pending 'runs still changing'" "$(post_n 6 | cut -f1,2)" "$(printf 'pending\truns still changing')"
-chk "no write after round 5 other than that pending; 15 fetches" "$CALLS" 15
+chk "guard passes but the verify always moves: one success POST (the 4 repeats are skipped as unchanged), then one pending" "$NPOSTS" 2
+chk "the 4 repeated identical success writes were skipped, not posted" "$(grep -c 'write skipped' <<<"$PUBOUT")" 4
+chk "the last write is pending 'runs still changing'" "$(post_n 2 | cut -f1,2)" "$(printf 'pending\truns still changing')"
+chk "no write after round 5 other than that pending; still 5 rounds, 15 fetches" "$CALLS" 15
 chk "bounded: exit 0 (pending), never success last" "$RC" 0
 echo "-- the runs never stabilise --"
 pubreset; for i in $(seq 1 14); do snap "$i" "map(.updated_at = \"t$i\")"; done
@@ -352,6 +389,90 @@ pubreset; snap 1 "$DONE"; publish HEAD_SHA=abc
 chk "a head SHA that is not 40 hex: exit 1, no POST" "$RC/$NPOSTS" "1/0"
 pubreset
 
+echo "== context guard: the workflow's own regex, and a context with spaces =="
+CTX_RE_LINES=$(grep -E "^[[:space:]]*ctx_re='" "$WORKFLOW" | sed 's/^[[:space:]]*//')
+chk "ci-gate.yml has two ctx_re guards (validation step and failure fallback)" "$(grep -c . <<<"$CTX_RE_LINES")" 2
+chk "both ctx_re guards are byte-identical" "$(sort -u <<<"$CTX_RE_LINES" | grep -c .)" 1
+CTX_FRAG='${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re'
+chk "both guards apply the 128-character cap and the regex" "$(grep -cF -- "$CTX_FRAG" "$WORKFLOW")" 2
+ctx_ok() { CONTEXT="$1" bash -c "$(head -1 <<<"$CTX_RE_LINES")"$'\n'"[[ $CTX_FRAG ]]" 2> /dev/null; }
+ctx_re_only() { CONTEXT="$1" bash -c "$(head -1 <<<"$CTX_RE_LINES")"$'\n''[[ $CONTEXT =~ $ctx_re ]]' 2> /dev/null; }
+rep() { local o='' i; for ((i = 0; i < $2; i++)); do o+=$1; done; printf '%s' "$o"; }
+for c in 'CI/gate' 'CI / gate' 'CI /gate' 'a' 'estate-gate' 'ci.gate_v2' "$(rep a 128)" "$(rep 'a ' 63)a"; do
+  ctx_ok "$c" && ok "context guard accepts '${c:0:40}' (${#c} chars)" || bad "context guard rejects '${c:0:40}' (${#c} chars)"
+done
+for c in ' CI/gate' 'CI/gate ' 'CI  /gate' $'CI\t/gate' $'CI/\tgate' $'CI/gate\n' $'CI\n/gate' '' ' ' '/gate' 'CI;gate' 'CI/gate$(x)' "$(rep a 129)" "$(rep 'a ' 64)a" "$(rep 'a ' 127)a"; do
+  ctx_ok "$c" && bad "context guard accepts $(printf '%q' "${c:0:40}") (${#c} chars)" || ok "context guard rejects $(printf '%q' "${c:0:40}") (${#c} chars)"
+done
+ctx_re_only "$(rep 'a ' 127)a" && ok "control: the regex alone admits 255 characters, so the length cap is what bounds the context" || bad "control: the regex alone is already bounded; re-check the cap"
+CALLER="$ROOT/.github/workflows/ci-gate-caller.yml"
+CALLER_CTX=$(sed -n 's/^[[:space:]]*context:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$CALLER")
+chk "the dogfood caller sets exactly one with.context" "$(grep -c . <<<"$CALLER_CTX")" 1
+chk "the dogfood caller's context is CI / gate" "$CALLER_CTX" "CI / gate"
+ctx_ok "$CALLER_CTX" && ok "the dogfood caller's context passes the workflow's own guard" || bad "the dogfood caller's context fails the workflow's guard"
+TEMPLATE_CTX=$(sed -n 's/^[[:space:]]*context:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$TEMPLATE")
+ctx_ok "$TEMPLATE_CTX" && ok "the template's context ('$TEMPLATE_CTX') passes the workflow's own guard" || bad "the template's context fails the workflow's guard"
+
+echo "-- CONTEXT='CI / gate' end to end through the publisher --"
+pubreset; snap 1 "$DONE"; publish CONTEXT='CI / gate'
+chk "a spaced context reaches evaluation: success POSTed" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/success/0"
+chk "the success status carries the context exactly 'CI / gate'" "$(cut -f2 "$FAKEGH/status.log" | sort -u)" "CI / gate"
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/failjobs"; publish CONTEXT='CI / gate'
+chk "a failure case posts one failure status" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/failure/1"
+chk "the failure status carries the context exactly 'CI / gate'" "$(cut -f2 "$FAKEGH/status.log")" "CI / gate"
+pubreset; snap 1 "$DONE"; jq 'map(if .name == "Test" then .conclusion = "failure" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"; publish CONTEXT='CI / gate'
+chk "a failing verdict is posted under 'CI / gate' too" "$(post_n 1 | cut -f1)/$(cut -f2 "$FAKEGH/status.log")" "failure/CI / gate"
+
+echo "-- the 1000-statuses-per-SHA-and-context cap: a write that repeats the standing status is skipped --"
+pubreset; snap 1 "$DONE"; publish
+chk "first evaluation: one POST (success)" "$NPOSTS/$(post_n 1 | cut -f1)" "1/success"
+chk "the current status was read through the combined-status endpoint, per_page=100" "$(grep -c "commits/$SHA/status?per_page=100" "$FAKEGH/status.reads")" 1
+rm -f "$WORK/gho"; publish
+chk "unchanged verdict: no second POST" "$NPOSTS" 0
+chk "unchanged verdict: still exit 0, treated as published (published=true)" "$RC/$(grep -c '^published=true$' "$WORK/gho" 2> /dev/null || true)" "0/1"
+chk "unchanged verdict: the skip is logged" "$(grep -c 'write skipped' <<<"$PUBOUT")" 1
+chk "unchanged verdict: the verdict line is still printed" "$(grep -c '^CI/gate = success: all 3 required checks passed$' <<<"$PUBOUT")" 1
+snap 1 "$RERUN"; publish
+chk "changed state (success -> pending): a POST" "$NPOSTS/$(post_n 1 | cut -f1)" "1/pending"
+publish
+chk "and that pending, repeated: no POST" "$NPOSTS" 0
+pubreset; snap 1 "$DONE"; printf '%s\tCI/gate\tsuccess\tall 2 required checks passed\n' "$SHA" > "$FAKEGH/status.log"; publish
+chk "same state, changed description: a POST" "$NPOSTS/$(post_n 1 | cut -f2)" "1/all 3 required checks passed"
+pubreset; snap 1 "$DONE"; printf '%s\tother/ctx\tsuccess\tall 3 required checks passed\n' "$SHA" > "$FAKEGH/status.log"; publish
+chk "a different context with the same state and description: a POST" "$NPOSTS/$(post_n 1 | cut -f1)" "1/success"
+pubreset; snap 1 "$DONE"; printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tCI/gate\tsuccess\tall 3 required checks passed\n' > "$FAKEGH/status.log"; publish
+chk "the same status on another commit: a POST" "$NPOSTS" 1
+pubreset; snap 1 "$DONE"; publish; touch "$FAKEGH/failstatus"; publish
+chk "the status read fails: POST anyway" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/success/0"
+rm -f "$FAKEGH/failstatus"; touch "$FAKEGH/badstatus"; publish
+chk "the status read is malformed (not JSON): POST anyway" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/success/0"
+rm -f "$FAKEGH/badstatus"
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/failjobs"; publish
+chk "die(): the first failure is POSTed" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/failure/1"
+rm -f "$WORK/gho"; publish
+chk "die(): the identical failure repeated is skipped, same exit code 1" "$NPOSTS/$RC" "0/1"
+chk "die(): the skip still counts as published (published=true)" "$(grep -c '^published=true$' "$WORK/gho")" 1
+chk "die(): the skip is logged" "$(grep -c 'write skipped' <<<"$PUBOUT")" 1
+touch "$FAKEGH/failstatus"; publish
+chk "die() with a failing status read: POSTs" "$NPOSTS" 1
+pubreset
+echo "-- the comparison is on the clipped description --"
+pubreset; reset; jq -n '[range(0;60) | {id:(5000+.),name:("A long required check name number \(.)"),status:"completed",conclusion:"failure",run:{id:11,name:"CI build",status:"completed"}}]' > "$FAKEGH/jobs.json"
+cp "$WORK/long.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"; snap 1 "$DONE"; publish
+chk "a failure whose description is clipped to 140 characters: one POST" "$NPOSTS/$(dlen "$(post_n 1 | cut -f2)")" "1/140"
+publish
+chk "the same clipped failure again: skipped" "$NPOSTS" 0
+cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
+pubreset
+
+echo "-- a workflow run record above 128 KiB (one argv string) passes through the publisher --"
+pubreset; snap 1 'map(. + {pad: ("x" * 200000)})'
+[ "$(jq -c '.[0]' "$FAKEGH/runs.1.json" | wc -c)" -gt 200000 ] && ok "control: the run records are over 200 KB each" || bad "control: the run records are not large"
+publish
+chk "200 KB run records: evaluated, one success POST, exit 0" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/success/0"
+chk "200 KB run records: no 'Argument list too long'" "$(grep -c 'too long' <<<"$PUBOUT")" 0
+pubreset
+
 echo "-- the workflow's first step marks a started run pending before any suite file is read --"
 step_line() { grep -n -- "- name: $1" "$WORKFLOW" | head -1 | cut -d: -f1; }
 L_REFUSE=$(step_line 'Refuse anything'); L_PEND=$(step_line 'Mark a started or re-run'); L_READ=$(step_line 'Read the profile')
@@ -377,7 +498,7 @@ set_pulls() { # "<number> <updated_at> <sha n>" ... -> the open pull requests
     | jq -R -s 'split("\n") | map(select(length > 0) | split(" ") | {number: (.[0] | tonumber), updated_at: .[1], head: {sha: .[2]}})' > "$FAKEGH/pulls.json"
 }
 set_default() { echo main > "$FAKEGH/default_branch"; sha_n "$1" > "$FAKEGH/default_sha"; }
-seed() { printf '%s\t%s\t%s\n' "$1" "$3" "$(sha_n "$2")" >> "$FAKEGH/posts.log"; }   # a status already on the commit
+seed() { printf '%s\t%s\t%s\n' "$1" "$3" "$(sha_n "$2")" >> "$FAKEGH/posts.log"; printf '%s\tCI/gate\t%s\t%s\n' "$(sha_n "$2")" "$1" "$3" >> "$FAKEGH/status.log"; }   # a status already on the commit
 sweep() { # [VAR=value ...] -> RC, SOUT; the posts are in posts.log, the summary table in $WORK/gss
   : > "$WORK/gss"; rm -rf "$WORK/sw"
   SOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" REPO=example/repo CONTEXT=CI/gate \
@@ -473,6 +594,22 @@ sweep
 chk "every SHA failing: both failure statuses are written, exit 1" "$(last_for 12) $(last_for 14)/$RC" "failure failure/1"
 pubreset
 
+echo "-- a sweep every 15 minutes must not re-post an unchanged status (1000-status cap), with a spaced context --"
+pubreset; set_pulls "1 $T1 12"; set_default 13
+sweep_sha 12 "$DONE"; sweep_sha 13 "$DONE"
+sweep CONTEXT='CI / gate'
+chk "first sweep, context 'CI / gate': two SHAs, two success POSTs" "$(grep -c . "$FAKEGH/posts.log")/$(cut -f1 "$FAKEGH/posts.log" | sort -u)/$RC" "2/success/0"
+chk "first sweep: every status is under the context 'CI / gate'" "$(cut -f2 "$FAKEGH/status.log" | sort -u)" "CI / gate"
+: > "$FAKEGH/posts.log"
+sweep CONTEXT='CI / gate'
+chk "second sweep, nothing changed: no POST at all" "$(grep -c . "$FAKEGH/posts.log" || true)" 0
+chk "second sweep: both writes skipped and logged" "$(grep -c 'write skipped' <<<"$SOUT")" 2
+chk "second sweep: both SHAs still reported success, exit 0" "$(grep -c '| success | all 3 required checks passed |' "$WORK/gss")/$RC" "2/0"
+sweep_sha 12 "$DONE" "$TESTFAIL"; : > "$FAKEGH/posts.log"
+sweep CONTEXT='CI / gate'
+chk "third sweep, one head now failing: exactly that one is written" "$(cut -f1,3 "$FAKEGH/posts.log" | tr '\t' ' ')/$RC" "failure $(sha_n 12)/1"
+pubreset
+
 echo "== profile validator =="
 v_ok()  { bash "$VALIDATE" "$1" "${2:-example/repo}" >/dev/null 2>&1 && ok "accepted $3" || bad "rejected $3"; }
 v_bad() { bash "$VALIDATE" "$1" "${2:-example/repo}" >/dev/null 2>&1 && bad "accepted $3" || ok "rejected $3"; }
@@ -512,6 +649,7 @@ w "$(p '{"job":"A","workflow":".github/workflows/../../etc/x.yml"}')"; v_bad "$W
 w "$(p '{"job":"A","workflow":".github/workflows/sub/a.yml"}')"; v_bad "$WORK/p.json" example/repo "a nested workflow path"
 w "$(p '{"job":"A","workflow":".github/workflows/a.txt"}')"; v_bad "$WORK/p.json" example/repo "a workflow path that is not yml/yaml"
 w "$(p '{"job":"A","workflow":".github/workflows/a.yml@main"}')"; v_bad "$WORK/p.json" example/repo "a workflow path with a ref suffix"
+w "$(p '{"job":"A","workflow":".github/workflows/a.yaml@refs/heads/x"}')"; v_bad "$WORK/p.json" example/repo "a .yaml workflow path with a ref suffix"
 w "$(p '{"job":"A","workflow":5}')"; v_bad "$WORK/p.json" example/repo "a non-string workflow"
 w "$(p '{"job":"A"}')"; v_bad "$WORK/p.json" example/repo "an entry with a missing member (workflow)"
 w "$(p '{"workflow":".github/workflows/a.yml"}')"; v_bad "$WORK/p.json" example/repo "an entry with a missing member (job)"

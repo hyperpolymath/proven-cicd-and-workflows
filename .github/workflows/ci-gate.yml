@@ -91,7 +91,12 @@ jobs:
           fi
           [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
             || { echo "::error::repository name is not an owner/name coordinate"; exit 1; }
-          [[ "$CONTEXT" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] \
+          # Context: 1 to 128 characters, alphanumeric first, then [A-Za-z0-9._/-] with single interior
+          # spaces (no leading, trailing or repeated space, no tab or newline). The regex alone would
+          # allow 255 characters (each repeat may be a space plus a character), so the length is
+          # checked as well. The failure step below repeats this guard byte for byte.
+          ctx_re='^[A-Za-z0-9]([A-Za-z0-9._/-]| [A-Za-z0-9._/-]){0,127}$'
+          [[ ${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re ]] \
             || { echo "::error::context input is empty or has unexpected characters"; exit 1; }
           [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::timeout_minutes must be a positive integer"; exit 1; }
@@ -165,7 +170,8 @@ jobs:
         if: ${{ failure() && steps.publish.outputs.published != 'true' }}
         run: |
           set -uo pipefail
-          [[ "$EVENT_NAME" == workflow_run && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$CONTEXT" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || exit 0
+          ctx_re='^[A-Za-z0-9]([A-Za-z0-9._/-]| [A-Za-z0-9._/-]){0,127}$'
+          [[ $EVENT_NAME == workflow_run && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && ${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re ]] || exit 0
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
             -f state=failure -f context="$CONTEXT" \
             -f description="ci-gate could not produce a verdict (profile or API error); see the run" \

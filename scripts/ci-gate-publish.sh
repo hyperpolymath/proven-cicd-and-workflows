@@ -30,7 +30,11 @@
 #     success. Every state is guarded and verified, which narrows but does not close the
 #     window for a stale write of any state (statuses are last-writer-wins); see
 #     docs/CI-GATE.adoc, "Residual limit".
-#  f. Fail closed: verdict exit code and state must agree; any API or input error posts a
+#  f. Every write (post(), die() included) first reads the combined status of the commit and skips
+#     a POST that would repeat the standing status for this context (same state, same description
+#     after the clip): GitHub keeps at most 1000 statuses per SHA and context. A failed or malformed
+#     read writes anyway. A head whose verdict keeps changing can still reach the cap.
+#  g. Fail closed: verdict exit code and state must agree; any API or input error posts a
 #     failure status and exits 1; descriptions are at most 140 characters.
 set -uo pipefail
 MAX_ROUNDS=5
@@ -47,9 +51,26 @@ published=0
 
 clip() { jq -rn --arg d "$1" 'if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }  # by characters, whatever the locale
 
+current_matches() { # <state> <clipped description> -> prints "same" only if the combined status holds exactly this for $CONTEXT
+  local r
+  r=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status?per_page=100" --jq '.statuses[]' 2> /dev/null \
+    | jq -rs --arg c "$CONTEXT" --arg s "$1" --arg d "$2" \
+      'if type == "array" and any(.[]; type == "object" and .context == $c and .state == $s and (.description // "") == $d) then "same" else "differs" end' 2> /dev/null) || return 0
+  printf '%s\n' "$r"
+}
+
 post() { # <state> <description> — one commit status; returns gh's exit code
+  # GitHub keeps at most 1000 statuses per SHA and context, after which every write fails (die()
+  # included). A write that would repeat the status already standing for this context (same state,
+  # same description; target_url is not compared) is skipped and counts as published. A failed or
+  # malformed read of the current status falls toward writing.
+  local desc; desc=$(clip "$2")
+  if [[ $(current_matches "$1" "$desc") == same ]]; then
+    echo "ci-gate: status already $1 with this description on $HEAD_SHA; write skipped (1000-status cap)"
+    return 0
+  fi
   gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
-    -f state="$1" -f context="$CONTEXT" -f description="$(clip "$2")" \
+    -f state="$1" -f context="$CONTEXT" -f description="$desc" \
     -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null
 }
 
@@ -96,10 +117,11 @@ for ((round = 1; round <= MAX_ROUNDS; round++)); do
     || die 'workflow runs are malformed'
   : > "$WORK/jobs.ndjson"
   while read -r run; do
-    id=$(jq -r .id <<<"$run")
+    printf '%s\n' "$run" > "$WORK/run.json" || die 'could not write a workflow run record'
+    id=$(jq -r .id "$WORK/run.json")
     [[ $id =~ ^[0-9]+$ ]] || die 'a workflow run has no numeric id'
     { gh api --paginate "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[]' \
-        | jq -c --argjson run "$run" '. + {run: {id: $run.id, name: $run.name, path: $run.path, status: $run.status}}' \
+        | jq -c --slurpfile run "$WORK/run.json" '. + {run: {id: $run[0].id, name: $run[0].name, path: $run[0].path, status: $run[0].status}}' \
         >> "$WORK/jobs.ndjson"; } || die "could not read the jobs of run $id"
   done < <(jq -c '.[]' "$WORK/kept-runs.json")
   jq -s '.' "$WORK/jobs.ndjson" > "$WORK/jobs.json" || die 'jobs are malformed'

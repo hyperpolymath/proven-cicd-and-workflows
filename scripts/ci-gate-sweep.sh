@@ -25,6 +25,8 @@
 #  4. Writes a table (SHA, source, state, description) to the step summary and exits non-zero if
 #     any SHA ended in failure or error, or if a listing could not be read.
 #
+# Because the publisher skips a write that repeats the standing status (the 1000-status cap per SHA
+# and context), an unchanged head costs this sweep no new status.
 # The sweep is itself an evaluator: it writes a commit status, last-writer-wins like every other
 # evaluator (docs/CI-GATE.adoc, "Residual limit"). It does not remove that limit.
 set -uo pipefail

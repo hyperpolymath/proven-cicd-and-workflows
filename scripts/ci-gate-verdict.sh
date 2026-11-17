@@ -24,7 +24,8 @@
 # Rules (A3 law: no pass on absence). Only GitHub Actions jobs are read; third-party checks
 # (SonarCloud, CodeRabbit, ...) are out of scope. Kept runs: the gate's own runs dropped,
 # the newest run per (workflow_id, event). A profile entry is an identity {job, workflow}: it
-# is satisfied only if a kept run with that workflow `path` exists and EVERY job of that exact
+# is satisfied only if a kept run with that workflow `path` exists (an `@<ref>` suffix after the
+# .yml/.yaml file name of a run path is ignored) and EVERY job of that exact
 # name in those runs is completed/success; never one picked by max id. Two producers of one
 # display name are two entries, both required. A missing run or job is reported as
 # `<workflow file>:<job>`.
@@ -82,8 +83,10 @@ result=$(jq -n --slurpfile profile "$profile" --slurpfile jb "$jobs" --slurpfile
   $profile[0].checks as $req |
   $keptw[0] as $kept |
   # An entry is {job, workflow}: its jobs are those named `job` in the kept runs whose path is `workflow`.
+  # GitHub may report a run path as `.github/workflows/build.yml@main`: a `@<ref>` after the .yml/.yaml
+  # file name is stripped from the RUN side only (profile entries are validated to carry none).
   ($req | map(. as $e |
-     ([$kept[] | select(.path == $e.workflow) | .id]) as $ids |
+     ([$kept[] | select(((.path // "") | sub("(?<f>\\.ya?ml)@.*$"; "\(.f)")) == $e.workflow) | .id]) as $ids |
      {name: (($e.workflow | sub("^.*/"; "")) + ":" + $e.job),
       jobs: [$jb[0][] | select(.name == $e.job and (.run.id as $r | $ids | index($r) != null))]} | . + {
      bad: [.jobs[] | select(.status == "completed" and .conclusion != "success") | (.conclusion // "no conclusion")],
