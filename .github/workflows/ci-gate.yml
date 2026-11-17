@@ -50,7 +50,7 @@ on:
         required: false
         default: 180
       wait_minutes:
-        description: pull_request only. How long to keep polling while a required check has not reported or a run is still active, before failing. Ignored on every other event.
+        description: pull_request only. Maximum 50 minutes (reserves 10 minutes of the job timeout). How long to keep polling while a required check has not reported or a run is still active, before failing. Ignored on every other event.
         type: number
         required: false
         default: 30
@@ -114,6 +114,11 @@ jobs:
             || { echo "::error::timeout_minutes must be a positive integer"; exit 1; }
           [[ "$WAIT_MINUTES" =~ ^[0-9]+$ && "$POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::wait_minutes must be a non-negative and poll_seconds a positive integer"; exit 1; }
+          # Reserve ten minutes of the 60-minute job for setup and final publication.
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            [[ ${#WAIT_MINUTES} -le 2 ]] && ((10#$WAIT_MINUTES <= 50)) \
+              || { echo "::error::wait_minutes must be at most 50 to fit the job timeout"; exit 1; }
+          fi
       - name: Mark a started or re-run workflow pending
         env:
           EVENT_ACTION: ${{ github.event.action }}

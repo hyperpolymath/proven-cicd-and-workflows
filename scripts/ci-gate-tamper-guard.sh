@@ -49,7 +49,7 @@ if [[ ${1:-} == --match ]]; then # test hook: print the protected ones among the
   exit $rc
 fi
 
-[[ ${REPO:-} =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail 'REPO is not an owner/name coordinate'
+[[ ${REPO:-} =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ ]] || fail 'REPO is not an owner/name coordinate'
 [[ ${PR_NUMBER:-} =~ ^[1-9][0-9]*$ ]] || fail 'PR_NUMBER is not a pull request number'
 [[ $APPROVAL_LABEL =~ ^[A-Za-z0-9._-]{1,50}$ ]] || fail 'APPROVAL_LABEL is malformed'
 

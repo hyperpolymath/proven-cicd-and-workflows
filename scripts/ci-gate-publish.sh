@@ -55,6 +55,9 @@ done
 mkdir -p "$WORK" || exit 1
 PROFILE="$SUITE/profiles/ci-gate/$REPO.json"
 published=0
+# Invocation-local cache: never reuse data left by a previous publisher or sweep head.
+declare -A completed_keys=() completed_jobs=()
+poll_cost=10
 
 clip() { jq -rn --arg d "$1" 'if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }  # by characters, whatever the locale
 
@@ -118,10 +121,27 @@ write_summary() { # <state> <description> <detail-from-summary-file: 1|0>
 clock_now() { "${CI_GATE_CLOCK:-date}" +%s; }
 deadline=$(( $(clock_now) + WAIT_SECONDS ))
 wait_again() {
-  local remaining delay
+  local remaining delay quota available reset quota_delay
+  remaining=$((deadline - $(clock_now)))
+  ((remaining > 0)) || return 1
+  # Leave quota for the settle guard and final status. Spread estimated poll requests
+  # across the reset window; a depleted budget sleeps to reset (or the deadline).
+  quota=$(gh api rate_limit --jq '[.resources.core.remaining, .resources.core.reset] | @tsv') \
+    || die 'could not read the API quota'
+  IFS=$'\t' read -r available reset <<< "$quota"
+  [[ $available =~ ^[0-9]+$ && $reset =~ ^[0-9]+$ ]] || die 'API quota is malformed'
   remaining=$((deadline - $(clock_now)))
   ((remaining > 0)) || return 1
   delay=$POLL_SECONDS
+  reset=$((reset - $(clock_now)))
+  if ((reset > 0)); then
+    if ((available <= 20)); then
+      quota_delay=$reset
+    else
+      quota_delay=$(((reset * poll_cost + available - 21) / (available - 20)))
+    fi
+    ((delay >= quota_delay)) || delay=$quota_delay
+  fi
   ((delay <= remaining)) || delay=$remaining
   echo "wait: $state ($description); ${remaining}s remaining, polling again in ${delay}s"
   "${CI_GATE_SLEEP:-sleep}" "$delay"
@@ -144,13 +164,30 @@ while :; do
   jq --arg gate "$GATE_NAME" -c -f "$SUITE/profiles/ci-gate/select-runs.jq" "$WORK/workflow-runs.json" > "$WORK/kept-runs.json" \
     || die 'workflow runs are malformed'
   : > "$WORK/jobs.ndjson"
+  poll_cost=10
   while read -r run; do
     printf '%s\n' "$run" > "$WORK/run.json" || die 'could not write a workflow run record'
     id=$(jq -r .id "$WORK/run.json")
     [[ $id =~ ^[0-9]+$ ]] || die 'a workflow run has no numeric id'
-    { gh api --paginate "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[]' \
-        | jq -c --slurpfile run "$WORK/run.json" '. + {run: {id: $run[0].id, name: $run[0].name, path: $run[0].path, status: $run[0].status}}' \
-        >> "$WORK/jobs.ndjson"; } || die "could not read the jobs of run $id"
+    key=$(fingerprint "$WORK/kept-runs.json" | jq -c --argjson id "$id" '.[] | select(.[0] == $id)') \
+      || die 'workflow run fingerprint is malformed'
+    status=$(jq -r .status "$WORK/run.json")
+    if [[ $status == completed && ${completed_keys[$id]:-} == "$key" ]]; then
+      printf '%s\n' "${completed_jobs[$id]}" >> "$WORK/jobs.ndjson"
+    else
+      unset 'completed_keys[$id]' 'completed_jobs[$id]'
+      jobs=$(gh api --paginate "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[]' \
+        | jq -c --slurpfile run "$WORK/run.json" '. + {run: {id: $run[0].id, name: $run[0].name, path: $run[0].path, status: $run[0].status}}') \
+        || die "could not read the jobs of run $id"
+      printf '%s\n' "$jobs" >> "$WORK/jobs.ndjson"
+      if [[ $status == completed ]]; then
+        completed_keys[$id]=$key
+        completed_jobs[$id]=$jobs
+      fi
+      # Include pagination and headroom for another active-run jobs fetch.
+      job_count=$(jq -s length <<< "$jobs")
+      poll_cost=$((poll_cost + 1 + job_count / 100))
+    fi
   done < <(jq -c '.[]' "$WORK/kept-runs.json")
   jq -s '.' "$WORK/jobs.ndjson" > "$WORK/jobs.json" || die 'jobs are malformed'
   rc=0

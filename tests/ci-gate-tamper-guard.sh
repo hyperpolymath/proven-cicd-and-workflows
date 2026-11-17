@@ -117,6 +117,12 @@ reset; files .github/workflows/ci-gate.yml; events "labeled gate-change-approved
 chk "commits API error: exit 1" "$RC" 1
 reset; run PR_NUMBER=abc
 chk "bad PR number: exit 1" "$RC" 1
+reset; files README.adoc; run REPO=example/.github
+chk "dot-prefixed repository: exit 0" "$RC" 0
+for coordinate in /repo owner/ owner/repo/extra owner//repo -owner/repo 'owner/repo?x'; do
+  reset; run REPO="$coordinate"
+  chk "malformed coordinate $coordinate: exit 1" "$RC" 1
+done
 reset; run REPO=notacoordinate
 chk "bad repo: exit 1" "$RC" 1
 reset; run APPROVAL_LABEL='a b;c'
@@ -149,7 +155,7 @@ grep -q 'pull_request_target' <(sed -n '/Refuse anything but/,/Read the guard sc
 code "$WF" | grep -qE '^  check:' && code "$WF" | grep -qE '^    name: check$' && ok "the reusable job is check (the gate profile entry is 'guard / check')" || bad "the reusable job is not named check"
 for f in "$SELF" "$TPL"; do
   b=$(basename "$f")
-  code "$f" | grep -qE '^  pull_request_target:' && code "$f" | grep -qE '^    types: \[opened, reopened, synchronize, labeled, unlabeled\]' && ok "$b: pull_request_target with the five types" || bad "$b: wrong trigger or types"
+  code "$f" | grep -qE '^  pull_request_target:' && code "$f" | grep -qE '^    types: \[opened, reopened, synchronize, edited, labeled, unlabeled\]' && ok "$b: pull_request_target with all six types" || bad "$b: wrong trigger or types"
   code "$f" | grep -qE '^  pull-requests: read' && code "$f" | grep -qE '^  contents: read' && ! code "$f" | grep -qE '^  [a-z-]+: write' && ok "$b: read-only permissions" || bad "$b: permissions not minimal"
   code "$f" | grep -qE '^  guard:' && ok "$b: job id is guard" || bad "$b: job id is not guard"
 done

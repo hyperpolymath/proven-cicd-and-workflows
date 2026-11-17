@@ -262,6 +262,7 @@ args="$*"
 jqarg='' ; prev=''
 for a in "$@"; do [[ $prev == --jq ]] && jqarg=$a; prev=$a; done
 case $args in
+  *"api rate_limit"*) printf '%s\t%s\n' "${QUOTA_REMAINING:-500000}" "${QUOTA_RESET:-3600}" ;;
   *"/commits/"*"/status?per_page=100"*)
     # the combined status: the latest status per context of one commit, from status.log
     [[ ! -f $D/failstatus ]] || { echo "gh: HTTP 500 (status)" >&2; exit 1; }
@@ -280,6 +281,7 @@ case $args in
     R=$D; [[ ! -d $D/by/$(cat "$D/cursha" 2>/dev/null) ]] || R=$D/by/$(cat "$D/cursha")
     [[ ! -f $R/failjobs ]] || { echo "gh: HTTP 500 (jobs)" >&2; exit 1; }
     id=${args#*actions/runs/}; id=${id%%/*}
+    echo "$id" >> "$D/jobs.calls"
     jq -c --argjson id "$id" '.[] | select(.run.id == $id) | del(.run)' "$R/jobs.json" ;;
   *"/pulls?state=open"*)
     [[ ! -f $D/failpulls ]] || { echo "gh: HTTP 500 (pulls)" >&2; exit 1; }
@@ -300,6 +302,7 @@ snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
 }
 pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
+  : > "$FAKEGH/jobs.calls"
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
   echo 0 > "$FAKEGH/clock"; : > "$FAKEGH/sleeps"
   PUBOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
@@ -435,6 +438,16 @@ publish "${WAITENV[@]}"
 chk "failed job: failure, one POST" "$(post_n 1 | cut -f1)/$NPOSTS" "failure/1"
 chk "failed job: no wait" "$(grep -c '^wait: ' <<<"$PUBOUT")" 0
 chk "failed job: exit 1" "$RC" 1
+echo "-- completed jobs cache and quota backoff --"
+pubreset; snap 1 "$RERUN"; publish "${WAITENV[@]}"
+chk "completed run jobs fetched once across polls" "$(grep -c '^11$' "$FAKEGH/jobs.calls")" 1
+chk "active run jobs fetched each poll" "$(grep -c '^12$' "$FAKEGH/jobs.calls")" 4
+pubreset; snap 1 "$NOQ"; snap 2 "$NOQ | map(if .id == 11 then .run_attempt = 2 else . end)"; publish "${WAITENV[@]}"
+chk "attempt change invalidates completed jobs" "$(grep -c '^11$' "$FAKEGH/jobs.calls")" 2
+pubreset; snap 1 "$NOQ"; snap 2 "$NOQ | map(if .id == 11 then .updated_at = \"2026-11-17T11:00:00Z\" else . end)"; publish "${WAITENV[@]}"
+chk "fingerprint change invalidates completed jobs" "$(grep -c '^11$' "$FAKEGH/jobs.calls")" 2
+pubreset; snap 1 "$NOQ"; publish "${WAITENV[@]}" QUOTA_REMAINING=25
+chk "low quota backs off to deadline and fails closed" "$(paste -sd, "$FAKEGH/sleeps")/$RC/$(post_n 1 | cut -f1)" "30/1/failure"
 echo "-- without WAIT_SECONDS (workflow_run, sweep) nothing changes --"
 pubreset; snap 1 "$NOQ"; publish
 chk "no wait: never reported is an immediate failure, one POST" "$(post_n 1 | cut -f1)/$NPOSTS" "failure/1"
@@ -812,6 +825,12 @@ grep -q "fetch scripts/ci-gate-publish.sh" "$WORKFLOW" && ok "ci-gate.yml fetche
 grep -qE '^  gate:' "$WORKFLOW" && ok "job id is gate" || bad "job id is not gate"
 grep -qE 'default: *"?CI/gate"?' "$WORKFLOW" && ok "context input defaults to CI/gate" || bad "context default is not CI/gate"
 grep -qE 'default: *180' "$WORKFLOW" && ok "timeout_minutes defaults to 180" || bad "timeout_minutes default is not 180"
+WAIT_GUARD=$(sed -n '/# Reserve ten minutes/,/      - name: Mark/{ /      - name: Mark/d; s/^          //; p; }' "$WORKFLOW")
+for spec in 0:0 30:0 50:0 51:1 60:1 999999999999999999999999:1; do
+  IFS=: read -r minutes expected <<< "$spec"
+  env EVENT_NAME=pull_request WAIT_MINUTES="$minutes" bash -c "$WAIT_GUARD" >/dev/null 2>&1
+  chk "wait budget $minutes fits timeout iff allowed" "$?" "$expected"
+done
 # Template: workflow_run main path; pull_request only as the permanent gate-pr job (pr_start_ok).
 tpl_code() { grep -vE '^[[:space:]]*#' "$1"; }
 # A pull_request trigger is allowed ONLY together with a same-repo-only gate-pr job
