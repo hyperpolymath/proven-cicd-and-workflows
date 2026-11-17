@@ -16,6 +16,10 @@
 # must be merged past the gate once (owner action). There is no
 # pull_request trigger here, deliberately (tests/ci-gate.sh asserts it).
 #
+# It also fires when a workflow run STARTS (`in_progress`, which GitHub also sends for a rerun):
+# any active run makes the verdict pending, so a rerun replaces a stale success with pending,
+# as a native required check would. `completed` then settles it.
+#
 # The required-check list is NOT in this repository: it lives in
 # proven-cicd-and-workflows/profiles/ci-gate/<owner>/<repo>.json at the pinned
 # SHA below, selected by github.repository. A repository with no profile there
@@ -36,11 +40,10 @@ name: CI gate
 on:
   workflow_run:
     workflows: ["**", "!CI gate"]
-    types: [completed]
+    types: [completed, in_progress]
 
 permissions:
   statuses: write
-  checks: read
   actions: read
   contents: read
 

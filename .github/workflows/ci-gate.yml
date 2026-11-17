@@ -6,13 +6,13 @@
 # It publishes ONE commit status (context = `inputs.context`, default `CI/gate`) on the head
 # commit of the workflow run that triggered it. The verdict is a pure script
 # (scripts/ci-gate-verdict.sh) over the required-check list for the calling repository
-# (profiles/ci-gate/<owner>/<repo>.json), the check runs and the workflow runs of that commit.
+# (profiles/ci-gate/<owner>/<repo>.json) and the Actions jobs (latest attempt) of that commit's workflow runs.
 #
 # WHY A COMMIT STATUS: a job inside a reusable workflow gets the check-run name
 # `<caller job> / <called job>`, which always contains " / " and so can never equal `CI/gate`.
 #
 # WHY workflow_run: GitHub runs a workflow_run workflow from the DEFAULT branch, so a pull
-# request cannot edit the caller, its pin, or its list. Each completed workflow re-evaluates
+# request cannot edit the caller, its pin, or its list. Each started or completed workflow re-evaluates
 # the head commit; there is no polling.
 #
 # SAFETY — this workflow never checks out, builds or executes code from the consumer
@@ -25,7 +25,7 @@
 # FAIL CLOSED: a missing or invalid profile, an empty `job.workflow_sha`, any API error, or
 # any event other than workflow_run is a failure, never a pass or a pending.
 #
-# The caller must grant: statuses: write, checks: read, actions: read, contents: read.
+# The caller must grant: statuses: write, actions: read, contents: read.
 # No `secrets:` — the reusable consumes none.
 
 name: CI gate (reusable)
@@ -58,7 +58,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       statuses: write
-      checks: read
       actions: read
       contents: read
     env:
@@ -108,6 +107,7 @@ jobs:
           fetch scripts/ci-gate-verdict.sh
           fetch scripts/validate-ci-gate-profile.sh
           fetch profiles/ci-gate/validate.jq
+          fetch profiles/ci-gate/select-runs.jq
           mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
           fetch "profiles/ci-gate/$REPO.json" \
             || { echo "::error::no CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
@@ -123,13 +123,23 @@ jobs:
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/ci-gate-work"; mkdir -p "$work"
-          # Every page, so a long run list cannot hide a missing or failed check.
-          gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100&filter=all" --jq '.check_runs[]' | jq -s '.' > "$work/check-runs.json"
+          # Every page of the workflow runs of the head SHA, so a long list cannot hide a run.
           gh api --paginate "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" --jq '.workflow_runs[]' | jq -s '.' > "$work/workflow-runs.json"
+          # Keep the gate's own runs out and the newest run per (workflow_id, event); then read
+          # the jobs of the LATEST attempt of each kept run, tagging each with its run.
+          jq --arg gate "$GATE_NAME" -c -f "$suite/profiles/ci-gate/select-runs.jq" "$work/workflow-runs.json" > "$work/kept-runs.json"
+          : > "$work/jobs.ndjson"
+          while read -r run; do
+            id=$(jq -r .id <<<"$run")
+            [[ "$id" =~ ^[0-9]+$ ]] || { echo "::error::workflow run has no numeric id"; exit 1; }
+            gh api --paginate "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[]' \
+              | jq -c --argjson run "$run" '. + {run: {id: $run.id, name: $run.name, status: $run.status}}' >> "$work/jobs.ndjson"
+          done < <(jq -c '.[]' "$work/kept-runs.json")
+          jq -s '.' "$work/jobs.ndjson" > "$work/jobs.json"
           rc=0
           bash "$suite/scripts/ci-gate-verdict.sh" \
             --profile "$suite/profiles/ci-gate/$REPO.json" --repository "$REPO" \
-            --check-runs "$work/check-runs.json" --workflow-runs "$work/workflow-runs.json" \
+            --jobs "$work/jobs.json" --workflow-runs "$work/workflow-runs.json" \
             --gate-name "$GATE_NAME" --context "$CONTEXT" --now "$(date +%s)" \
             --timeout-minutes "$TIMEOUT_MINUTES" --summary "$work/summary.md" > "$work/verdict.txt" || rc=$?
           state=$(sed -n 's/^state=//p' "$work/verdict.txt")

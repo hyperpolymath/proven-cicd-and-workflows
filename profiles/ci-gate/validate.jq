@@ -7,8 +7,9 @@ def clean_string: type == "string" and (explode | all(. >= 32 and . != 127));
 def exact($fields): type == "object" and (keys == ($fields | sort));
 def repository: clean_string and test("^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$");
 def check_name($forbidden):
-  clean_string and length > 0 and . == (sub("^\\s+"; "") | sub("\\s+$"; "")) and
-  . as $c | (any($forbidden[]; . == $c) | not);
+  clean_string and length > 0 and
+  (. == (sub("^\\s+"; "") | sub("\\s+$"; ""))) and
+  (. as $c | all($forbidden[]; . != $c));
 (length == 1) and
 (.[0] |
   exact(["checks", "repository", "schema_version"]) and

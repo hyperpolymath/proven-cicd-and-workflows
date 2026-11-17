@@ -17,7 +17,7 @@ reachable when this was written; `tests/ci-gate.sh` asserts the serialisation as
 
 == How the lists were derived (read 2026-11-17, unauthenticated GitHub API)
 
-A name is listed only if its check run comes from app `github-actions`, belongs to a real
+A name is listed only if it is an Actions job (a check run from app `github-actions`), belongs to a real
 gate (not advisory, a notification, badge publication, auto-merge, a scheduled or tag-only
 job), and ran, not skipped, and succeeded on a recent pull request head AND on the latest `main`
 commit, and its workflow has no path filter, no `if:` that skips it on a pull request or a push
@@ -44,13 +44,22 @@ Additionally:
 * mathesis: `Agda, Rocq and Lean in the pinned Guix` (`agda-proof-policy.yml`). It was red on the `main` commit read, so the gate will correctly refuse pull requests until `main` is green.
 * rsr-template-repo: `Rust standalone tools and workspace gate`, `scan / rust-secrets`, `mint-gates`.
 
+== Renamed in-workflow aggregators
+
+The suite publisher is the only producer of `CI/gate`. Two in-workflow jobs that were named `CI/gate` are renamed in their consumer repositories, and the renamed jobs are required here:
+
+* resource-algebra: `Proofs verdict` (job `gate` of `.github/workflows/proofs.yml`; resource-algebra#41).
+* mathesis: `Proven suite verdict` (job `ci-gate` of `.github/workflows/proven-tests.yml`; mathesis#101).
+
+Each is a renamed in-workflow aggregator and exists only once the consumer rename pull request merges. Until then the gate reports it as `never reported` and fails closed. It was not read from a live run under that name.
+
 == Excluded, and why
 
-* Third-party apps (SonarCloud, CodeRabbit, GitGuardian, CodeQL and Hypatia from github-advanced-security, semgrep): not `github-actions`, not counted by this gate.
+* Third-party apps (SonarCloud, CodeRabbit, GitGuardian, CodeQL and Hypatia from github-advanced-security, semgrep): not Actions jobs, out of scope for this gate.
 * Skipped on pull requests or on one of the two events: `Validate DEED manifests`, `Validate K9 contracts` (skipped on pull requests), `Publish the lane badges`, `automerge`, `Email on push`, `trigger-boj`, `Forge mirror readiness`, `OSSF Scorecard analysis`, `DEED syntax`, `K9-DEED conformance`, `Fork governance verdict` (pull request only), `Debt ratchet` (pull request only).
 * Advisory or non-gating by their own name or setting: `ℹ️ ADVISORY: Dogfooding compliance summary (non-gating)`, `Dogfooding compliance summary`, `🟡 CHECK: ...` (Groove, eclexiaiser), `Validate eclexiaiser manifest`, `Existing A2ML (advisory)`, `Deed conformance` and `K9 conformance` (`continue-on-error` on an `ADVISORY` switch in rsr-template-repo), `Deposit findings for gitbot-fleet`, `Patch Bridge CVE triage`, `Hypatia neurosymbolic scan`, `panic-attack & pons-asinorum deep recon` (`static-analysis-gate.yml`, which has `continue-on-error` steps and a findings depositor). `Hypatia Neurosymbolic Analysis` was not established as a blocking gate and also appears on scheduled runs of `main`.
 * `Canon lockstep`: a real check, but it fetches the canon's `canon.lock` from `metadatastician/standards` at run time, so it can fail for a reason that no pull request caused. The owner may add it.
 * `SonarQube`: needs repository secrets; fails or skips on forked and bot pull requests.
 * Ambiguous names: `check` (two jobs, `guix-policy.yml` and `security-policy.yml`), `lint`, `docs`, `build`, `publish`, `triage`, `gate`, `deploy`.
 * Conditional: `Workflow Security Linter` / `lint-workflows` (workflow-path filter), `analyze (actions, none)` (CodeQL matrix names can change; code scanning reports the same results), `Analyze (...)` in rsr-template-repo, `Dependabot`, `canary`, `validate` (scheduled or dispatch only).
-* A check run called `CI/gate` was seen on mathesis (both commits). It is never listed: the validator forbids it.
+* A job called `CI/gate` was seen on resource-algebra and mathesis (`main`). It is never listed: the validator forbids it. Its renamed successors are listed above.

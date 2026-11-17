@@ -13,22 +13,24 @@ A3 `estate-gate` replaces it by changing one pin and one context name in each ca
 
 == Design in one paragraph
 
-The caller triggers on `workflow_run` (completed, any workflow but its own). GitHub runs
+The caller triggers on `workflow_run` (`completed` and `in_progress`, any workflow but its own). The `in_progress` event, which GitHub also sends when a run is rerun, makes the gate publish `pending` over a stale `success` while any kept run is active, as a native required check would; `completed` then settles the verdict. GitHub runs
 `workflow_run` workflows from the default branch, so a pull request cannot edit the caller, its
 pin or its list. The reusable reads the profile for `github.repository` from this suite at
-`job.workflow_sha`, lists every check run and workflow run of the head commit (all pages), runs
+`job.workflow_sha`, lists the workflow runs of the head commit (all pages), keeps the newest run per workflow and event without the gate's own, reads the jobs of the latest attempt of each, runs
 the verdict script and posts one commit status. It is a commit status, not a check run,
 because a job in a reusable workflow gets the check-run name `<caller job> / <called job>`,
 which can never equal `CI/gate`.
 
 == Verdict rules
 
-. Only check runs from the `github-actions` app count. Another app's check of the same name neither satisfies nor fails a required name.
-. For each required name, group its runs by `check_suite.id` and take the latest (highest `id`) of each suite. A rerun supersedes the earlier attempt. A name produced by several workflows needs every suite's latest run to pass.
-. A latest run completed with anything but `success` (`failure`, `cancelled`, `timed_out`, `skipped`, `neutral`, `action_required`, `stale`, `startup_failure`, no conclusion) is a *failure*. `skipped` and `neutral` are not passes.
-. All names present and all `completed`/`success` is *success*.
-. Otherwise (a name missing or still running): *pending* if some other workflow run of the commit is queued/in progress/waiting/requested/pending and the oldest run of the commit is younger than `timeout_minutes`; else *failure* (`never reported: ...` or `timed out after N min: ...`).
-. A malformed or wrong-repository profile, an empty list, a list naming the gate's own context, a missing `job.workflow_sha`, any API error, or any event other than `workflow_run` is a failure, never pending and never success.
+Only GitHub Actions jobs are read. Third-party checks (SonarCloud, CodeRabbit, GitGuardian, CodeQL from github-advanced-security) are out of scope: they are neither counted nor able to spoof a name.
+
+. Workflow runs of the head commit are listed (all pages). The gate's own runs (by workflow name) are dropped; per (`workflow_id`, `event`) only the newest run (highest `id`) is kept. For each kept run its jobs are read with `filter=latest` (all pages), so an earlier attempt of a rerun is discarded.
+. A required name is satisfied only if *every* job with that exact `name` across the kept runs is `completed` with conclusion `success`. Two jobs that share a display name are both required; none is chosen by highest `id`.
+. Any required-name job completed with another conclusion (`failure`, `cancelled`, `timed_out`, `skipped`, `neutral`, `action_required`, `stale`, none) is a *failure* at once. `skipped` and `neutral` are not passes.
+. Else, if any kept run is still `queued`, `in_progress`, `waiting`, `requested` or `pending`, the verdict is *pending* (`waiting for N workflow runs: ...`), even when every required name already has a passing job, because a later producer of the same name may still fail. Once the oldest kept run is older than `timeout_minutes` it is a *failure* (`timed out after N min: ...`).
+. Else (nothing is active): a required name with no job is a *failure* (`never reported: ...`), a required name whose job never completed is a failure, and otherwise the verdict is *success*.
+. A malformed or wrong-repository profile, an empty list, a list naming the gate's own context, a missing `job.workflow_sha`, any API error, malformed input, or any event other than `workflow_run` is a failure, never pending and never success.
 
 The status description is at most 140 characters (truncated with an ellipsis); the step summary
 carries the full table. `scripts/ci-gate-verdict.sh` exits 0 for success, 3 for pending and 1
@@ -41,10 +43,10 @@ for failure and for every error.
 |Field |Statement
 |Inputs |`context` (default `CI/gate`; the one swappable name; `[A-Za-z0-9][A-Za-z0-9._/-]{0,127}`), `timeout_minutes` (default 180). The repository is never an input: the profile is selected by `github.repository`. No `secrets:`.
 |Side effects |One `POST /repos/{repo}/statuses/{head_sha}` per run with the context, state, description (at most 140 characters) and a `target_url` to the gate run; a step summary. Nothing else is written. Pending is a normal wait for the next `workflow_run`.
-|Permissions |Granted by the caller: `statuses: write`, `checks: read`, `actions: read`, `contents: read`. The reusable asks for exactly these and no more.
-|Subjects |The head commit of the completed workflow run, in the repository the caller lives in. Required checks are names in the suite's profile for that repository. Third-party checks (SonarCloud, CodeRabbit, GitGuardian, CodeQL from github-advanced-security) are not counted.
+|Permissions |Granted by the caller: `statuses: write`, `actions: read`, `contents: read`. The reusable asks for exactly these and no more.
+|Subjects |The head commit of the completed workflow run, in the repository the caller lives in. Required checks are Actions job names in the suite's profile for that repository. Third-party checks are out of scope.
 |Failure and refusal |Any event other than `workflow_run`: refused, red job, no status. A missing, empty, malformed, wrong-repository or self-naming profile, an empty `job.workflow_repository` or `job.workflow_sha`, or any API error: failure; the job is red and a final step posts a failure status if none was published. A failed verdict also exits the job non-zero. No code from the consumer or a pull request is checked out or executed, and no `${{ }}` reaches a `run:` script (values travel through `env:`).
-|Controls |`tests/ci-gate.sh`: positive control (all present and successful); negatives with exact states for a missing check (headline: no other run active), missing while another workflow runs (pending) and past the timeout (failure), failed/cancelled/skipped/neutral/timed_out/action_required/stale/startup_failure checks, a duplicated name with one failing suite, reruns both ways, a same-named check from another app, malformed inputs, description length; the validator rejects malformed JSON, wrong repository, empty list, the gate's own contexts, duplicate members and unclean names; the shipped profiles validate and are JCS-serialised; static guards (no `${{` in any `run:`, no `uses:`, `workflow_call` only, template has no `pull_request` trigger).
+|Controls |`tests/ci-gate.sh`: positive control (all present and successful); negatives with exact states for a required name with no job (headline: nothing active), an unrelated run still active (pending) and past the timeout (failure), two producers of one name with one still queued (pending), two same-named jobs in one run with one failing, superseded runs, a second attempt, the gate's own run ignored, failed/cancelled/skipped/neutral/timed_out/action_required/stale/startup_failure jobs, malformed inputs, description length; the validator rejects malformed JSON, wrong repository, empty list, the gate's own contexts, duplicate members and unclean names; the shipped profiles validate and are JCS-serialised; static guards (no `${{` in any `run:`, no `uses:`, `workflow_call` only, template has no `pull_request` trigger).
 |Receipt |The commit status itself (context, state, description, `target_url` to the run), and the step summary of the run: the verdict, the commit, the profile and the suite commit it was read at, and one row per required check. Offline control output is in the self-test job log.
 |===
 
