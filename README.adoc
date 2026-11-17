@@ -534,8 +534,8 @@ functor body refused.
 * *Lean axioms.* `+lean -o+` compiles each standalone file in `+files+`. Then the
 gate's own checker, run with `+lean --run+` from a fresh directory, loads the
 compiled module with `+importModules+` (no initializer is enabled) and replays
-every constant through the kernel (`+Lean.Environment.replay+`, as lean4checker
-does). A declaration added without the kernel (`+debug.skipKernelTC+`) is
+every safe constant through the kernel (`+Lean.Environment.replay+`, as lean4checker
+does; unsafe and partial constants are skipped, and no safe constant can use them). A declaration added without the kernel (`+debug.skipKernelTC+`) is
 rejected. It then collects the axioms of every AUTHORED safe constant of the module. A
 constant is not authored only when the checker has verified that it is the lemma
 Lean generates: `+<ctor>.injEq+` for a constructor of an inductive type declared in
