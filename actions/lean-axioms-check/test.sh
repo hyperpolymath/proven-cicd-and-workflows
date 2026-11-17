@@ -55,9 +55,19 @@ run_phase() { # run_phase <phase> [VAR=value ...]
   local phase="$1"; shift
   ( cd "$FIX" && env LEAN_GATE_PHASE="$phase" FILES=proofs/Ok.lean "$@" "$BASH_BIN" --noprofile --norc -e -o pipefail "$checker" ) > "$OUT" 2>&1
   RC=$?
+  PHASE="$phase"
 }
+# A refusal must be the caller's own: in the prove phase the planted controls print
+# their own refusal lines, so text on a failing run counts only on a ::error:: line,
+# which only the caller's verdict (or a die2) prints.
 expect() { # expect <name> <want-rc> <text>
-  if [ "$RC" -eq "$2" ] && grep -qF -- "$3" "$OUT"; then ok "$1 (exit $RC)"; else bad "$1: want exit $2 and \"$3\", got exit $RC"; sed 's/^/        /' "$OUT" | tail -n 12; fi
+  local found=0
+  if [ "$2" -ne 0 ] && [ "${PHASE:-}" = prove ]; then
+    grep '^::error::' "$OUT" | grep -qF -- "$3" && found=1
+  else
+    grep -qF -- "$3" "$OUT" && found=1
+  fi
+  if [ "$RC" -eq "$2" ] && [ "$found" -eq 1 ]; then ok "$1 (exit $RC)"; else bad "$1: want exit $2 and \"$3\", got exit $RC"; sed 's/^/        /' "$OUT" | tail -n 12; fi
 }
 write() { printf '%s\n' "${@:2}" > "$FIX/proofs/$1"; } # write <file> <line>...
 
@@ -271,6 +281,7 @@ mutant() { # mutant <label> <old-text> <new-text> <want-text>: literal replace
   if cmp -s "$checker" "$WORK/mutant.sh"; then bad "$1: the mutation did not apply"; return; fi
   ( cd "$FIX" && env LEAN_GATE_PHASE=prove FILES=proofs/Ok.lean "$BASH_BIN" --noprofile --norc -e -o pipefail "$WORK/mutant.sh" ) > "$OUT" 2>&1
   RC=$?
+  PHASE=prove
   expect "$1" 2 "$4"
 }
 mutant "a gate that ignores its checker's exit code" 'run_checker "$scratch" check "GateMod$i" "$JUDGE_ALLOWED" || rc=$?' 'run_checker "$scratch" check "GateMod$i" "$allowed_csv" || true' 'was ACCEPTED'

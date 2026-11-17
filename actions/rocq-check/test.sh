@@ -48,9 +48,25 @@ run_phase() { # run_phase <phase> [VAR=value ...]
   local phase="$1"; shift
   ( cd "$FIX" && env ROCQ_GATE_PHASE="$phase" FILES=proofs/Ok.v "$@" "$BASH_BIN" --noprofile --norc -e -o pipefail "$checker" ) > "$OUT" 2>&1
   RC=$?
+  PHASE="$phase"
 }
+# A refusal must be the caller's own: in the prove phase the planted controls print
+# their own refusal lines, so text on a failing run counts only on a ::error:: line,
+# which only the caller's verdict (or a die2) prints.
 expect() { # expect <name> <want-rc> <text>
-  if [ "$RC" -eq "$2" ] && grep -qF -- "$3" "$OUT"; then ok "$1 (exit $RC)"; else bad "$1: want exit $2 and \"$3\", got exit $RC"; sed 's/^/        /' "$OUT" | tail -n 12; fi
+  local found=0
+  if [ "$2" -ne 0 ] && [ "${PHASE:-}" = prove ]; then
+    grep '^::error::' "$OUT" | grep -qF -- "$3" && found=1
+  else
+    grep -qF -- "$3" "$OUT" && found=1
+  fi
+  if [ "$RC" -eq "$2" ] && [ "$found" -eq 1 ]; then ok "$1 (exit $RC)"; else bad "$1: want exit $2 and \"$3\", got exit $RC"; sed 's/^/        /' "$OUT" | tail -n 12; fi
+}
+# expect_refusal <name> <file> <text>: the refusal of THIS caller file, on its own
+# ::error:: line, as well as exit 1 (the planted Sealed control prints the same
+# words for its own file).
+expect_refusal() {
+  if [ "$RC" -eq 1 ] && grep -F "::error::rocq-check[prove]: $2: " "$OUT" | grep -qF -- "$3"; then ok "$1 (exit $RC)"; else bad "$1: want exit 1 and a refusal line for $2 with \"$3\", got exit $RC"; sed 's/^/        /' "$OUT" | tail -n 12; fi
 }
 write() { printf '%s\n' "${@:2}" > "$FIX/proofs/$1"; } # write <file> <line>...
 
@@ -175,38 +191,38 @@ fresh_fixture
 write Ok.v 'Module Type S.' '  Parameter bad : False.' 'End S.' 'Module M : S.' '  Unset Guard Checking.' \
   '  Fixpoint loop (n : nat) : False := loop n.' '  Set Guard Checking.' '  Lemma bad : False. Proof. exact (loop 0). Qed.' 'End M.'
 run_phase prove REQUIRED_THEOREMS=M.bad
-expect "fixture sealed-module: an unsafe fixpoint hidden by Module M : S" 1 'module type ascription'
+expect_refusal "fixture sealed-module: an unsafe fixpoint hidden by Module M : S" proofs/Ok.v 'module type ascription'
 
 fresh_fixture
 write Ok.v 'Module Type E. End E.' 'Module F (X : E).' '  Axiom cheat : False.' 'End F.' 'Lemma ok : True. Proof. exact I. Qed.'
 run_phase prove
-expect "fixture functor-body: an axiom inside an uninstantiated functor" 1 'a functor'
+expect_refusal "fixture functor-body: an axiom inside an uninstantiated functor" proofs/Ok.v 'a functor'
 
 fresh_fixture
 write Ok.v 'Module Type E. End E.' 'Module F' '  (X : E).' '  Axiom cheat : False.' 'End F.'
 run_phase prove
-expect "a functor header broken over two lines is still seen" 1 'a functor'
+expect_refusal "a functor header broken over two lines is still seen" proofs/Ok.v 'a functor'
 
 fresh_fixture
 write Ok.v 'Module Type S. Parameter p : nat. End S.' 'Module M <: S. Definition p := 1. End M.'
 run_phase prove
-expect "Module M <: S is refused too" 1 'module type ascription'
+expect_refusal "Module M <: S is refused too" proofs/Ok.v 'module type ascription'
 
 fresh_fixture
 write Other.v 'Definition other : nat := 1.'
 write Ok.v 'Load "Other".'
 run_phase prove FILES="proofs/Other.v proofs/Ok.v"
-expect "Load runs commands the scan cannot see" 1 'Load, Add LoadPath'
+expect_refusal "Load runs commands the scan cannot see" proofs/Ok.v 'Load, Add LoadPath'
 
 fresh_fixture
 write Ok.v 'Unset Guard Checking.' 'Set Guard Checking.' 'Lemma ok : True. Proof. exact I. Qed.'
 run_phase prove
-expect "Unset Guard Checking is refused even when nothing used it" 1 'Unset Guard/Positivity/Universe'
+expect_refusal "Unset Guard Checking is refused even when nothing used it" proofs/Ok.v 'Unset Guard/Positivity/Universe'
 
 fresh_fixture
 write Ok.v '#[bypass_check(positivity)] Inductive pb : Type := mk : (pb -> False) -> pb.'
 run_phase prove
-expect "#[bypass_check] is refused (coqchk sees the flag)" 1 'unsafe (co)fixpoints'
+expect "#[bypass_check] is refused (coqchk sees the flag)" 1 'positivity is assumed'
 
 
 echo "== the module scan is an allow-list: comments and Unicode names cannot slip past it =="
@@ -214,42 +230,42 @@ fresh_fixture
 write Ok.v 'Module Type S.' '  Parameter bad : False.' 'End S.' 'Module (* hidden *) M : S.' '  Unset (* x *) Guard Checking.' \
   '  Fixpoint loop (n : nat) : False := loop n.' '  Set Guard Checking.' '  Lemma bad : False. Proof. exact (loop 0). Qed.' 'End M.'
 run_phase prove
-expect "fixture comment-sealed: Module (* hidden *) M : S with Unset (* x *) Guard Checking" 1 'Refused fail-closed'
+expect_refusal "fixture comment-sealed: Module (* hidden *) M : S with Unset (* x *) Guard Checking" proofs/Ok.v 'Refused fail-closed'
 
 fresh_fixture
 write Ok.v 'Module Type E. End E.' 'Module (* c *) F (X : E).' '  Axiom cheat : False.' 'End F.' 'Lemma ok : True. Proof. exact I. Qed.'
 run_phase prove
-expect "fixture comment-functor: Module (* c *) F (X : E) with an axiom in the body" 1 'Refused fail-closed'
+expect_refusal "fixture comment-functor: Module (* c *) F (X : E) with an axiom in the body" proofs/Ok.v 'Refused fail-closed'
 
 fresh_fixture
 write Ok.v 'Module Type E. End E.' 'Module ℱ (X : E).' '  Axiom cheat : False.' 'End ℱ.' 'Lemma ok : True. Proof. exact I. Qed.'
 run_phase prove
-expect "fixture unicode-functor: a functor with a non-ASCII name" 1 'Refused fail-closed'
+expect_refusal "fixture unicode-functor: a functor with a non-ASCII name" proofs/Ok.v 'Refused fail-closed'
 
 fresh_fixture
 write Ok.v 'Module ℳ.' '  Definition d := 1.' 'End ℳ.'
 run_phase prove
-expect "a plain module with a non-ASCII name is refused (the allow-list is ASCII)" 1 'Refused fail-closed'
+expect_refusal "a plain module with a non-ASCII name is refused (the allow-list is ASCII)" proofs/Ok.v 'Refused fail-closed'
 
 fresh_fixture
 write Ok.v 'Unset (* x *) Guard Checking.' 'Set Guard Checking.' 'Lemma ok : True. Proof. exact I. Qed.'
 run_phase prove
-expect "fixture comment-unset: a comment between the words of Unset Guard Checking" 1 'Refused fail-closed'
+expect_refusal "fixture comment-unset: a comment between the words of Unset Guard Checking" proofs/Ok.v 'Unset Guard/Positivity/Universe'
 
 fresh_fixture
 write Ok.v 'Module Type E. End E.' 'Module Type F (X : E). End F.'
 run_phase prove
-expect "a functor signature is refused" 1 'Refused fail-closed'
+expect_refusal "a functor signature is refused" proofs/Ok.v 'Refused fail-closed'
 
 fresh_fixture
 write Ok.v 'Declare Scope my_scope.'
 run_phase prove
-expect "Declare (any form) is refused" 1 'Load, Add LoadPath'
+expect_refusal "Declare (any form) is refused" proofs/Ok.v 'Load, Add LoadPath'
 
 fresh_fixture
 write Ok.v 'Definition Module_x : nat := 1.'
 run_phase prove
-expect "any other word containing Module is refused (the scan is textual)" 1 'Refused fail-closed'
+expect_refusal "any other word containing Module is refused (the scan is textual)" proofs/Ok.v 'Refused fail-closed'
 
 fresh_fixture
 write Ok.v 'Module Type T. End T.' 'Module M. Definition d := 1. End M.' 'Module Import N. Definition e := 2. End N.' 'Module Type U.' ' Parameter p : nat.' 'End U.'
@@ -259,7 +275,7 @@ expect "plain modules, Import modules and module types pass" 0 '2 required theor
 fresh_fixture
 write Ok.v 'Module Type E. End E.' 'Module (* gap *) F (X : E).' '  Axiom cheat : False.' 'End F.' 'Lemma ok : True. Proof. exact I. Qed.'
 run_phase prove
-expect "fixture comment-gap: CodeRabbit's exact comment-separated functor header" 1 'Refused fail-closed'
+expect_refusal "fixture comment-gap: CodeRabbit's exact comment-separated functor header" proofs/Ok.v 'Refused fail-closed'
 
 echo "== controls are judged with no allowance, whatever the caller allows =="
 fresh_fixture
@@ -318,6 +334,7 @@ mutant() { # mutant <label> <old-text> <new-text> <want-text>: literal replace
   if cmp -s "$checker" "$WORK/mutant.sh"; then bad "$1: the mutation did not apply"; return; fi
   ( cd "$FIX" && env ROCQ_GATE_PHASE=prove FILES=proofs/Ok.v "$BASH_BIN" --noprofile --norc -e -o pipefail "$WORK/mutant.sh" ) > "$OUT" 2>&1
   RC=$?
+  PHASE=prove
   expect "$1" 2 "$4"
 }
 mutant "a judge that ignores axioms" 'axioms) if is_allowed "$name"; then continue; fi; axioms="$axioms $name" ;;' 'axioms) : ;;' 'was ACCEPTED'
