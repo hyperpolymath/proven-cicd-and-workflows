@@ -48,7 +48,9 @@ echo "Installing language-gate callers (cicd-suite ${sha:0:7}) into $repos/* ...
 install_caller() { # <repo> <template> <workflow name>
   local repo="$1" tpl="$2" name="$3"
   mkdir -p "$repo/.github/workflows"
-  sed "s/__CICD_SUITE_SHA__/$sha/" "$suite/templates/$tpl" > "$repo/.github/workflows/$name"
+  # The template comes from the pinned revision, not the worktree: a worktree
+  # that is behind, ahead or dirty must not change what is installed at $sha.
+  git -C "$suite" show "$sha:templates/$tpl" | sed "s/__CICD_SUITE_SHA__/$sha/" > "$repo/.github/workflows/$name"
   "$suite/scripts/deonboard-workflow.sh" "$repo" ".github/workflows/$name"
   echo "   wrote .github/workflows/$name"
 }
@@ -64,15 +66,32 @@ has_kanren() { grep -rlE --include='*.scm' --include='*.ss' --include='*.sls' --
 # Trees the prover gates never look in: fetched dependencies and build output.
 prune_find() { find "$1" \( -name .git -o -name _build -o -name build -o -name target -o -name node_modules -o -name .cicd-suite -o -name .lake \) -prune -o "${@:2}"; }
 has_agda() { [ -n "$(prune_find "$1" -type f -name '*.agda' -print | head -n 1)" ]; }
-# Coq-specific sentences only, so prose in a Verilog comment ("Definition of the
-# interface") does not match; and a file with `endmodule` is Verilog, whatever
-# its comments say.
-coq_marker='^[[:space:]]*(Require[[:space:]]+(Import|Export)[[:space:]]|Require[[:space:]]+[A-Za-z_][A-Za-z0-9_'"'"']*(\.[A-Za-z0-9_'"'"']+)+\.[[:space:]]*$|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require[[:space:]]|(Definition|Lemma|Theorem|Fixpoint|Inductive)[[:space:]]+[A-Za-z_][A-Za-z0-9_'"'"']*[[:space:]]*(:|:=|\(|\{|\[)|Print[[:space:]]+Assumptions[[:space:]]+[A-Za-z_][A-Za-z0-9_.'"'"']*[[:space:]]*\.|Qed\.[[:space:]]*$|Proof\.)'
+# Detection must fail LOUD, not silent. A false positive installs a gate that
+# then fails visibly ("listed file missing"); a false negative leaves Rocq
+# unchecked with no signal. So Coq evidence wins over the Verilog exclusion:
+#   - a .v file is Coq when any line starts a Coq sentence (the vernacular that
+#     opens one, with the shape of a real sentence so prose rarely matches);
+#   - it is Verilog only when it has NO Coq marker and a Verilog marker (a
+#     line-start `module <ident>` header, or a word-boundary `endmodule`).
+# A Verilog file with a Coq-looking line (even `Qed.` inside a comment) is
+# therefore detected: the known false positive, in the loud direction.
+coq_name="[A-Za-z_][A-Za-z0-9_']*"
+coq_marker="^[[:space:]]*("
+coq_marker+="(Axiom|Axioms|Conjecture|Hypothesis|Hypotheses|Parameter|Parameters|Variable|Variables|Inductive|CoInductive|Record|Structure|Class|Instance|Fixpoint|CoFixpoint|Definition|Lemma|Theorem|Corollary|Proposition|Fact|Remark|Example)[[:space:]]+${coq_name}[[:space:]]*(:|:=|\(|\{|\[)"
+coq_marker+="|(Variable|Variables|Parameter|Parameters|Axiom|Instance|Class)[[:space:]]*(\(|:)"
+coq_marker+="|Notation[[:space:]]+(\"|${coq_name})"
+coq_marker+="|(Module|Section)[[:space:]]+(Type[[:space:]]+)?${coq_name}[[:space:]]*\.([[:space:]]|\$)"
+coq_marker+="|Require[[:space:]]+(Import|Export)[[:space:]]|Require[[:space:]]+${coq_name}(\.[A-Za-z0-9_']+)+\.[[:space:]]*\$"
+coq_marker+="|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require[[:space:]]"
+coq_marker+="|Print[[:space:]]+Assumptions[[:space:]]+[A-Za-z_][A-Za-z0-9_.']*[[:space:]]*\."
+coq_marker+="|(Qed|Admitted|Defined|Proof)\.[[:space:]]*\$"
+coq_marker+=")"
 has_rocq() {
   local f
   while IFS= read -r -d '' f; do
-    grep -qE '(^|[^A-Za-z0-9_])endmodule([^A-Za-z0-9_]|$)' "$f" 2>/dev/null && continue
     grep -qE "$coq_marker" "$f" 2>/dev/null && return 0
+    # No Coq marker: Verilog (a `module <ident>` header or `endmodule`) or some
+    # other .v file; neither is claimed for Rocq.
   done < <(prune_find "$1" -type f -name '*.v' -print0)
   return 1
 }

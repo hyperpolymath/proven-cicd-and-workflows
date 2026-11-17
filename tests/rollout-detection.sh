@@ -20,6 +20,11 @@ printf 'From Coq Require Import List.\nLemma foo : True. Proof. exact I. Qed.\n'
 printf 'Require Import Setoid.\n' > "$T/coqqual/q.v"
 printf '// Definition of the interface\n// Theorem 1 states the bound.\n/* Require the clock */\nmodule top(input a);\nendmodule\n' > "$T/ver1/t.v"
 printf 'Definition of the interface.\nLemma named below holds.\nTheorem one.\nmodule x();\nendmodule\n' > "$T/ver2/t.v"
+mkdir -p "$T"/{ver4,axiomonly,coqendmodule,vernac}
+printf 'module top(input a, output b);\n  assign b = a;\nendmodule\n' > "$T/ver4/t.v"
+printf 'Axiom contradiction : False.\n' > "$T/axiomonly/a.v"
+printf 'Definition endmodule : True := I.\n' > "$T/coqendmodule/c.v"
+printf 'Section S.\nVariable (n : nat).\nEnd S.\n' > "$T/vernac/v1.v"
 mkdir -p "$T/implicit"; printf 'Definition id {A : Type} (x : A) : A := x.\n' > "$T/implicit/i.v"
 mkdir -p "$T/ver3"; printf '/*\nQed.\n*/\nmodule top(input a); endmodule\n' > "$T/ver3/t.v"
 echo 'module M where' > "$T/agda/M.agda"
@@ -37,7 +42,31 @@ want "From ... Require and a Lemma with Qed" has_rocq coqfrom yes
 want "a lone Require Import" has_rocq coqqual yes
 want "Verilog with prose comments is not Coq" has_rocq ver1 no
 want "Verilog with Coq-looking prose and endmodule is not Coq" has_rocq ver2 no
-want "Verilog whose endmodule is mid-line after a comment holding Coq words is not Coq" has_rocq ver3 no
+# Known false positive, in the loud direction: Coq evidence wins over the Verilog
+# exclusion, so a Verilog file with a `Qed.` line (here inside a comment) is
+# detected, and the installed gate then fails visibly. A false negative would
+# leave Rocq unchecked with no signal.
+want "Verilog with a Qed. line in a comment IS detected (known false positive, loud)" has_rocq ver3 yes
+want "plain Verilog with no Coq marker is not Coq" has_rocq ver4 no
+want "an axiom-only file" has_rocq axiomonly yes
+want "Coq that names a definition endmodule" has_rocq coqendmodule yes
+want "Parameter, Variable, Record, Section, Notation and Admitted sentences" has_rocq vernac yes
+i=0
+while IFS= read -r s; do
+  i=$((i+1)); mkdir -p "$T/one$i"; printf '%s\n' "$s" > "$T/one$i/t.v"
+  want "a lone sentence: $s" has_rocq "one$i" yes
+done <<'SENTENCES'
+Parameter p : nat.
+Record R := {
+Notation "x + y" := (plus x y).
+Admitted.
+Variables (a b : Type).
+Instance : Foo := bar.
+Corollary c : True.
+Hypothesis h : True.
+Conjecture c : False.
+Structure S := mk { a : nat }.
+SENTENCES
 want "a Definition with implicit binders" has_rocq implicit yes
 want "an empty tree is not Coq" has_rocq empty no
 want "a .agda file" has_agda agda yes
