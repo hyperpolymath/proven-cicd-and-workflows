@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: MPL-2.0
+# CI gate — thin caller of the estate's interim gate, which lives in
+# hyperpolymath/proven-cicd-and-workflows as a reusable workflow. Do not copy
+# its jobs in here: a copy freezes at one cicd-suite commit and never receives
+# a fix.
+#
+# It emits the commit status `CI/gate`, which the Branch-Floor ruleset
+# requires. It is a COMMIT STATUS, not a check run, because a job inside a
+# reusable workflow gets the check-run name `<caller job> / <called job>`
+# (see rust-ci-caller.yml: `rust-ci / Cargo test`), which always contains
+# " / " and can never equal `CI/gate`.
+#
+# It triggers on workflow_run, which GitHub runs from the DEFAULT branch: a
+# pull request cannot alter this file, its pin or its list. The consequence:
+# the pull request that adds this caller can never receive `CI/gate` itself, and
+# must be merged past the gate once (owner action). There is no
+# pull_request trigger here, deliberately (tests/ci-gate.sh asserts it).
+#
+# The required-check list is NOT in this repository: it lives in
+# proven-cicd-and-workflows/profiles/ci-gate/<owner>/<repo>.json at the pinned
+# SHA below, selected by github.repository. A repository with no profile there
+# fails the gate closed until one is added to the suite.
+#
+# The job id MUST stay `gate`. The pin is a full SHA, never `@main` or a tag:
+# the account enforces sha_pinning_required. An A3 `estate-gate` replaces this
+# interim gate by changing ONE pin and ONE context (`with: context`) here.
+#
+# ⚠ DE-ONBOARDED from actions.lock, deliberately, like the estate-audit and
+# Rust CI callers: an onboarded cross-repo reusable startup-fails with zero
+# jobs under sha_pinning_required. cicd-suite/scripts/deonboard-workflow.sh
+# reverses a re-onboarding.
+#
+# No `secrets:` line: the reusable consumes none.
+name: CI gate
+
+on:
+  workflow_run:
+    workflows: ["**", "!CI gate"]
+    types: [completed]
+
+permissions:
+  statuses: write
+  checks: read
+  actions: read
+  contents: read
+
+concurrency:
+  group: ci-gate-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: github.event.workflow_run.name != 'CI gate'
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@__CICD_SUITE_SHA__ # cicd-suite ci-gate
+    with:
+      context: "CI/gate"
+      # timeout_minutes: 180   # how long a missing check keeps the gate pending

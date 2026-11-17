@@ -1,0 +1,7 @@
+# Negative control: a caller that also runs on pull_request.
+name: CI gate
+on:
+  pull_request:
+  workflow_run:
+    workflows: ["**"]
+    types: [completed]

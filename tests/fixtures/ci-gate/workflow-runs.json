@@ -1,0 +1,30 @@
+[
+  {
+    "id": 11,
+    "name": "CI build",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-11-17T10:00:00Z"
+  },
+  {
+    "id": 12,
+    "name": "CI quality",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-11-17T10:00:05Z"
+  },
+  {
+    "id": 13,
+    "name": "Advisory",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-11-17T10:00:07Z"
+  },
+  {
+    "id": 14,
+    "name": "CI gate",
+    "status": "in_progress",
+    "conclusion": null,
+    "created_at": "2026-11-17T10:25:00Z"
+  }
+]

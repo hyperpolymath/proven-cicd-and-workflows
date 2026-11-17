@@ -1,0 +1,165 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath) <j.d.a.jewell@open.ac.uk>
+#
+# ci-gate.yml — the interim `CI/gate`, as a reusable workflow. See docs/CI-GATE.adoc.
+#
+# It publishes ONE commit status (context = `inputs.context`, default `CI/gate`) on the head
+# commit of the workflow run that triggered it. The verdict is a pure script
+# (scripts/ci-gate-verdict.sh) over the required-check list for the calling repository
+# (profiles/ci-gate/<owner>/<repo>.json), the check runs and the workflow runs of that commit.
+#
+# WHY A COMMIT STATUS: a job inside a reusable workflow gets the check-run name
+# `<caller job> / <called job>`, which always contains " / " and so can never equal `CI/gate`.
+#
+# WHY workflow_run: GitHub runs a workflow_run workflow from the DEFAULT branch, so a pull
+# request cannot edit the caller, its pin, or its list. Each completed workflow re-evaluates
+# the head commit; there is no polling.
+#
+# SAFETY — this workflow never checks out, builds or executes code from the consumer
+# repository or the pull request (the pwn-request hazard of workflow_run). It reads only
+# metadata through the API, and it fetches its own profile and scripts from THIS repository
+# at the commit it was called at (`job.workflow_sha`), never from the consumer. Every
+# `${{ }}` value reaches a script through `env:`, never inline into `run:`. It uses no
+# actions, so there is nothing to pin: `gh` and `jq` ship on the runner image.
+#
+# FAIL CLOSED: a missing or invalid profile, an empty `job.workflow_sha`, any API error, or
+# any event other than workflow_run is a failure, never a pass or a pending.
+#
+# The caller must grant: statuses: write, checks: read, actions: read, contents: read.
+# No `secrets:` — the reusable consumes none.
+
+name: CI gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: The commit-status context to publish (the one swappable name)
+        type: string
+        required: false
+        default: CI/gate
+      timeout_minutes:
+        description: How long a missing or running required check may keep the gate pending
+        type: number
+        required: false
+        default: 180
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: CI gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      statuses: write
+      checks: read
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      REPO: ${{ github.repository }}
+      CONTEXT: ${{ inputs.context }}
+      TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+      GATE_NAME: ${{ github.workflow }}
+      SERVER_URL: ${{ github.server_url }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Refuse anything but a workflow_run event
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == workflow_run ]] \
+            || { echo "::error::ci-gate runs only on workflow_run (got '$EVENT_NAME'); NO VERDICT WAS PRODUCED"; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::workflow_run head_sha is not a 40-hex commit; NO VERDICT WAS PRODUCED"; exit 1; }
+          [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
+            || { echo "::error::repository name is not an owner/name coordinate"; exit 1; }
+          [[ "$CONTEXT" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] \
+            || { echo "::error::context input is empty or has unexpected characters"; exit 1; }
+          [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::timeout_minutes must be a positive integer"; exit 1; }
+      - name: Read the profile and the verdict scripts from this suite at its own commit
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+        # job.workflow_repository / job.workflow_sha name the reusable workflow file's own
+        # repository and commit, so the profile selected by github.repository is read at
+        # the SHA the caller pinned. Empty means the runner cannot say: fail, do not guess.
+        run: |
+          set -euo pipefail
+          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
+            || { echo "::error::job.workflow_repository is empty or malformed ('$WF_REPO'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
+          [[ "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::job.workflow_sha is empty or not a 40-hex commit ('$WF_SHA'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
+          suite="$RUNNER_TEMP/ci-gate-suite"
+          rm -rf "$suite"; mkdir -p "$suite/scripts" "$suite/profiles/ci-gate"
+          fetch() { # <path in the suite> -> same path under $suite; refuses an empty file
+            gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WF_REPO/contents/$1?ref=$WF_SHA" > "$suite/$1" \
+              || { echo "::error::could not read $1 from $WF_REPO@$WF_SHA"; return 1; }
+            [[ -s "$suite/$1" ]] || { echo "::error::$1 at $WF_REPO@$WF_SHA is empty"; return 1; }
+          }
+          fetch scripts/ci-gate-verdict.sh
+          fetch scripts/validate-ci-gate-profile.sh
+          fetch profiles/ci-gate/validate.jq
+          mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
+          fetch "profiles/ci-gate/$REPO.json" \
+            || { echo "::error::no CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
+          echo "suite=$suite" >> "$GITHUB_ENV"
+          echo "Profile for $REPO read from $WF_REPO@$WF_SHA"
+      - name: Validate the profile
+        run: bash "$suite/scripts/validate-ci-gate-profile.sh" "$suite/profiles/ci-gate/$REPO.json" "$REPO" "$CONTEXT"
+      - name: Evaluate the commit and publish the status
+        id: publish
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ci-gate-work"; mkdir -p "$work"
+          # Every page, so a long run list cannot hide a missing or failed check.
+          gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100&filter=all" --jq '.check_runs[]' | jq -s '.' > "$work/check-runs.json"
+          gh api --paginate "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" --jq '.workflow_runs[]' | jq -s '.' > "$work/workflow-runs.json"
+          rc=0
+          bash "$suite/scripts/ci-gate-verdict.sh" \
+            --profile "$suite/profiles/ci-gate/$REPO.json" --repository "$REPO" \
+            --check-runs "$work/check-runs.json" --workflow-runs "$work/workflow-runs.json" \
+            --gate-name "$GATE_NAME" --context "$CONTEXT" --now "$(date +%s)" \
+            --timeout-minutes "$TIMEOUT_MINUTES" --summary "$work/summary.md" > "$work/verdict.txt" || rc=$?
+          state=$(sed -n 's/^state=//p' "$work/verdict.txt")
+          description=$(sed -n 's/^description=//p' "$work/verdict.txt")
+          # The exit code and the printed state must agree; anything else is a failure.
+          case "$rc:$state" in
+            0:success|3:pending|1:failure) ;;
+            *) state=failure; description="ci-gate: verdict script gave exit $rc and state '${state:-none}'"; rc=1 ;;
+          esac
+          {
+            echo "### $CONTEXT: $state"
+            echo
+            echo "Commit \`$HEAD_SHA\` · profile \`$REPO\` at \`$WF_REPO@$WF_SHA\`"
+            echo
+            cat "$work/summary.md" 2>/dev/null || echo "$description"
+          } >> "$GITHUB_STEP_SUMMARY"
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$state" -f context="$CONTEXT" -f description="$description" \
+            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null
+          echo "published=true" >> "$GITHUB_OUTPUT"
+          echo "$CONTEXT = $state: $description"
+          # A pending verdict is a normal wait for the next workflow_run; only failure is red.
+          [[ "$state" != failure ]] || { echo "::error::$CONTEXT failed: $description"; exit 1; }
+      - name: Publish a failure status when no verdict could be produced
+        if: ${{ failure() && steps.publish.outputs.published != 'true' }}
+        run: |
+          set -uo pipefail
+          [[ "$EVENT_NAME" == workflow_run && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$CONTEXT" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || exit 0
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=failure -f context="$CONTEXT" \
+            -f description="ci-gate could not produce a verdict (profile or API error); see the run" \
+            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+            || echo "::warning::could not publish the failure status either"

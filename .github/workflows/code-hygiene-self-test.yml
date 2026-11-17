@@ -34,6 +34,10 @@
         "scripts/proven-stamp.sh",
         "scripts/proven-coverage-collect.sh",
         "scripts/coverdata-to-lcov.exs",
+        "scripts/ci-gate-verdict.sh",
+        "scripts/validate-ci-gate-profile.sh",
+        "profiles/ci-gate/**",
+        ".github/workflows/ci-gate.yml",
         ".github/workflows/proven-lock-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
@@ -78,6 +82,10 @@
         "scripts/proven-stamp.sh",
         "scripts/proven-coverage-collect.sh",
         "scripts/coverdata-to-lcov.exs",
+        "scripts/ci-gate-verdict.sh",
+        "scripts/validate-ci-gate-profile.sh",
+        "profiles/ci-gate/**",
+        ".github/workflows/ci-gate.yml",
         ".github/workflows/proven-lock-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
@@ -171,6 +179,12 @@
           # codes (never 1), and real runs on tiny Rust, Mix and JS fixtures
           # where the toolchain is present (a missing one is named SKIP).
           run: "bash tests/proven-coverage-collect.sh",
+        },
+        {
+          # The interim CI/gate: the pure verdict (a required check that never
+          # reported is a failure, never a pass), the profile validator, the
+          # shipped profiles, and static guards on the reusable and its caller.
+          run: "bash tests/ci-gate.sh",
         },
       ],
     },
