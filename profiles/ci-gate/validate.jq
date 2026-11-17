@@ -7,7 +7,7 @@
 # file that produces it. Two producers of one display name are two entries.
 def clean_string: type == "string" and (explode | all(. >= 32 and . != 127));
 def exact($fields): type == "object" and (keys == ($fields | sort));
-def repository: clean_string and test("^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$");
+def repository: clean_string and test("^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$") and (split("/")[1] | . != "." and . != "..");
 def job_name($forbidden):
   clean_string and length > 0 and
   (. == (sub("^\\s+"; "") | sub("\\s+$"; ""))) and

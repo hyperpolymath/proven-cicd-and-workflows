@@ -101,7 +101,7 @@ jobs:
             [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
               || { echo "::error::workflow_run head sha is not a 40-hex commit; NO VERDICT WAS PRODUCED"; exit 1; }
           fi
-          [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
+          [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${REPO#*/}" != . && "${REPO#*/}" != .. ]] \
             || { echo "::error::repository name is not an owner/name coordinate"; exit 1; }
           # Context: 1 to 128 characters, alphanumeric first, then [A-Za-z0-9._/-] with single interior
           # spaces (no leading, trailing or repeated space, no tab or newline). The regex alone would
@@ -150,7 +150,7 @@ jobs:
         # the SHA the caller pinned. Empty means the runner cannot say: fail, do not guess.
         run: |
           set -euo pipefail
-          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
+          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${WF_REPO#*/}" != . && "${WF_REPO#*/}" != .. ]] \
             || { echo "::error::job.workflow_repository is empty or malformed ('$WF_REPO'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
           [[ "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::job.workflow_sha is empty or not a 40-hex commit ('$WF_SHA'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }

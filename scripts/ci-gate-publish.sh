@@ -52,6 +52,8 @@ done
 [[ $HEAD_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::ci-gate-publish: HEAD_SHA is not a 40-hex commit"; exit 1; }
 [[ $WAIT_SECONDS =~ ^[0-9]+$ && $POLL_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo "::error::ci-gate-publish: WAIT_SECONDS must be a non-negative and POLL_SECONDS a positive integer; NO VERDICT WAS PRODUCED"; exit 1; }
 [[ -n $WORK ]] || WORK=$(mktemp -d) || exit 1
+[[ $REPO =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && ${REPO#*/} != . && ${REPO#*/} != .. ]] \
+  || { echo "::error::ci-gate-publish: REPO is not an owner/name coordinate; NO VERDICT WAS PRODUCED"; exit 1; }
 mkdir -p "$WORK" || exit 1
 PROFILE="$SUITE/profiles/ci-gate/$REPO.json"
 published=0

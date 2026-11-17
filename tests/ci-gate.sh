@@ -262,7 +262,7 @@ args="$*"
 jqarg='' ; prev=''
 for a in "$@"; do [[ $prev == --jq ]] && jqarg=$a; prev=$a; done
 case $args in
-  *"api rate_limit"*) printf '%s\t%s\n' "${QUOTA_REMAINING:-500000}" "${QUOTA_RESET:-3600}" ;;
+  *"api rate_limit"*) [[ -z ${QUOTA_FAIL:-} ]] || { echo "gh: HTTP 500 (rate)" >&2; exit 1; }; printf '%s\t%s\n' "${QUOTA_REMAINING:-500000}" "${QUOTA_RESET:-3600}" ;;
   *"/commits/"*"/status?per_page=100"*)
     # the combined status: the latest status per context of one commit, from status.log
     [[ ! -f $D/failstatus ]] || { echo "gh: HTTP 500 (status)" >&2; exit 1; }
@@ -448,6 +448,13 @@ pubreset; snap 1 "$NOQ"; snap 2 "$NOQ | map(if .id == 11 then .updated_at = \"20
 chk "fingerprint change invalidates completed jobs" "$(grep -c '^11$' "$FAKEGH/jobs.calls")" 2
 pubreset; snap 1 "$NOQ"; publish "${WAITENV[@]}" QUOTA_REMAINING=25
 chk "low quota backs off to deadline and fails closed" "$(paste -sd, "$FAKEGH/sleeps")/$RC/$(post_n 1 | cut -f1)" "30/1/failure"
+pubreset; snap 1 "$NOQ"; snap 2 "$DONE"; publish "${WAITENV[@]}" WAIT_SECONDS=120 QUOTA_REMAINING=5 QUOTA_RESET=15
+chk "low quota that resets inside the wait: sleeps to the reset (15 s, not the 10 s poll), then continues to success" "$(paste -sd, "$FAKEGH/sleeps")/$RC/$(post_n 1 | cut -f1)" "15/0/success"
+pubreset; snap 1 "$NOQ"; publish "${WAITENV[@]}" QUOTA_FAIL=1
+chk "an unreadable rate limit fails closed (failure, exit 1, no polling)" "$RC/$(post_n 1 | cut -f1)/$(wc -l < "$FAKEGH/sleeps")" "1/failure/0"
+EXTRA='. + [range(100;118) | r(.; "Extra \(.)"; (. + 1000); "pull_request"; "completed"; "2026-11-17T10:00:00Z")]'
+pubreset; snap 1 "$DEFS map(select(.name != \"CI quality\")) | $EXTRA"; publish "${WAITENV[@]}" WAIT_SECONDS=480
+chk "20 kept runs over 48 polls: each completed run's jobs are read once (20 requests, not 960)" "$(grep -c . "$FAKEGH/jobs.calls")" 20
 echo "-- without WAIT_SECONDS (workflow_run, sweep) nothing changes --"
 pubreset; snap 1 "$NOQ"; publish
 chk "no wait: never reported is an immediate failure, one POST" "$(post_n 1 | cut -f1)/$NPOSTS" "failure/1"
@@ -703,7 +710,58 @@ sweep CONTEXT='CI / gate'
 chk "third sweep, one head now failing: exactly that one is written" "$(cut -f1,3 "$FAKEGH/posts.log" | tr '\t' ' ')/$RC" "failure $(sha_n 12)/1"
 pubreset
 
-echo "== profile validator =="
+echo "== repository coordinate: a leading dot is a name; traversal and malformed ones are not =="
+step_script() { # <file> <step name prefix> -> the step's run: block, de-indented
+  awk -v name="$2" '
+    function ind(s) { match(s, /^ */); return RLENGTH }
+    inrun { if ($0 ~ /^[[:space:]]*$/ || ind($0) > runcol) { print substr($0, runcol + 3); next } exit }
+    index($0, "- name: " name) { want = 1; next }
+    want && $0 ~ /^[[:space:]]+run: [|]$/ { runcol = ind($0); inrun = 1 }
+  ' "$1"
+}
+step_script "$WORKFLOW" "Refuse anything but a workflow_run" > "$WORK/refuse.sh"
+[ -s "$WORK/refuse.sh" ] && ok "extracted the workflow's validation step" || bad "could not extract the validation step"
+refuse() { # VAR=value ... -> RC; defaults: a valid pull_request
+  env EVENT_NAME=pull_request HEAD_SHA="$(printf 'b%.0s' $(seq 40))" REPO=example/repo CONTEXT=CI/gate TIMEOUT_MINUTES=180 \
+    WAIT_MINUTES=30 POLL_SECONDS=20 "$@" bash "$WORK/refuse.sh" > /dev/null 2>&1
+  RC=$?
+}
+refuse; chk "the default inputs are accepted" "$RC" 0
+refuse REPO=example/.github; chk "the workflow accepts example/.github" "$RC" 0
+refuse REPO=example/.github-private; chk "the workflow accepts a leading-dot name with more" "$RC" 0
+refuse REPO=o/r.js; chk "the workflow accepts a dot inside a name" "$RC" 0
+for r in a/b/c /x a/ a/. a/.. notacoordinate '' 'a b/c' .a/b -a/b 'a/b c' a//b ../x a/b/; do
+  refuse REPO="$r"; chk "the workflow rejects REPO '$r'" "$RC" 1
+done
+step_script "$WORKFLOW" "Read the profile and the verdict scripts" > "$WORK/readprofile.sh"
+[ -s "$WORK/readprofile.sh" ] && ok "extracted the profile-fetch step" || bad "could not extract the profile-fetch step"
+mkdir -p "$WORK/rp/bin"
+cat > "$WORK/rp/bin/gh" <<'RPGH'
+#!/usr/bin/env bash
+for a in "$@"; do case $a in repos/*/contents/*) p=${a#repos/*/contents/}; echo "${p%%\?*}" >> "$RPDIR/fetched"; echo "x"; exit 0 ;; esac; done
+exit 1
+RPGH
+chmod +x "$WORK/rp/bin/gh"
+rm -f "$WORK/rp/fetched"; : > "$WORK/rp/gh_env"
+env PATH="$WORK/rp/bin:$PATH" RPDIR="$WORK/rp" RUNNER_TEMP="$WORK/rp/tmp" GITHUB_ENV="$WORK/rp/gh_env" REPO=example/.github \
+  WF_REPO=hyperpolymath/proven-cicd-and-workflows WF_SHA="$(printf 'c%.0s' $(seq 40))" bash "$WORK/readprofile.sh" > "$WORK/rp/out" 2>&1
+chk "a .github repository: the profile is fetched from profiles/ci-gate/example/.github.json and lands under the owner in the suite" \
+  "$?/$(grep -c '^profiles/ci-gate/example/\.github\.json$' "$WORK/rp/fetched")/$([ -f "$WORK/rp/tmp/ci-gate-suite/profiles/ci-gate/example/.github.json" ] && echo yes || echo no)" "0/1/yes"
+echo "== the publisher and the sweep refuse a malformed coordinate; a .github repository resolves =="
+jq '.repository = "example/.github"' "$FX/profile.json" > "$SUITE_DIR/profiles/ci-gate/example/.github.json"
+pubreset; snap 1 "$DONE"; publish REPO=example/.github
+chk "publisher: example/.github reads profiles/ci-gate/example/.github.json and publishes success" "$RC/$NPOSTS/$(post_n 1 | cut -f1)" "0/1/success"
+rm -f "$SUITE_DIR/profiles/ci-gate/example/.github.json"
+for r in a/b/c /x a/ a/. a/.. notacoordinate '' ../x 'a b/c'; do
+  pubreset; snap 1 "$DONE"; publish REPO="$r"
+  chk "publisher: REPO '$r' is refused, no POST, no runs fetched" "$RC/$NPOSTS/$CALLS" "1/0/0"
+done
+for r in a/b/c /x a/ a/. a/.. notacoordinate ../x; do
+  pubreset; set_pulls "1 $T1 1"; set_default 2; sweep_sha 1 "$DONE"; sweep_sha 2 "$DONE"; sweep REPO="$r"
+  chk "sweep: REPO '$r' is refused, nothing posted" "$RC/$([ -s "$FAKEGH/posts.log" ] && echo posted || echo none)" "1/none"
+done
+pubreset
+echo "== validator and shipped profiles: a repository named .github =="
 v_ok()  { bash "$VALIDATE" "$1" "${2:-example/repo}" >/dev/null 2>&1 && ok "accepted $3" || bad "rejected $3"; }
 v_bad() { bash "$VALIDATE" "$1" "${2:-example/repo}" >/dev/null 2>&1 && bad "accepted $3" || ok "rejected $3"; }
 v_ok "$FX/profile.json" example/repo "a well-formed profile"
@@ -723,6 +781,11 @@ w 'not json'; v_bad "$WORK/p.json" example/repo "malformed JSON"
 w '[]'; v_bad "$WORK/p.json" example/repo "a top-level array"
 w "$(p "$A")$(p "$A")"; v_bad "$WORK/p.json" example/repo "two documents"
 w "$(p "$A")"; v_bad "$WORK/p.json" other/repo "a profile for the wrong repository"
+w "$(p "$A" example/.github)"; v_ok "$WORK/p.json" example/.github "a profile for a repository named .github"
+w "$(p "$A" example/.github)"; v_bad "$WORK/p.json" example/repo "a .github profile read for another repository"
+for r in a/b/c /x a/ a/. a/.. notacoordinate "a b/c" ../x; do
+  w "$(p "$A" "$r")"; v_bad "$WORK/p.json" "$r" "a profile whose repository is '$r'"
+done
 w "$(p "")"; v_bad "$WORK/p.json" example/repo "an empty list"
 w "$(p "$(e A a.yml),$(e CI/gate b.yml)")"; v_bad "$WORK/p.json" example/repo "a list containing CI/gate"
 w "$(p "$(e A a.yml),$(e estate-gate b.yml)")"; v_bad "$WORK/p.json" example/repo "a list containing estate-gate"
@@ -756,7 +819,7 @@ w "$(p "$A" | sed 's/}$/,"repository":"other\/repo"}/')"; v_bad "$WORK/p.json" e
 v_bad "$WORK/absent.json" example/repo "an absent file"
 
 echo "== shipped profiles =="
-shopt -s nullglob
+shopt -s nullglob dotglob   # a repository named .github has the profile .github.json
 n=0
 for f in "$ROOT"/profiles/ci-gate/*/*.json; do
   repo="$(basename "$(dirname "$f")")/$(basename "$f" .json)"

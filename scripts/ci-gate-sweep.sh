@@ -36,6 +36,8 @@ MAX=${CI_GATE_SWEEP_MAX:-100}
 for v in REPO CONTEXT TIMEOUT_MINUTES GATE_NAME SUITE; do
   [[ -n ${!v:-} ]] || { echo "::error::ci-gate-sweep: $v is not set; NO VERDICT WAS PRODUCED"; exit 1; }
 done
+[[ $REPO =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && ${REPO#*/} != . && ${REPO#*/} != .. ]] \
+  || { echo "::error::ci-gate-sweep: REPO is not an owner/name coordinate; NO VERDICT WAS PRODUCED"; exit 1; }
 [[ $MAX =~ ^[1-9][0-9]*$ ]] || { echo "::error::ci-gate-sweep: the cap is not a positive integer"; exit 1; }
 [[ -n $WORK ]] || WORK=$(mktemp -d) || exit 1
 mkdir -p "$WORK" || exit 1

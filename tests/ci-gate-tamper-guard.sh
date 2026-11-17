@@ -119,7 +119,9 @@ reset; run PR_NUMBER=abc
 chk "bad PR number: exit 1" "$RC" 1
 reset; files README.adoc; run REPO=example/.github
 chk "dot-prefixed repository: exit 0" "$RC" 0
-for coordinate in /repo owner/ owner/repo/extra owner//repo -owner/repo 'owner/repo?x'; do
+reset; files README.adoc; run REPO=example/.github-private
+chk "dot-prefixed name with more: exit 0" "$RC" 0
+for coordinate in /repo owner/ owner/repo/extra owner//repo -owner/repo 'owner/repo?x' a/. a/.. ../x /x a/b/c; do
   reset; run REPO="$coordinate"
   chk "malformed coordinate $coordinate: exit 1" "$RC" 1
 done
@@ -159,6 +161,20 @@ for f in "$SELF" "$TPL"; do
   code "$f" | grep -qE '^  pull-requests: read' && code "$f" | grep -qE '^  contents: read' && ! code "$f" | grep -qE '^  [a-z-]+: write' && ok "$b: read-only permissions" || bad "$b: permissions not minimal"
   code "$f" | grep -qE '^  guard:' && ok "$b: job id is guard" || bad "$b: job id is not guard"
 done
+step_script() { # <file> <step name prefix> -> the step's run: block, de-indented
+  awk -v name="$2" '
+    function ind(s) { match(s, /^ */); return RLENGTH }
+    inrun { if ($0 ~ /^[[:space:]]*$/ || ind($0) > runcol) { print substr($0, runcol + 3); next } exit }
+    index($0, "- name: " name) { want = 1; next }
+    want && $0 ~ /^[[:space:]]+run: [|]$/ { runcol = ind($0); inrun = 1 }
+  ' "$1"
+}
+step_script "$WF" "Refuse anything but pull_request_target" > "$WORK/refuse.sh"
+[ -s "$WORK/refuse.sh" ] && ok "extracted the reusable's event and workflow-coordinate step" || bad "could not extract the refuse step"
+refuse() { EVENT_NAME=pull_request_target WF_SHA=$(printf 'a%.0s' $(seq 40)) WF_REPO="$1" bash "$WORK/refuse.sh" > /dev/null 2>&1; }
+refuse hyperpolymath/proven-cicd-and-workflows && ok "the reusable accepts the suite coordinate" || bad "the reusable rejects the suite coordinate"
+refuse example/.github && ok "the reusable accepts a workflow repository named .github" || bad "the reusable rejects example/.github"
+for r in a/b/c /x a/ a/. a/.. "" notacoordinate; do refuse "$r" && bad "the reusable accepts the workflow repository '$r'" || ok "the reusable rejects the workflow repository '$r'"; done
 code "$TPL" | grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\.github/workflows/ci-gate-tamper-guard\.yml@__CICD_SUITE_SHA__' && ok "the template pins the reusable at the placeholder" || bad "the template does not use the placeholder"
 code "$SELF" | grep -qE '^    uses: \./\.github/workflows/ci-gate-tamper-guard\.yml$' && ok "the suite's caller uses the local reusable" || bad "the suite's caller does not use the local reusable"
 for b in ci-gate-tamper-guard.yml ci-gate-tamper-guard-caller.yml; do

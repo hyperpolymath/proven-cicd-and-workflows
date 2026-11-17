@@ -54,7 +54,7 @@ jobs:
           set -euo pipefail
           [[ "$EVENT_NAME" == pull_request_target ]] \
             || { echo "::error::the tamper guard runs only on pull_request_target (got '$EVENT_NAME'); NO VERDICT WAS PRODUCED"; exit 1; }
-          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ && "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
+          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${WF_REPO#*/}" != . && "${WF_REPO#*/}" != .. && "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::job.workflow_repository / job.workflow_sha are empty or malformed; NO VERDICT WAS PRODUCED"; exit 1; }
       - name: Read the guard script from this suite at its own commit
         env:
