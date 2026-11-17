@@ -23,13 +23,18 @@
 #
 # Rules (A3 law: no pass on absence). Only GitHub Actions jobs are read; third-party checks
 # (SonarCloud, CodeRabbit, ...) are out of scope. Kept runs: the gate's own runs dropped,
-# the newest run per (workflow_id, event). A required name is satisfied only if EVERY job
-# of that exact name in the kept runs is completed/success; never one picked by max id.
+# the newest run per (workflow_id, event). A profile entry is an identity {job, workflow}: it
+# is satisfied only if a kept run with that workflow `path` exists and EVERY job of that exact
+# name in those runs is completed/success; never one picked by max id. Two producers of one
+# display name are two entries, both required. A missing run or job is reported as
+# `<workflow file>:<job>`.
 #  a. A required-name job completed with any conclusion but success (failure, cancelled,
 #     timed_out, skipped, neutral, action_required, stale, null, ...) => failure at once.
-#  b. Else if a kept run is still queued/in_progress/waiting/requested/pending => pending
-#     (even if every name already has a passing job: a later producer of the same name may
-#     still fail), and failure once the oldest kept run is older than the timeout.
+#  b. Else if ANY workflow run of the commit but the gate's own (kept or superseded, so a
+#     rerun of an older run counts) is still queued/in_progress/waiting/requested/pending
+#     => pending (even if every name already has a passing job: a later producer of the same
+#     name may still fail), and failure once the oldest kept or active run is older than the
+#     timeout. Job verdicts still come only from the kept runs' latest-attempt jobs.
 #  c. Else nothing is active: a required name with no job => failure ("never reported");
 #     a required name with a job that never completed => failure; otherwise success.
 set -uo pipefail
@@ -70,24 +75,26 @@ trap 'rm -f "$keptf"' EXIT
 jq --arg gate "$gate" -f "$ROOT/profiles/ci-gate/select-runs.jq" "$wruns" > "$keptf" 2>/dev/null \
   || fail 'ci-gate: workflow runs are malformed'
 
-result=$(jq -n --slurpfile profile "$profile" --slurpfile jb "$jobs" --slurpfile keptw "$keptf" \
+result=$(jq -n --slurpfile profile "$profile" --slurpfile jb "$jobs" --slurpfile keptw "$keptf" --slurpfile wr "$wruns" --arg gate "$gate" \
   --argjson now "$now" --argjson timeout "$timeout" '
   def active: ["queued", "in_progress", "waiting", "requested", "pending"];
   def names($a): $a | join(", ");
   $profile[0].checks as $req |
   $keptw[0] as $kept |
-  ($kept | map(.id)) as $keptIds |
-  [$jb[0][] | select(.run.id as $r | $keptIds | index($r))] as $jobs |
-  ($req | map(. as $n | {name: $n, jobs: [$jobs[] | select(.name == $n)]} | . + {
+  # An entry is {job, workflow}: its jobs are those named `job` in the kept runs whose path is `workflow`.
+  ($req | map(. as $e |
+     ([$kept[] | select(.path == $e.workflow) | .id]) as $ids |
+     {name: (($e.workflow | sub("^.*/"; "")) + ":" + $e.job),
+      jobs: [$jb[0][] | select(.name == $e.job and (.run.id as $r | $ids | index($r) != null))]} | . + {
      bad: [.jobs[] | select(.status == "completed" and .conclusion != "success") | (.conclusion // "no conclusion")],
      open: [.jobs[] | select(.status != "completed")]
    })) as $rows |
   ($rows | map(select(.bad | length > 0))) as $failed |
   ($rows | map(select(.jobs | length == 0)) | map(.name)) as $missing |
   ($rows | map(select(.open | length > 0)) | map(.name)) as $unfinished |
-  [$kept[] | select(.status as $s | active | index($s))] as $running |
+  [$wr[0][] | select(.name != $gate) | select(.status as $s | active | index($s))] as $running |
   ($running | map(.name) | unique) as $runningNames |
-  (if ($kept | length) > 0 then (($kept | map(.created_at | fromdateiso8601) | min) as $oldest | (($now - $oldest) / 60 | floor)) else null end) as $age |
+  (($kept + $running) as $clock | if ($clock | length) > 0 then (($clock | map(.created_at | fromdateiso8601) | min) as $oldest | (($now - $oldest) / 60 | floor)) else null end) as $age |
   (if ($failed | length) > 0 then
      {state: "failure", description: ("failed: " + ($failed | map(.name + " (" + (.bad | unique | join("/")) + ")") | join(", ")))}
    elif ($running | length) > 0 and $age != null and $age < $timeout then
@@ -108,7 +115,7 @@ result=$(jq -n --slurpfile profile "$profile" --slurpfile jb "$jobs" --slurpfile
        else (.jobs | map((.run.name // "?") + ": " + (.status) + "/" + (.conclusion // "-")) | join(", ")) end) + " |") | join("\n")) +
     "\n\nWorkflow runs read: " + ($kept | length | tostring) + ", still active: " + ($running | length | tostring) +
     (if $age != null then "; oldest is " + ($age | tostring) + " min old (timeout " + ($timeout | tostring) + ")." else "." end) +
-    "\n\nOnly GitHub Actions jobs of the latest attempt are counted; every job of a required name must succeed; skipped and neutral are not passes. Third-party checks are out of scope.\n")}
+    "\n\nOnly GitHub Actions jobs of the latest attempt are counted; every job of a required identity (workflow file and job name) must succeed; skipped and neutral are not passes. Third-party checks are out of scope.\n")}
 ' 2>/dev/null) || fail 'ci-gate: verdict evaluation failed on malformed job or workflow run data'
 
 state=$(jq -r .state <<<"$result") || fail 'ci-gate: verdict evaluation failed'

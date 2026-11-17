@@ -1,6 +1,6 @@
 [
-  {"id": 11, "name": "CI build", "workflow_id": 1, "event": "pull_request", "run_attempt": 1, "status": "completed", "conclusion": "success", "created_at": "2026-11-17T10:00:00Z"},
-  {"id": 12, "name": "CI quality", "workflow_id": 2, "event": "pull_request", "run_attempt": 1, "status": "completed", "conclusion": "success", "created_at": "2026-11-17T10:00:05Z"},
-  {"id": 13, "name": "Advisory", "workflow_id": 3, "event": "pull_request", "run_attempt": 1, "status": "completed", "conclusion": "success", "created_at": "2026-11-17T10:00:07Z"},
-  {"id": 14, "name": "CI gate", "workflow_id": 4, "event": "workflow_run", "run_attempt": 1, "status": "in_progress", "conclusion": null, "created_at": "2026-11-17T10:25:00Z"}
+  {"id":11,"name":"CI build","workflow_id":1,"event":"pull_request","run_attempt":1,"status":"completed","conclusion":"success","created_at":"2026-11-17T10:00:00Z","path":".github/workflows/ci-build.yml"},
+  {"id":12,"name":"CI quality","workflow_id":2,"event":"pull_request","run_attempt":1,"status":"completed","conclusion":"success","created_at":"2026-11-17T10:00:05Z","path":".github/workflows/ci-quality.yml"},
+  {"id":13,"name":"Advisory","workflow_id":3,"event":"pull_request","run_attempt":1,"status":"completed","conclusion":"success","created_at":"2026-11-17T10:00:07Z","path":".github/workflows/advisory.yml"},
+  {"id":14,"name":"CI gate","workflow_id":4,"event":"workflow_run","run_attempt":1,"status":"in_progress","conclusion":null,"created_at":"2026-11-17T10:25:00Z","path":".github/workflows/ci-gate.yml"}
 ]

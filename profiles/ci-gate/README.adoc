@@ -7,17 +7,16 @@ Format (I-JSON, JCS-serialised: sorted keys, compact, one line):
 
 [source,json]
 ----
-{"checks":["name",...],"repository":"owner/name","schema_version":1}
+{"checks":[{"job":"<job display name>","workflow":".github/workflows/<file>.yml"},...],"repository":"owner/name","schema_version":2}
 ----
 
-`scripts/validate-ci-gate-profile.sh` rejects unknown, missing or duplicate members, a different
-repository, an empty list, duplicate, empty or unclean names, and any list that names `CI/gate`,
-`estate-gate` or the context the caller publishes. Lists are sorted. No `ijson-jcs` check was
-reachable when this was written; `tests/ci-gate.sh` asserts the serialisation as `jq -cS`.
+A required check is an identity, not a bare name: the job display name AND the workflow file that produces it. A display name produced by two workflows (the Empty-linter gate) is two entries, one per producer, and both are required; a name alone could be satisfied by one producer while the other never ran.
+
+`scripts/validate-ci-gate-profile.sh` rejects: `schema_version` 1 (no silent fallback) or anything but 2; unknown, missing or duplicate members at either level; a different repository; an empty list; an entry that is not exactly `{job, workflow}`; a `workflow` that is not `^.github/workflows/[A-Za-z0-9_.-]+.ya?ml$` (so no `..`, no subdirectory, no ref suffix); an empty, untrimmed or unclean `job`; a `job` naming `CI/gate`, `estate-gate` or the context the caller publishes; a duplicate (workflow, job) pair; and entries not sorted by (workflow, job). No `ijson-jcs` check was reachable when this was written; `tests/ci-gate.sh` asserts the serialisation as `jq -cS`.
 
 == How the lists were derived (read 2026-11-17, unauthenticated GitHub API)
 
-A name is listed only if it is an Actions job (a check run from app `github-actions`), belongs to a real
+An entry is listed only if its job is an Actions job (a check run from app `github-actions`), belongs to a real
 gate (not advisory, a notification, badge publication, auto-merge, a scheduled or tag-only
 job), and ran, not skipped, and succeeded on a recent pull request head AND on the latest `main`
 commit, and its workflow has no path filter, no `if:` that skips it on a pull request or a push
@@ -32,7 +31,7 @@ triggers, `if:` conditions and `continue-on-error`.
 |`hyperpolymath/rsr-template-repo` |`b7ad304a4433f318e478c48d09704d5f753653d8` (PR 431) |`0044ad92f9e6ef258b89f3e9b5ee7b748a4db2d2` (103 runs, two pages read)
 |===
 
-Included in all three: `estate-rules`, `Estate Governance Policy`, `Central Estate CI/CD Audit`,
+Each name below was migrated to one entry per producing workflow, using the `path` of the workflow runs read at the two commits above (the producers were identical at both). Included in all three: `estate-rules`, `Estate Governance Policy`, `Central Estate CI/CD Audit`,
 `openssf-compliance`, `Proven 3-outcome test & bench suite`,
 `actions.lock is in sync with the workflow YAML`, `scan / gitleaks`, `scan / shell-secrets`,
 `🔴 GATE: Empty-linter (invisible characters)` (two unconditional workflows produce it; both

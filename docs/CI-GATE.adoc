@@ -13,7 +13,7 @@ A3 `estate-gate` replaces it by changing one pin and one context name in each ca
 
 == Design in one paragraph
 
-The caller triggers on `workflow_run` (`completed` and `in_progress`, any workflow but its own). The `in_progress` event, which GitHub also sends when a run is rerun, makes the gate publish `pending` over a stale `success` while any kept run is active, as a native required check would; `completed` then settles the verdict. GitHub runs
+The caller triggers on `workflow_run` (`completed` and `in_progress`, any workflow but its own). The `in_progress` event, which GitHub also sends when a run is rerun, makes the gate publish `pending` over a stale `success` while any run of the commit other than the gate's own is active (a rerun of an older, superseded run included), as a native required check would; `completed` then settles the verdict. GitHub runs
 `workflow_run` workflows from the default branch, so a pull request cannot edit the caller, its
 pin or its list. The reusable reads the profile for `github.repository` from this suite at
 `job.workflow_sha`, lists the workflow runs of the head commit (all pages), keeps the newest run per workflow and event without the gate's own, reads the jobs of the latest attempt of each, runs
@@ -26,10 +26,10 @@ which can never equal `CI/gate`.
 Only GitHub Actions jobs are read. Third-party checks (SonarCloud, CodeRabbit, GitGuardian, CodeQL from github-advanced-security) are out of scope: they are neither counted nor able to spoof a name.
 
 . Workflow runs of the head commit are listed (all pages). The gate's own runs (by workflow name) are dropped; per (`workflow_id`, `event`) only the newest run (highest `id`) is kept. For each kept run its jobs are read with `filter=latest` (all pages), so an earlier attempt of a rerun is discarded.
-. A required name is satisfied only if *every* job with that exact `name` across the kept runs is `completed` with conclusion `success`. Two jobs that share a display name are both required; none is chosen by highest `id`.
+. A profile entry is an identity, `{job, workflow}` (profile `schema_version` 2): the job display name and the workflow file (`path` of the run) that produces it. An entry is satisfied only if a kept run with that `path` exists and *every* job with that exact `name` in those runs is `completed` with conclusion `success`. Two workflows producing one display name are two entries, both required, so a second producer that never ran is a failure. Two jobs that share a name inside one run are both required; none is chosen by highest `id`.
 . Any required-name job completed with another conclusion (`failure`, `cancelled`, `timed_out`, `skipped`, `neutral`, `action_required`, `stale`, none) is a *failure* at once. `skipped` and `neutral` are not passes.
-. Else, if any kept run is still `queued`, `in_progress`, `waiting`, `requested` or `pending`, the verdict is *pending* (`waiting for N workflow runs: ...`), even when every required name already has a passing job, because a later producer of the same name may still fail. Once the oldest kept run is older than `timeout_minutes` it is a *failure* (`timed out after N min: ...`).
-. Else (nothing is active): a required name with no job is a *failure* (`never reported: ...`), a required name whose job never completed is a failure, and otherwise the verdict is *success*.
+. Else, if any workflow run of the commit other than the gate's own (kept or superseded, so a rerun of an older run counts) is still `queued`, `in_progress`, `waiting`, `requested` or `pending`, the verdict is *pending* (`waiting for N workflow runs: ...`), even when every required name already has a passing job, because a later producer of the same name may still fail. Once the oldest kept or active run is older than `timeout_minutes` it is a *failure* (`timed out after N min: ...`).
+. Else (nothing is active): an entry with no kept run or no job is a *failure* (`never reported: <workflow file>:<job>`), a required name whose job never completed is a failure, and otherwise the verdict is *success*.
 . A malformed or wrong-repository profile, an empty list, a list naming the gate's own context, a missing `job.workflow_sha`, any API error, malformed input, or any event other than `workflow_run` is a failure, never pending and never success.
 
 The status description is at most 140 characters (truncated with an ellipsis); the step summary
