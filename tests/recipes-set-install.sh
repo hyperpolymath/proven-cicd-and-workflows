@@ -16,8 +16,12 @@
 #   * download fails        -> exit 1, the downloader's error is in the output,
 #                              and no parse result is printed
 #   * wrong bytes delivered -> exit 1 on the checksum, nothing installed
-#   * real pinned download  -> the Justfile is parsed (SKIP if offline)
-#   * a Justfile that does not parse still fails after a good install
+#   * HTTP error (404)      -> a failure, never an "offline" skip
+#   * unsupported runner    -> exit 1, the installer names the runner
+#   * real pinned download  -> the Justfile is parsed (SKIP only on a
+#                              connectivity failure: curl 5, 6, 7, 28 or 35)
+#   * a Justfile that does not parse still fails, using the binary the
+#     previous case installed (one download per run of this suite)
 # and it kills a mutant: the pre-fix install line, put back, must fail the
 # "says why" assertion. 0=pass, 1=violation, 2=cannot run.
 
@@ -37,7 +41,7 @@ yq -r '.runs.steps[0].run' "$ACTION/action.yml" > "$WORK/step.sh"
 
 # A PATH with every tool the step needs except `just`.
 BIN="$WORK/bin"; mkdir -p "$BIN"
-for t in bash curl sha256sum tar gzip install mktemp mkdir rm uname wc make printf cat grep sed env dirname; do
+for t in bash curl sha256sum tar gzip install mktemp mkdir rm uname wc make printf cat grep sed env dirname cp; do
     p=$(command -v "$t" 2>/dev/null) || continue
     [[ $p == /* ]] && ln -sf "$p" "$BIN/$t"
 done
@@ -61,6 +65,28 @@ run_step() {
 DEAD="$WORK/dead"; mkdir -p "$DEAD"
 printf '#!/bin/bash\necho "curl: (6) Could not resolve host: stand-in" >&2\nexit 6\n' > "$DEAD/curl"
 chmod +x "$DEAD/curl"
+
+# Stand-in curl that fails the way a missing release asset does under --fail.
+GONE="$WORK/gone"; mkdir -p "$GONE"
+printf '#!/bin/bash\necho "curl: (22) The requested URL returned error: 404" >&2\nexit 22\n' > "$GONE/curl"
+chmod +x "$GONE/curl"
+
+# Stand-in uname for a runner no arm of the installer pins.
+ALIEN="$WORK/alien"; mkdir -p "$ALIEN"
+printf '#!/bin/bash\ncase "${1:-}" in -m) echo mips ;; *) echo Plan9 ;; esac\n' > "$ALIEN/uname"
+chmod +x "$ALIEN/uname"
+
+# What the real-download case may do with a run's output. Only a connectivity
+# failure is an honest "offline": curl 5 (proxy resolve), 6 (host resolve),
+# 7 (connect), 28 (timeout), 35 (TLS connect). An HTTP error such as 404 means
+# the pinned URL is wrong, and treating it as offline would let a broken pin
+# pass this suite. Review on #140.
+classify() {
+    if grep -q 'recipes parsed' "$1"; then echo parsed
+    elif grep -Eq 'curl: \((5|6|7|28|35)\)' "$1"; then echo offline
+    else echo error
+    fi
+}
 
 # Stand-in curl that "succeeds" with the wrong bytes.
 WRONG="$WORK/wrong"; mkdir -p "$WRONG"
@@ -86,6 +112,20 @@ run_step "$ACTION" "$WRONG"; rc=$?
 [[ -e $WORK/rt/just-bin/just ]] && bad "an unverified binary was installed" || ok "nothing installed"
 grep -qi 'FAILED\|checksum' "$WORK/out" && ok "the checksum failure is shown" || bad "no checksum failure in the log"
 
+echo "== an HTTP error is a failure, not an offline skip =="
+run_step "$ACTION" "$GONE"; rc=$?
+[[ $rc -eq 1 ]] && ok "exit 1" || bad "exit $rc, expected 1"
+[[ $(classify "$WORK/out") == error ]] && ok "a 404 is classified as an error" || bad "a 404 was classified as $(classify "$WORK/out")"
+cp "$WORK/out" "$WORK/out.404"
+run_step "$ACTION" "$DEAD"
+[[ $(classify "$WORK/out") == offline ]] && ok "an unresolvable host is classified as offline (control)" || bad "an unresolvable host was classified as $(classify "$WORK/out")"
+
+echo "== unsupported runner =="
+run_step "$ACTION" "$ALIEN"; rc=$?
+[[ $rc -eq 1 ]] && ok "exit 1" || bad "exit $rc, expected 1"
+grep -q 'unsupported runner Plan9/mips' "$WORK/out" && ok "the installer names the runner" || bad "no unsupported-runner message"
+grep -q 'verified nothing' "$WORK/out" && ok "the gate says it verified nothing" || bad "no 'verified nothing' line"
+
 echo "== the mutant: the pre-fix install line =="
 MUT="$WORK/mutant"; mkdir -p "$MUT"
 cp "$ACTION/install.sh" "$MUT/install.sh"
@@ -103,21 +143,30 @@ cp "$WORK/step.keep" "$WORK/step.sh"
 
 echo "== no floating release resolution =="
 grep -q 'just\.systems' "$ACTION/action.yml" "$ACTION/install.sh" && bad "the floating installer is still referenced" || ok "no just.systems reference"
-grep -Eq '^checksum=[0-9a-f]{64}$' "$ACTION/install.sh" && ok "a SHA-256 is pinned" || bad "no pinned SHA-256"
+targets=$(grep -Ec '^[[:space:]]+target=' "$ACTION/install.sh")
+pins=$(grep -Ec '^[[:space:]]+checksum=[0-9a-f]{64} ;;$' "$ACTION/install.sh")
+[[ $targets -eq 4 && $pins -eq 4 ]] && ok "each of the 4 platform arms pins a SHA-256" || bad "$targets platform arm(s), $pins pinned SHA-256"
 grep -Eq '^version=[0-9]+\.[0-9]+\.[0-9]+$' "$ACTION/install.sh" && ok "an exact version is pinned" || bad "no exact version"
 
 echo "== real pinned download =="
 run_step "$ACTION" ""; rc=$?
-if grep -q 'recipes parsed' "$WORK/out"; then
-    [[ $rc -eq 0 ]] && ok "installed, verified and parsed the Justfile" || bad "parsed but exit $rc"
-    printf 'default:\n\techo ok\n  bad indent {{\n' > "$FIX/Justfile"
-    run_step "$ACTION" ""; rc=$?
-    [[ $rc -eq 1 ]] && grep -q 'does not parse' "$WORK/out" && ok "a Justfile that does not parse fails" || bad "broken Justfile gave exit $rc"
-elif grep -q 'curl: ' "$WORK/out"; then
-    echo "  SKIP real download (no network): $(grep -m1 'curl: ' "$WORK/out")"
-else
-    bad "real install neither parsed nor reported a download error (exit $rc)"; sed 's/^/      /' "$WORK/out"
-fi
+case $(classify "$WORK/out") in
+    parsed)
+        [[ $rc -eq 0 ]] && ok "installed, verified and parsed the Justfile" || bad "parsed but exit $rc"
+        # Reuse the binary just installed and verified: a second download would
+        # prove nothing more and doubles the worst-case run time.
+        KEPT="$WORK/kept"; mkdir -p "$KEPT"; cp "$WORK/rt/just-bin/just" "$KEPT/just"
+        printf 'default:\n\techo ok\n  bad indent {{\n' > "$FIX/Justfile"
+        run_step "$ACTION" "$KEPT"; rc=$?
+        [[ $rc -eq 1 ]] && grep -q 'does not parse' "$WORK/out" && ok "a Justfile that does not parse fails" || bad "broken Justfile gave exit $rc"
+        ;;
+    offline)
+        echo "  SKIP real download (no connectivity): $(grep -m1 'curl: ' "$WORK/out")"
+        ;;
+    *)
+        bad "real install failed for a reason other than connectivity (exit $rc)"; sed 's/^/      /' "$WORK/out"
+        ;;
+esac
 
 echo
 echo "recipes-set install controls: $PASS passed, $FAIL failed"
