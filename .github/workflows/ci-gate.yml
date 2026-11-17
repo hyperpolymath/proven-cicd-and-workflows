@@ -84,6 +84,23 @@ jobs:
             || { echo "::error::context input is empty or has unexpected characters"; exit 1; }
           [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::timeout_minutes must be a positive integer"; exit 1; }
+      - name: Mark a started or re-run workflow pending
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+        # First step after input validation: it needs only gh, the repository, the head SHA and
+        # the context, and runs before any suite file is fetched. A run that starts (or is
+        # re-run) must stop the previous verdict, a possible success, from standing at once.
+        # The verdict step later overwrites it; the later write is always a fresh evaluation.
+        run: |
+          set -uo pipefail
+          [[ "$EVENT_ACTION" == in_progress ]] || { echo "event action '$EVENT_ACTION': no early pending"; exit 0; }
+          desc=$(jq -rn --arg n "$RUN_NAME" '"re-run started: " + $n | if length > 140 then .[0:139] + "…" else . end')
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=pending -f context="$CONTEXT" -f description="$desc" \
+            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+            || { echo "::error::could not publish the re-run pending status; NO VERDICT WAS PRODUCED"; exit 1; }
+          echo "$CONTEXT = pending: $desc"
       - name: Read the profile and the verdict scripts from this suite at its own commit
         env:
           WF_REPO: ${{ job.workflow_repository }}
@@ -121,8 +138,6 @@ jobs:
         env:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
-          EVENT_ACTION: ${{ github.event.action }}
-          RUN_NAME: ${{ github.event.workflow_run.name }}
         # All of the reading, the settle guard and the publishing is scripts/ci-gate-publish.sh
         # (fetched from the suite above), so a stub `gh` can test it offline. The workflow only
         # hands it values through env.

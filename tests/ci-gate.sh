@@ -203,22 +203,24 @@ n=$(dlen "$DESC")
   && ok "long failure description is cut to $n chars with an ellipsis" || bad "long description: $n chars '$DESC'"
 PROFILE="$FX/profile.json"
 
-echo "== publisher: stub gh, settle guard, status writes =="
+echo "== publisher: fake gh, settle guard, status writes =="
 PUBLISH="$ROOT/scripts/ci-gate-publish.sh"
 SUITE_DIR="$WORK/suite"; FAKEGH="$WORK/stub"
 mkdir -p "$SUITE_DIR/scripts" "$SUITE_DIR/profiles/ci-gate/example" "$FAKEGH/bin"
 cp "$ROOT"/scripts/ci-gate-verdict.sh "$ROOT"/scripts/validate-ci-gate-profile.sh "$PUBLISH" "$SUITE_DIR/scripts/"
 cp "$ROOT"/profiles/ci-gate/validate.jq "$ROOT"/profiles/ci-gate/select-runs.jq "$SUITE_DIR/profiles/ci-gate/"
 cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
-cat > "$FAKEGH/bin/gh" <<'STUB_EOF'
+cat > "$FAKEGH/bin/gh" <<'FAKEGH_EOF'
 #!/usr/bin/env bash
-# Stub gh: canned runs (the Nth runs call returns runs.N.json, else the highest-numbered file),
+# Fake gh: canned runs (the Nth runs call returns runs.N.json, else the highest-numbered file),
 # canned jobs, a POST log, and injected failures (fail.N = the Nth runs call errors; failjobs).
-D=${STUB_DIR:?}
+D=${FAKEGH_DIR:?}
 if [[ " $* " == *" -X POST "* ]]; then
   state=''; desc=''
   for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; esac; done
   [[ ! -f $D/failpost ]] || { echo "gh: HTTP 500 (post)" >&2; exit 1; }
+  # a newer evaluator's write that lands just before this one (deterministic pause control)
+  if [[ -f $D/prepost ]]; then cat "$D/prepost" >> "$D/posts.log"; rm -f "$D/prepost"; fi
   printf '%s\t%s\n' "$state" "$desc" >> "$D/posts.log"; exit 0
 fi
 args="$*"
@@ -232,18 +234,18 @@ case $args in
     [[ ! -f $D/failjobs ]] || { echo "gh: HTTP 500 (jobs)" >&2; exit 1; }
     id=${args#*actions/runs/}; id=${id%%/*}
     jq -c --argjson id "$id" '.[] | select(.run.id == $id) | del(.run)' "$D/jobs.json" ;;
-  *) echo "stub gh: unexpected call: $args" >&2; exit 1 ;;
+  *) echo "fake gh: unexpected call: $args" >&2; exit 1 ;;
 esac
-STUB_EOF
+FAKEGH_EOF
 chmod +x "$FAKEGH/bin/gh"
 SHA=$(printf 'a%.0s' $(seq 40))
 snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
   jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/runs.$1.json"
 }
-pubreset() { rm -f "$FAKEGH"/runs.*.json "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
+pubreset() { rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
-  PUBOUT=$(env PATH="$FAKEGH/bin:$PATH" STUB_DIR="$FAKEGH" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
+  PUBOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
     TIMEOUT_MINUTES=180 GATE_NAME='CI gate' SUITE="$SUITE_DIR" WORK="$WORK/pw" CI_GATE_NOW="$NOW" \
     GITHUB_OUTPUT="$WORK/gho" GITHUB_STEP_SUMMARY="$WORK/gss" "$@" bash "$SUITE_DIR/scripts/ci-gate-publish.sh" 2>&1)
   RC=$?
@@ -256,43 +258,51 @@ chk() { # <label> <actual> <expected>
 RERUN='map(if .id == 12 then .status = "in_progress" | .run_attempt = 2 else . end)'
 DONE='.'
 
-pubreset; snap 1 "$DONE"; publish EVENT_ACTION=completed
-chk "completed event, everything passed: one POST" "$NPOSTS" 1
-chk "completed event, everything passed: success" "$(post_n 1 | cut -f1)" success
-chk "completed event: exit 0" "$RC" 0
-chk "completed event: two run fetches (snapshot and guard)" "$CALLS" 2
-grep -q '^published=true$' "$WORK/gho" && ok "completed event: published=true written" || bad "published=true not written"
+pubreset; snap 1 "$DONE"; publish
+chk "everything passed: one POST" "$NPOSTS" 1
+chk "everything passed: success" "$(post_n 1 | cut -f1)" success
+chk "everything passed: exit 0" "$RC" 0
+chk "everything passed: three run fetches (snapshot, guard, post-write verify)" "$CALLS" 3
+[ -s "$WORK/gho" ] && grep -q '^published=true$' "$WORK/gho" && ok "published=true written" || bad "published=true not written"
 
-pubreset; snap 1 "$RERUN"; publish EVENT_ACTION=in_progress RUN_NAME='CI quality'
-chk "existing success, then an in_progress event: the FIRST POST is pending" "$(post_n 1 | cut -f1)" pending
-chk "the first POST names the re-run" "$(post_n 1 | cut -f2)" "re-run started: CI quality"
-chk "the final POST is pending too (the run is still active)" "$(post_n 2 | cut -f1)" pending
-chk "in_progress event: two POSTs" "$NPOSTS" 2
+pubreset; snap 1 "$RERUN"; publish
+chk "a run is active: pending, one POST" "$(post_n 1 | cut -f1)/$NPOSTS" "pending/1"
 chk "pending is a normal wait: exit 0" "$RC" 0
-
-pubreset; snap 1 "$DONE"; publish EVENT_ACTION=in_progress RUN_NAME='CI quality'
-chk "in_progress event on settled data: first POST pending" "$(post_n 1 | cut -f1)" pending
-chk "in_progress event on settled data: final POST success" "$(post_n 2 | cut -f1)" success
+chk "the publisher writes no 're-run started' of its own (that is the workflow's first step)" "$(post_n 1 | cut -f2 | grep -c 're-run started')" 0
 
 echo "-- the runs change between evaluation and publish --"
 pubreset; snap 1 "$RERUN"; snap 2 "$DONE"; snap 3 "$DONE"
-publish EVENT_ACTION=completed
+publish
 chk "fingerprint moved: one POST, not the stale pending" "$NPOSTS" 1
 chk "fingerprint moved: the POST reflects the new data (success)" "$(post_n 1 | cut -f1)" success
-chk "fingerprint moved: re-evaluated (4 run fetches)" "$CALLS" 4
+chk "fingerprint moved: re-evaluated (5 run fetches)" "$CALLS" 5
 pubreset; snap 1 "$DONE"; snap 2 "$RERUN"; snap 3 "$RERUN"
-publish EVENT_ACTION=completed
+publish
 chk "success evaluated, run started before the POST: no stale success" "$(post_n 1 | cut -f1)" pending
 chk "success evaluated, run started before the POST: one POST" "$NPOSTS" 1
 echo "-- an early-snapshot evaluator that finishes after the settle --"
 pubreset; snap 1 "$RERUN"; snap 2 "$DONE"
-publish EVENT_ACTION=in_progress RUN_NAME='CI quality'
-chk "early evaluator: first POST pending (re-run started)" "$(post_n 1 | cut -f1)" pending
-chk "early evaluator: its final POST is success, not the stale pending" "$(post_n 2 | cut -f1)" success
-chk "early evaluator: exactly two POSTs" "$NPOSTS" 2
+publish
+chk "early evaluator: its only POST is success, not the stale pending" "$(post_n 1 | cut -f1)/$NPOSTS" "success/1"
+echo "-- a stale write is corrected by the post-write verification --"
+pubreset; snap 1 "$DONE"; snap 2 "$DONE"; snap 3 "$RERUN"; snap 4 "$RERUN"; snap 5 "$RERUN"; snap 6 "$RERUN"
+printf 'pending\twaiting for 1 workflow runs: CI quality\n' > "$FAKEGH/prepost"
+publish
+chk "a newer pending lands just before the evaluator's POST: the log is pending, success, pending" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)" "pending,success,pending"
+chk "the final POST is not the stale success" "$(post_n 3 | cut -f1)" pending
+chk "the evaluator itself wrote two statuses (success, then the corrected pending)" "$(sed -n '2,3p' "$FAKEGH/posts.log" | cut -f1 | paste -sd, -)" "success,pending"
+chk "verification costs one more fetch per write (3 + 3 fetches)" "$CALLS" 6
+chk "settled after the correction: exit 0" "$RC" 0
+echo "-- the post-write verification is bounded at 5 rounds --"
+pubreset; for i in $(seq 1 3 16); do snap "$i" "map(.updated_at = \"g$i\")"; snap $((i+1)) "map(.updated_at = \"g$i\")"; snap $((i+2)) "map(.updated_at = \"v$i\")"; done
+publish
+chk "guard passes but the verify always moves: 5 verdict writes then one pending" "$NPOSTS" 6
+chk "the last write is pending 'runs still changing'" "$(post_n 6 | cut -f1,2)" "$(printf 'pending\truns still changing')"
+chk "no write after round 5 other than that pending; 15 fetches" "$CALLS" 15
+chk "bounded: exit 0 (pending), never success last" "$RC" 0
 echo "-- the runs never stabilise --"
 pubreset; for i in $(seq 1 14); do snap "$i" "map(.updated_at = \"t$i\")"; done
-publish EVENT_ACTION=completed
+publish
 chk "never stable: one POST" "$NPOSTS" 1
 chk "never stable: pending" "$(post_n 1 | cut -f1)" pending
 chk "never stable: 'runs still changing'" "$(post_n 1 | cut -f2)" "runs still changing"
@@ -302,28 +312,39 @@ echo "-- a late evaluator cannot leave a stale failure either --"
 pubreset; snap 1 "$DONE"; snap 2 "map(if .id == 11 then .status = \"in_progress\" else . end)"
 jq 'map(if .name == "Test" then .conclusion = "failure" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"
 snap 3 "$DONE"
-publish EVENT_ACTION=completed
+publish
 chk "stale failure not written when the runs moved; re-evaluated: failure on settled data" "$(post_n 1 | cut -f1)" failure
 chk "failure verdict: exit 1" "$RC" 1
 chk "failure verdict: names the job" "$(post_n 1 | cut -f2 | grep -c 'Test (failure)')" 1
 echo "-- errors fail closed --"
-pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.1"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.1"; publish
 chk "gh error on the first runs fetch: a failure POST" "$(post_n 1 | cut -f1)" failure
 chk "gh error: exit 1, one POST" "$RC/$NPOSTS" "1/1"
-pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.2"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.2"; publish
 chk "gh error on the guard fetch: a failure POST" "$(post_n 1 | cut -f1)" failure
-pubreset; snap 1 "$DONE"; touch "$FAKEGH/failjobs"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.3"; publish
+chk "gh error on the post-write fetch: success was written, then a failure POST" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)/$RC" "success,failure/1"
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/failjobs"; publish
 chk "gh error reading jobs: a failure POST" "$(post_n 1 | cut -f1)" failure
-pubreset; snap 1 "$DONE"; touch "$FAKEGH/failpost"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/failpost"; publish
 chk "the status POST itself fails: exit 1, no published=true" "$RC/$([ -s "$WORK/gho" ] && echo 1 || echo 0)" "1/0"
-pubreset; snap 1 "$DONE"; rm -f "$SUITE_DIR/profiles/ci-gate/example/repo.json"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; rm -f "$SUITE_DIR/profiles/ci-gate/example/repo.json"; publish
 chk "no profile: a failure POST, exit 1" "$(post_n 1 | cut -f1)/$RC" "failure/1"
 cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
-pubreset; snap 1 "$DONE"; publish EVENT_ACTION=completed HEAD_SHA=abc
+pubreset; snap 1 "$DONE"; publish HEAD_SHA=abc
 chk "a head SHA that is not 40 hex: exit 1, no POST" "$RC/$NPOSTS" "1/0"
-pubreset; snap 1 "$RERUN"; publish EVENT_ACTION=in_progress RUN_NAME="$(printf 'x%.0s' $(seq 200))"
-chk "the re-run description is clipped to 140 characters" "$(dlen "$(post_n 1 | cut -f2)")" 140
 pubreset
+
+echo "-- the workflow's first step marks a started run pending before any suite file is read --"
+step_line() { grep -n -- "- name: $1" "$WORKFLOW" | head -1 | cut -d: -f1; }
+L_REFUSE=$(step_line 'Refuse anything'); L_PEND=$(step_line 'Mark a started or re-run'); L_READ=$(step_line 'Read the profile')
+{ [ -n "$L_REFUSE" ] && [ -n "$L_PEND" ] && [ -n "$L_READ" ] && [ "$L_REFUSE" -lt "$L_PEND" ] && [ "$L_PEND" -lt "$L_READ" ]; } \
+  && ok "step order: input validation, then the early pending, then the profile fetch" || bad "step order is wrong ($L_REFUSE, $L_PEND, $L_READ)"
+EARLY=$(sed -n "${L_PEND},$((L_READ - 1))p" "$WORKFLOW")
+grep -q 'EVENT_ACTION' <<<"$EARLY" && grep -q 'in_progress' <<<"$EARLY" && grep -q 'state=pending' <<<"$EARLY" && grep -q 're-run started' <<<"$EARLY" \
+  && ok "the early step posts pending 're-run started' for an in_progress action" || bad "the early step lacks the in_progress pending"
+! grep -qE '\$suite|fetch |scripts/' <<<"$EARLY" && ok "the early step reads no suite file" || bad "the early step touches the suite"
+! grep -q '\${{' <(awk '/^        run: \|/{f=1;next} f' <<<"$EARLY") && ok "the early step has no \${{ }} inside its run: script" || bad "the early step interpolates into run:"
 
 echo "== profile validator =="
 v_ok()  { bash "$VALIDATE" "$1" "${2:-example/repo}" >/dev/null 2>&1 && ok "accepted $3" || bad "rejected $3"; }

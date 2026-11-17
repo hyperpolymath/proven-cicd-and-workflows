@@ -8,28 +8,32 @@
 #   REPO HEAD_SHA CONTEXT TIMEOUT_MINUTES GATE_NAME   what and where to publish
 #   SUITE            directory holding scripts/, profiles/ fetched from the suite at one commit
 #   WORK             scratch directory (default: a fresh mktemp -d)
-#   EVENT_ACTION     the workflow_run event action (`completed`, `in_progress`, ...)
-#   RUN_NAME         the triggering workflow run's name (for the "re-run started" text)
 #   SERVER_URL RUN_ID WF_REPO WF_SHA                    for target_url and the step summary
 #   CI_GATE_NOW      test hook: epoch seconds instead of `date +%s`
 #   GITHUB_STEP_SUMMARY, GITHUB_OUTPUT                  optional; `published=true` is written
 #                                                       once a verdict status was posted
 #
-# Order of work:
-#  a. EVENT_ACTION = in_progress: POST `pending` ("re-run started: <name>") BEFORE reading the
-#     profile or any job, so a stale success never outlives the start of a run.
+# (The `pending` "re-run started" write for an in_progress event is the FIRST STEP of the
+#  workflow, before any suite file is read; this script posts only verdicts.)
+#
+# Order of work, each round (at most 5 rounds in all):
 #  b. Snapshot the workflow runs of the SHA, fingerprint them (id, status, conclusion,
 #     run_attempt, updated_at of every run but the gate's own), read the jobs, run the verdict.
-#  c. Guard: just before the POST, fetch the runs again and recompute the fingerprint. If it
-#     moved, evaluate again from (b), at most 5 rounds. Still moving after 5: POST `pending`
-#     "runs still changing", never success. The guard applies to EVERY state written, so a
-#     late evaluator cannot leave a stale pending or failure either.
-#  d. Fail closed: verdict exit code and state must agree; any API or input error posts a
+#  c. Guard: just before the POST, fetch the runs again. If the fingerprint moved, do not
+#     write; start the next round.
+#  d. POST the status, then fetch the runs once more (post-write verification). If the
+#     fingerprint moved since the snapshot, start the next round: re-evaluate and re-POST.
+#     This shortens, but cannot remove, the window in which an evaluator paused between its
+#     last check and its POST overwrites a newer status: the statuses API has no
+#     compare-and-swap.
+#  e. Still moving after 5 rounds: the last write is `pending` "runs still changing", never
+#     success. Every state is guarded, so a late evaluator cannot leave a stale pending or
+#     failure either.
+#  f. Fail closed: verdict exit code and state must agree; any API or input error posts a
 #     failure status and exits 1; descriptions are at most 140 characters.
 set -uo pipefail
-
 MAX_ROUNDS=5
-SUITE=${SUITE:-}; WORK=${WORK:-}; EVENT_ACTION=${EVENT_ACTION:-}; RUN_NAME=${RUN_NAME:-}
+SUITE=${SUITE:-}; WORK=${WORK:-}
 SERVER_URL=${SERVER_URL:-https://github.com}; RUN_ID=${RUN_ID:-0}; WF_REPO=${WF_REPO:-}; WF_SHA=${WF_SHA:-}
 for v in REPO HEAD_SHA CONTEXT TIMEOUT_MINUTES GATE_NAME SUITE; do
   [[ -n ${!v:-} ]] || { echo "::error::ci-gate-publish: $v is not set; NO VERDICT WAS PRODUCED"; exit 1; }
@@ -68,17 +72,21 @@ fingerprint() { # <runs file> -> one line; the gate's own runs are not part of i
     '[.[] | select(.name != $gate) | [.id, .status, .conclusion, .run_attempt, .updated_at]] | sort' "$1"
 }
 
-# a. a started or re-run workflow invalidates the previous verdict at once
-if [[ $EVENT_ACTION == in_progress ]]; then
-  post pending "re-run started: ${RUN_NAME:-workflow}" || die 'could not publish the re-run pending status'
-  echo "$CONTEXT = pending: re-run started"
-fi
-
 [[ -f $PROFILE ]] || die "no profile for $REPO"
 bash "$SUITE/scripts/validate-ci-gate-profile.sh" "$PROFILE" "$REPO" "$CONTEXT" > /dev/null 2>&1 \
   || die 'profile invalid for this repository'
 
-state='' description='' rc=1
+write_summary() { # <state> <description> <detail-from-summary-file: 1|0>
+  {
+    echo "### $CONTEXT: $1"
+    echo
+    echo "Commit \`$HEAD_SHA\` · profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`"
+    echo
+    if [[ $3 == 1 ]]; then cat "$WORK/summary.md" 2> /dev/null || echo "$2"; else echo "$2"; fi
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+}
+
+state='' description='' rc=1 settled=0
 for ((round = 1; round <= MAX_ROUNDS; round++)); do
   # b. snapshot, fingerprint, jobs, verdict
   fetch_runs || die 'could not read the workflow runs'
@@ -109,28 +117,31 @@ for ((round = 1; round <= MAX_ROUNDS; round++)); do
   esac
   # c. guard: did the runs move while we evaluated? Applies to every state.
   fetch_runs || die 'could not re-read the workflow runs'
-  fp_after=$(fingerprint "$WORK/workflow-runs.json") || die 'workflow runs are malformed'
-  [[ $fp_before == "$fp_after" ]] && break
-  echo "round $round: the workflow runs changed while evaluating; evaluating again"
-  state=''
+  fp_guard=$(fingerprint "$WORK/workflow-runs.json") || die 'workflow runs are malformed'
+  if [[ $fp_before != "$fp_guard" ]]; then
+    echo "round $round: the workflow runs changed while evaluating; evaluating again"
+    continue
+  fi
+  # d. write, then verify the write against the runs as they are now
+  write_summary "$state" "$description" 1
+  post "$state" "$description" || die 'could not publish the status'
+  finish_output
+  echo "$CONTEXT = $state: $description"
+  fetch_runs || die 'could not re-read the workflow runs after publishing'
+  fp_post=$(fingerprint "$WORK/workflow-runs.json") || die 'workflow runs are malformed'
+  if [[ $fp_before == "$fp_post" ]]; then settled=1; break; fi
+  echo "round $round: the workflow runs changed while publishing; evaluating again"
 done
 
-if [[ -z $state ]]; then
+# e. never settled: the last write is pending, never success
+if [[ $settled -ne 1 ]]; then
   state=pending; description='runs still changing'; rc=0
-  echo "::warning::the workflow runs of $HEAD_SHA changed in all $MAX_ROUNDS rounds; publishing pending"
+  echo "::warning::the workflow runs of $HEAD_SHA kept changing for $MAX_ROUNDS rounds; publishing pending"
+  write_summary "$state" "$description" 0
+  post "$state" "$description" || die 'could not publish the status'
+  finish_output
+  echo "$CONTEXT = $state: $description"
 fi
-
-{
-  echo "### $CONTEXT: $state"
-  echo
-  echo "Commit \`$HEAD_SHA\` · profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`"
-  echo
-  if [[ $description == 'runs still changing' ]]; then echo "$description"; else cat "$WORK/summary.md" 2> /dev/null || echo "$description"; fi
-} >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-
-post "$state" "$description" || die 'could not publish the status'
-finish_output
-echo "$CONTEXT = $state: $description"
 # A pending verdict is a normal wait for the next workflow_run; only failure is red.
 if [[ $state == failure ]]; then echo "::error::$CONTEXT failed: $description"; exit 1; fi
 exit 0
