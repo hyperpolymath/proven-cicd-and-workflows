@@ -44,10 +44,11 @@ jobs:
       EVENT_NAME: ${{ github.event_name }}
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      WF_REPO: ${{ job.workflow_repository }}
-      WF_SHA: ${{ job.workflow_sha }}
     steps:
       - name: Refuse anything but pull_request_target
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
           [[ "$EVENT_NAME" == pull_request_target ]] \
@@ -55,6 +56,9 @@ jobs:
           [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ && "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::job.workflow_repository / job.workflow_sha are empty or malformed; NO VERDICT WAS PRODUCED"; exit 1; }
       - name: Read the guard script from this suite at its own commit
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/tamper-guard"; mkdir -p "$d"
