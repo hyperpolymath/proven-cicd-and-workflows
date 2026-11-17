@@ -19,7 +19,7 @@
 # account, so this is tamper-EVIDENT and deliberate, not tamper-proof (docs/CI-GATE.adoc, "Tamper guard").
 #
 # The caller must grant: pull-requests: read, contents: read, and run on pull_request_target with the
-# types opened, reopened, synchronize, labeled, unlabeled.
+# types opened, reopened, synchronize, edited, labeled, unlabeled (edited re-runs the guard when the base branch changes).
 name: Gate tamper guard (reusable)
 
 on:
