@@ -35,13 +35,13 @@ jobs:
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
-    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@ace986bbc8793bdfb94024d288053dd8b6e7ee16
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@4e81843d4af6fa2dc54777203477ebbec0c75556
     with:
       context: "CI / gate"
   gate-wr:
     if: >-
       github.event_name == 'workflow_run'
       && github.event.workflow_run.name != 'CI gate caller'
-    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@ace986bbc8793bdfb94024d288053dd8b6e7ee16
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@4e81843d4af6fa2dc54777203477ebbec0c75556
     with:
       context: "CI / gate"
