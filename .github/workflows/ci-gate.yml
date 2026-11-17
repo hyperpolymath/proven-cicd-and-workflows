@@ -106,6 +106,7 @@ jobs:
           }
           fetch scripts/ci-gate-verdict.sh
           fetch scripts/validate-ci-gate-profile.sh
+          fetch scripts/ci-gate-publish.sh
           fetch profiles/ci-gate/validate.jq
           fetch profiles/ci-gate/select-runs.jq
           mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
@@ -120,49 +121,14 @@ jobs:
         env:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+        # All of the reading, the settle guard and the publishing is scripts/ci-gate-publish.sh
+        # (fetched from the suite above), so a stub `gh` can test it offline. The workflow only
+        # hands it values through env.
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/ci-gate-work"; mkdir -p "$work"
-          # Every page of the workflow runs of the head SHA, so a long list cannot hide a run.
-          gh api --paginate "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" --jq '.workflow_runs[]' | jq -s '.' > "$work/workflow-runs.json"
-          # Keep the gate's own runs out and the newest run per (workflow_id, event); then read
-          # the jobs of the LATEST attempt of each kept run, tagging each with its run.
-          jq --arg gate "$GATE_NAME" -c -f "$suite/profiles/ci-gate/select-runs.jq" "$work/workflow-runs.json" > "$work/kept-runs.json"
-          : > "$work/jobs.ndjson"
-          while read -r run; do
-            id=$(jq -r .id <<<"$run")
-            [[ "$id" =~ ^[0-9]+$ ]] || { echo "::error::workflow run has no numeric id"; exit 1; }
-            gh api --paginate "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[]' \
-              | jq -c --argjson run "$run" '. + {run: {id: $run.id, name: $run.name, path: $run.path, status: $run.status}}' >> "$work/jobs.ndjson"
-          done < <(jq -c '.[]' "$work/kept-runs.json")
-          jq -s '.' "$work/jobs.ndjson" > "$work/jobs.json"
-          rc=0
-          bash "$suite/scripts/ci-gate-verdict.sh" \
-            --profile "$suite/profiles/ci-gate/$REPO.json" --repository "$REPO" \
-            --jobs "$work/jobs.json" --workflow-runs "$work/workflow-runs.json" \
-            --gate-name "$GATE_NAME" --context "$CONTEXT" --now "$(date +%s)" \
-            --timeout-minutes "$TIMEOUT_MINUTES" --summary "$work/summary.md" > "$work/verdict.txt" || rc=$?
-          state=$(sed -n 's/^state=//p' "$work/verdict.txt")
-          description=$(sed -n 's/^description=//p' "$work/verdict.txt")
-          # The exit code and the printed state must agree; anything else is a failure.
-          case "$rc:$state" in
-            0:success|3:pending|1:failure) ;;
-            *) state=failure; description="ci-gate: verdict script gave exit $rc and state '${state:-none}'"; rc=1 ;;
-          esac
-          {
-            echo "### $CONTEXT: $state"
-            echo
-            echo "Commit \`$HEAD_SHA\` · profile \`$REPO\` at \`$WF_REPO@$WF_SHA\`"
-            echo
-            cat "$work/summary.md" 2>/dev/null || echo "$description"
-          } >> "$GITHUB_STEP_SUMMARY"
-          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
-            -f state="$state" -f context="$CONTEXT" -f description="$description" \
-            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null
-          echo "published=true" >> "$GITHUB_OUTPUT"
-          echo "$CONTEXT = $state: $description"
-          # A pending verdict is a normal wait for the next workflow_run; only failure is red.
-          [[ "$state" != failure ]] || { echo "::error::$CONTEXT failed: $description"; exit 1; }
+          SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" bash "$suite/scripts/ci-gate-publish.sh"
       - name: Publish a failure status when no verdict could be produced
         if: ${{ failure() && steps.publish.outputs.published != 'true' }}
         run: |

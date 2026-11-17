@@ -36,13 +36,24 @@ The status description is at most 140 characters (truncated with an ellipsis); t
 carries the full table. `scripts/ci-gate-verdict.sh` exits 0 for success, 3 for pending and 1
 for failure and for every error.
 
+== Publishing and the settle guard
+
+Reading, evaluating and publishing is `scripts/ci-gate-publish.sh` (fetched from the suite at `job.workflow_sha` like the other scripts; it talks to GitHub only through `gh`, so `tests/ci-gate.sh` drives it with a stub). The caller has no `concurrency:` block: per-SHA serialisation would hold the `in_progress` caller behind a running evaluation that then writes a stale success.
+
+. On an `in_progress` event it first POSTs `pending` (`re-run started: <workflow name>`), before reading the profile or any job.
+. It snapshots the workflow runs of the commit and fingerprints them: the sorted (`id`, `status`, `conclusion`, `run_attempt`, `updated_at`) of every run but the gate's own. It reads the jobs and computes the verdict.
+. Just before the POST it fetches the runs again. If the fingerprint moved it evaluates again, at most 5 rounds. If it is still moving after 5 rounds it publishes `pending` (`runs still changing`), never success. The guard covers every state, so a late evaluator cannot leave a stale pending or failure either.
+. Any API or input error posts a failure status and exits non-zero.
+
+*Residual race.* Between the final fingerprint check and the POST there remains a window of a few milliseconds (one `gh` call) in which a run can change after the guard passed. Convergence still holds: every status written reflected data that was fresh when it was written; the data only moves toward settled (runs go queued, in progress, completed); and each change of a run raises a `workflow_run` event (`in_progress` or `completed`) whose evaluator reads and writes after that change. The evaluator of the last `completed` event writes last, from the settled data, so the final status is the settled verdict. A write that lands out of order inside the window is replaced when the later evaluator writes, and can only be visible for as long as one evaluation takes.
+
 == Workflow acceptance contract
 
 [cols="1,4",options="header"]
 |===
 |Field |Statement
 |Inputs |`context` (default `CI/gate`; the one swappable name; `[A-Za-z0-9][A-Za-z0-9._/-]{0,127}`), `timeout_minutes` (default 180). The repository is never an input: the profile is selected by `github.repository`. No `secrets:`.
-|Side effects |One `POST /repos/{repo}/statuses/{head_sha}` per run with the context, state, description (at most 140 characters) and a `target_url` to the gate run; a step summary. Nothing else is written. Pending is a normal wait for the next `workflow_run`.
+|Side effects |On an `in_progress` event a first `POST /repos/{repo}/statuses/{head_sha}` of `pending`; then exactly one verdict POST (after any re-evaluation by the settle guard) with the context, state, description (at most 140 characters) and a `target_url` to the gate run; a step summary. Nothing else is written. Pending is a normal wait for the next `workflow_run`.
 |Permissions |Granted by the caller: `statuses: write`, `actions: read`, `contents: read`. The reusable asks for exactly these and no more.
 |Subjects |The head commit of the completed workflow run, in the repository the caller lives in. Required checks are Actions job names in the suite's profile for that repository. Third-party checks are out of scope.
 |Failure and refusal |Any event other than `workflow_run`: refused, red job, no status. A missing, empty, malformed, wrong-repository or self-naming profile, an empty `job.workflow_repository` or `job.workflow_sha`, or any API error: failure; the job is red and a final step posts a failure status if none was published. A failed verdict also exits the job non-zero. No code from the consumer or a pull request is checked out or executed, and no `${{ }}` reaches a `run:` script (values travel through `env:`).
