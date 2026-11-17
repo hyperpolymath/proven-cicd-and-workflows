@@ -37,8 +37,10 @@ mkdir -p "$destination"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 base=https://github.com/casey/just/releases/download
-# Worst case is bounded well inside a five-minute job: one attempt of at most
-# 60 s, and retries that stop 60 s after the first failure.
+# Bounded well inside a five-minute job. --max-time caps each attempt at 60 s.
+# --retry-max-time is a clock that starts before the first attempt: no retry
+# STARTS after 60 s, but one already running may finish, so the worst case is
+# about 120 s.
 curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location --connect-timeout 10 --max-time 60 \
     --retry 2 --retry-max-time 60 \
     "${base}/${version}/just-${version}-${target}.tar.gz" \

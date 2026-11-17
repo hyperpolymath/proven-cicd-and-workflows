@@ -16,7 +16,8 @@
 #   * download fails        -> exit 1, the downloader's error is in the output,
 #                              and no parse result is printed
 #   * wrong bytes delivered -> exit 1 on the checksum, nothing installed
-#   * HTTP error (404)      -> a failure, never an "offline" skip
+#   * HTTP error (404)      -> a failure, never an "offline" skip, including
+#                              a 404 that follows a retried timeout
 #   * unsupported runner    -> exit 1, the installer names the runner
 #   * real pinned download  -> the Justfile is parsed (SKIP only on a
 #                              connectivity failure: curl 5, 6, 7, 28 or 35)
@@ -81,12 +82,24 @@ chmod +x "$ALIEN/uname"
 # 7 (connect), 28 (timeout), 35 (TLS connect). An HTTP error such as 404 means
 # the pinned URL is wrong, and treating it as offline would let a broken pin
 # pass this suite. Review on #140.
+#
+# Only the LAST curl error counts. curl retries a timeout, so one run can
+# print "(28)" for an early attempt and "(22) ... 404" for the final one;
+# matching a connectivity code anywhere in the output would call that offline.
 classify() {
-    if grep -q 'recipes parsed' "$1"; then echo parsed
-    elif grep -Eq 'curl: \((5|6|7|28|35)\)' "$1"; then echo offline
-    else echo error
-    fi
+    local last
+    if grep -q 'recipes parsed' "$1"; then echo parsed; return; fi
+    last=$(grep -Eo 'curl: \([0-9]+\)' "$1" | tail -n 1 || true)
+    case "$last" in
+        'curl: (5)' | 'curl: (6)' | 'curl: (7)' | 'curl: (28)' | 'curl: (35)') echo offline ;;
+        *) echo error ;;
+    esac
 }
+
+# Stand-in curl for a retried download: a timeout first, then a 404.
+MIXED="$WORK/mixed"; mkdir -p "$MIXED"
+printf '#!/bin/bash\necho "curl: (28) Operation timed out after 60000 milliseconds" >&2\necho "curl: (22) The requested URL returned error: 404" >&2\nexit 22\n' > "$MIXED/curl"
+chmod +x "$MIXED/curl"
 
 # Stand-in curl that "succeeds" with the wrong bytes.
 WRONG="$WORK/wrong"; mkdir -p "$WRONG"
@@ -119,6 +132,8 @@ run_step "$ACTION" "$GONE"; rc=$?
 cp "$WORK/out" "$WORK/out.404"
 run_step "$ACTION" "$DEAD"
 [[ $(classify "$WORK/out") == offline ]] && ok "an unresolvable host is classified as offline (control)" || bad "an unresolvable host was classified as $(classify "$WORK/out")"
+run_step "$ACTION" "$MIXED"; rc=$?
+[[ $rc -eq 1 && $(classify "$WORK/out") == error ]] && ok "a timeout followed by a final 404 is an error" || bad "timeout-then-404 gave exit $rc, classified $(classify "$WORK/out")"
 
 echo "== unsupported runner =="
 run_step "$ACTION" "$ALIEN"; rc=$?
