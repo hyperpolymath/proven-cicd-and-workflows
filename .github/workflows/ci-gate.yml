@@ -21,7 +21,9 @@
 #
 # Verdict, over the head SHA, excluding this run's own jobs:
 #   * wait (bounded by timeout_minutes) until no other check run or workflow run is
-#     queued or in progress, and the observed set has been identical for two polls;
+#     queued or in progress and the observed set has been unchanged for settle_seconds
+#     (default 120, measured from the later of the gate start and the last change), so a
+#     check created late, such as a scanner posting at completion, still counts;
 #   * success only if at least one other check exists and every one (latest per
 #     name and app, latest run per workflow and event) concluded success, skipped or
 #     neutral;
@@ -50,6 +52,11 @@ on:
         type: number
         required: false
         default: 30
+      settle_seconds:
+        description: Quiet window before a verdict; a check created late (eg a scanner that posts at completion) must arrive within it
+        type: number
+        required: false
+        default: 120
       poll_seconds:
         description: Seconds between polls
         type: number
@@ -82,6 +89,7 @@ jobs:
       CONTEXT: ${{ inputs.context }}
       TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
       POLL_SECONDS: ${{ inputs.poll_seconds }}
+      SETTLE_SECONDS: ${{ inputs.settle_seconds }}
       SERVER_URL: ${{ github.server_url }}
       RUN_ID: ${{ github.run_id }}
     steps:
@@ -97,7 +105,7 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::head SHA is not a 40-hex commit ('$sha'); NO VERDICT WAS PRODUCED"; exit 1; }
           [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::bad repository coordinate"; exit 1; }
           [[ "$CONTEXT" =~ ^[A-Za-z0-9][A-Za-z0-9._/\ -]{0,127}$ ]] || { echo "::error::context input is empty or has unexpected characters"; exit 1; }
-          [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ && "$POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "::error::timeout_minutes and poll_seconds must be positive integers"; exit 1; }
+          [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ && "$POLL_SECONDS" =~ ^[1-9][0-9]*$ && "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] || { echo "::error::timeout_minutes and poll_seconds must be positive integers and settle_seconds a non-negative integer"; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           # A stale success must not outlive a re-run or a new push to the same SHA.
           gh api -X POST "repos/$REPO/statuses/$sha" \
@@ -124,6 +132,7 @@ jobs:
           }
           deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
           prev=""
+          last_change=$(date +%s)   # later of this gate's start and the last change in the observed set
           while :; do
             # This run's own jobs are check runs on the same SHA (check-run id = job id): exclude them.
             own=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[].id' | jq -Rn '[inputs|tonumber]')
@@ -144,8 +153,12 @@ jobs:
                           | "\(.name) (\(.conclusion // "none"))"] | join(", ")' <<< "$all")
             sig=$(jq -c 'map([.kind,.id,.status,.conclusion]) | sort' <<< "$all")
             echo "observed=$n open=$open failing=[${bad}]"
-            if (( open == 0 )) && [[ "$sig" == "$prev" ]]; then
-              # Settled: nothing running, same set on two consecutive polls.
+            now=$(date +%s)
+            [[ "$sig" == "$prev" ]] || last_change=$now
+            quiet=$(( now - last_change ))
+            echo "quiet for ${quiet}s of ${SETTLE_SECONDS}s required"
+            if (( open == 0 && quiet >= SETTLE_SECONDS )); then
+              # Settled: nothing running and the observed set unchanged for settle_seconds.
               if (( n == 0 )); then
                 publish failure "no other check was observed on this commit; refusing a vacuous pass"; exit 1
               elif [[ -n "$bad" ]]; then
