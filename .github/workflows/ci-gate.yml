@@ -1,0 +1,174 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# ci-gate.yml (reusable) - publish ONE commit status that is green only when every
+# other check on the head commit passed. The status context is an input, because each
+# consumer's branch ruleset requires its own spelling (this suite: `CI / gate`; the
+# rsr-template-repo: `CI/gate`).
+#
+# WHY A COMMIT STATUS: a job inside a reusable workflow gets the check-run name
+# `<caller job> / <called job>`, so a check run can never be named exactly `CI/gate`.
+#
+# WHY IT MUST START FROM A PULL REQUEST: a workflow_run workflow runs from the DEFAULT
+# branch copy only, so a gate that is reachable only through workflow_run can never run
+# on the pull request that introduces it, while a ruleset that requires the status
+# blocks that very pull request (deadlock). Calling this reusable from a `pull_request`
+# workflow breaks the deadlock for same-repository branches. Keep a workflow_run caller
+# as well for fork and Dependabot pull requests, whose pull_request token cannot write
+# statuses.
+#
+# Events: pull_request (head SHA = event.pull_request.head.sha) and workflow_run
+# (head SHA = event.workflow_run.head_sha). Any other event is a failure, never a pass.
+#
+# Verdict, over the head SHA, excluding this run's own jobs:
+#   * wait (bounded by timeout_minutes) until no other check run or workflow run is
+#     queued or in progress, and the observed set has been identical for two polls;
+#   * success only if at least one other check exists and every one (latest per
+#     name and app, latest run per workflow and event) concluded success, skipped or
+#     neutral;
+#   * failure for any other conclusion, for nothing observed, for a timeout and for
+#     any API error. There is no silent pass: the last step publishes a failure when no
+#     verdict was produced.
+#
+# SAFETY: no checkout, no execution of pull request code, no pull_request_target. The
+# only inputs are API metadata, passed through env: and never interpolated into run:.
+# It uses no actions, so nothing to pin; gh and jq ship on the runner image.
+#
+# The caller must grant: statuses: write, checks: read, actions: read, contents: read.
+# No secrets are consumed.
+
+name: CI gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: Commit-status context to publish; must equal what the ruleset requires
+        type: string
+        required: true
+      timeout_minutes:
+        description: How long to wait for the other checks before failing the gate
+        type: number
+        required: false
+        default: 30
+      poll_seconds:
+        description: Seconds between polls
+        type: number
+        required: false
+        default: 20
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      statuses: write
+      checks: read
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      REPO: ${{ github.repository }}
+      CONTEXT: ${{ inputs.context }}
+      TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+      POLL_SECONDS: ${{ inputs.poll_seconds }}
+      SERVER_URL: ${{ github.server_url }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Resolve and validate the head SHA, then mark it pending
+        id: head
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request) sha=$PR_HEAD_SHA ;;
+            workflow_run) sha=$WR_HEAD_SHA ;;
+            *) echo "::error::ci-gate supports pull_request and workflow_run only (got '$EVENT_NAME'); NO VERDICT WAS PRODUCED"; exit 1 ;;
+          esac
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::head SHA is not a 40-hex commit ('$sha'); NO VERDICT WAS PRODUCED"; exit 1; }
+          [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "::error::bad repository coordinate"; exit 1; }
+          [[ "$CONTEXT" =~ ^[A-Za-z0-9][A-Za-z0-9._/\ -]{0,127}$ ]] || { echo "::error::context input is empty or has unexpected characters"; exit 1; }
+          [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ && "$POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "::error::timeout_minutes and poll_seconds must be positive integers"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # A stale success must not outlive a re-run or a new push to the same SHA.
+          gh api -X POST "repos/$REPO/statuses/$sha" \
+            -f state=pending -f context="$CONTEXT" \
+            -f description="waiting for the other checks to finish" \
+            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null
+          echo "$CONTEXT = pending on $sha"
+
+      - name: Wait for the other checks, then publish the verdict
+        id: verdict
+        env:
+          SHA: ${{ steps.head.outputs.sha }}
+        run: |
+          set -euo pipefail
+          url="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
+          publish() { # <state> <description>
+            local d=$2
+            (( ${#d} > 140 )) && d="${d:0:139}…"
+            gh api -X POST "repos/$REPO/statuses/$SHA" \
+              -f state="$1" -f context="$CONTEXT" -f description="$d" -f target_url="$url" > /dev/null
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$CONTEXT = $1: $d"
+          }
+          deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          prev=""
+          while :; do
+            # This run's own jobs are check runs on the same SHA (check-run id = job id): exclude them.
+            own=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[].id' | jq -Rn '[inputs|tonumber]')
+            checks=$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" --jq '.check_runs[]' \
+              | jq -s --argjson own "$own" '
+                  map(select(.id as $i | $own | index($i) | not))
+                  | group_by([(.app.id // 0), .name]) | map(max_by(.id))
+                  | map({kind:"check", id, name, status, conclusion})')
+            runs=$(gh api --paginate "repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" --jq '.workflow_runs[]' \
+              | jq -s --arg self "$RUN_ID" '
+                  map(select((.id|tostring) != $self))
+                  | group_by([.workflow_id, .event]) | map(max_by(.id))
+                  | map({kind:"run", id, name, status, conclusion})')
+            all=$(jq -n --argjson a "$checks" --argjson b "$runs" '$a + $b')
+            n=$(jq 'length' <<< "$all")
+            open=$(jq '[.[] | select(.status != "completed")] | length' <<< "$all")
+            bad=$(jq -r '[.[] | select(.status == "completed" and ((.conclusion // "none") | IN("success","skipped","neutral") | not))
+                          | "\(.name) (\(.conclusion // "none"))"] | join(", ")' <<< "$all")
+            sig=$(jq -c 'map([.kind,.id,.status,.conclusion]) | sort' <<< "$all")
+            echo "observed=$n open=$open failing=[${bad}]"
+            if (( open == 0 )) && [[ "$sig" == "$prev" ]]; then
+              # Settled: nothing running, same set on two consecutive polls.
+              if (( n == 0 )); then
+                publish failure "no other check was observed on this commit; refusing a vacuous pass"; exit 1
+              elif [[ -n "$bad" ]]; then
+                publish failure "not green: $bad"; exit 1
+              else
+                publish success "all $n other checks and workflow runs passed"; exit 0
+              fi
+            fi
+            if (( $(date +%s) >= deadline )); then
+              publish failure "timed out after ${TIMEOUT_MINUTES}m with $open check(s) still running"; exit 1
+            fi
+            prev=$sig
+            sleep "$POLL_SECONDS"
+          done
+
+      - name: Publish a failure status when no verdict could be produced
+        if: ${{ failure() && steps.verdict.outputs.published != 'true' }}
+        env:
+          SHA: ${{ steps.head.outputs.sha }}
+        run: |
+          set -uo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head SHA; cannot publish a status"; exit 1; }
+          gh api -X POST "repos/$REPO/statuses/$SHA" \
+            -f state=failure -f context="$CONTEXT" \
+            -f description="ci-gate could not produce a verdict (API or input error); see the run" \
+            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+            || echo "::error::could not publish the failure status either"
