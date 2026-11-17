@@ -118,11 +118,27 @@ source_revision="$(git rev-parse HEAD 2>/dev/null || true)"
 #
 # Keys of the same name under any other table — `[features]`,
 # `[package.metadata.*]`, `[workspace.dependencies]` — never select.
-# Not recognised: a dependency renamed away from these names
+# CRLF line endings, quoted header keys (`["package"]`) and multiline strings
+# are handled. Not recognised: a dependency renamed away from these names
 # (`x = { package = "creusot-std" }`), and a header whose target
 # expression itself contains `]`.
 manifest_facts() {
   awk '
+    function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
+    # Header key path as bare components: split on unquoted dots, drop quotes
+    # and padding; a dot inside a quoted component becomes \001 so that
+    # "dependencies.creusot-std" is one key, not the table dependencies.creusot-std.
+    function normkey(h,   i, c, q, out, cur) {
+      out = ""; cur = ""; q = ""
+      for (i = 1; i <= length(h); i++) {
+        c = substr(h, i, 1)
+        if (q != "") { if (c == q) q = ""; else cur = cur (c == "." ? "\001" : c) }
+        else if (c == "\"" || c == sprintf("%c", 39)) q = c
+        else if (c == ".") { out = out trim(cur) "."; cur = "" }
+        else cur = cur c
+      }
+      return out trim(cur)
+    }
     function ver_of(line, named,   v) {
       v = ""
       if (match(line, /(^|[ \t,{.])version[ \t]*=[ \t]*"[^"]+"/)) {
@@ -138,7 +154,17 @@ manifest_facts() {
       tgt  = "(target\\.[^\\[\\]]+\\.)?"
       name = "[\"\x27]?(creusot-std|creusot-contracts)[\"\x27]?"
       key  = "^[ \t]*" name "([ \t]*\\.[ \t]*[A-Za-z_-]+)?[ \t]*="
-      pkg = 0; sel = 0; ver = ""; kind = "other"
+      pkg = 0; sel = 0; ver = ""; kind = "other"; ml = ""
+    }
+    # CRLF manifests; then skip the body of multiline strings, whose lines are
+    # content (never headers or keys).
+    {
+      sub(/\r$/, "")
+      if (ml != "") { if (index($0, ml)) ml = ""; next }
+      if ($0 !~ /^[ \t]*#/ && match($0, /=[ \t]*("""|\x27\x27\x27)/)) {
+        d = substr($0, RSTART + RLENGTH - 3, 3)
+        if (!index(substr($0, RSTART + RLENGTH), d)) ml = d
+      }
     }
     /^[ \t]*#/ || /^[ \t]*$/ { next }
     /^[ \t]*\[\[/ { kind = "other"; next }
@@ -146,6 +172,7 @@ manifest_facts() {
       h = $0
       if (!match(h, /^[ \t]*\[[^\[\]]+\][ \t]*(#.*)?$/)) { kind = "other"; next }
       sub(/^[ \t]*\[[ \t]*/, "", h); sub(/[ \t]*\].*$/, "", h)
+      h = normkey(h)
       if (h == "package") { pkg = 1; kind = "other" }
       else if (h ~ ("^" tgt dep "$")) kind = "deps"
       else if (h == "workspace.dependencies") kind = "ws"

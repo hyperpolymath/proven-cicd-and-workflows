@@ -363,7 +363,9 @@ echo "== detect: every spelling of the dependency selects its package; lookalike
 cp -a "$FIX" "$WORK/pre-detect-forms"
 detect_manifest() { # <label> <expect: select|none> <manifest body after the [package] header>
     local label="$1" expect="$2"
-    printf '[package]\nname = "fx"\nversion = "0.1.0"\nedition = "2021"\n%s\n' "$3" > "$FIX/Cargo.toml"; commit
+    printf '[package]\nname = "fx"\nversion = "0.1.0"\nedition = "2021"\n%s\n' "$3" > "$FIX/Cargo.toml"
+    [[ -z "${4:-}" ]] || sed -i 's/$/\r/' "$FIX/Cargo.toml"   # 4th argument: CRLF line endings
+    commit
     run_phase detect
     local selected; selected="$(cat "$WORK/facts/crates")"
     if [[ "$expect" = select ]]; then
@@ -430,6 +432,42 @@ detect_manifest 'similarly named crates'             none   '[dependencies]
 my-creusot-std.workspace = true
 creusot-std-extra = "1"
 creusot-stdx = "1"'
+detect_manifest 'CRLF line endings'                  select '[dependencies]
+creusot-std.workspace = true' crlf
+detect_manifest 'CRLF line endings, [features] lookalike' none '[features]
+creusot-std = []' crlf
+detect_manifest 'quoted table keys ["dependencies"]' select '["dependencies"]
+creusot-std = "0.14"'
+detect_manifest 'quoted dependency table header'     select '[dependencies."creusot-std"]
+version = "0.14"'
+detect_manifest 'a quoted key containing a dot is one key, not a table' none '["dependencies.creusot-std"]
+version = "0.14"'
+detect_manifest 'literal multiline string holding a fake table' none "[package.metadata.docs]
+example = '''
+[dependencies]
+creusot-std = \"0.14\"
+'''"
+detect_manifest 'basic multiline string holding a fake table'   none '[package.metadata.docs]
+example = """
+[dependencies]
+creusot-std.workspace = true
+"""'
+detect_manifest 'real dependency after a multiline string'      select '[package.metadata.docs]
+example = """
+[dependencies]
+"""
+[dependencies]
+creusot-std.workspace = true'
+detect_manifest 'single-line triple-quoted string does not hide what follows' select '[package.metadata]
+x = """abc"""
+[dependencies]
+creusot-std.workspace = true'
+detect_manifest 'comment mentioning a triple quote does not open a string' select '# x = """
+[dependencies]
+creusot-std.workspace = true'
+printf '["package"]\nname = "fx"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ncreusot-std.workspace = true\n' > "$FIX/Cargo.toml"; commit
+run_phase detect
+[[ "$RC" -eq 0 && "$(cat "$WORK/facts/crates")" = "." ]] && ok "selects: quoted [\"package\"] header" || { bad "quoted package header not selected"; cat "$OUT"; }
 # A virtual root has no [package]: it must never be selected, even though the
 # dependency is declared in it (members inherit it).
 printf '[workspace]\nmembers = ["member"]\nresolver = "2"\n[workspace.dependencies]\ncreusot-std = "0.14"\ncreusot-contracts.version = "0.8"\n' > "$FIX/Cargo.toml"
