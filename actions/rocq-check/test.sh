@@ -208,10 +208,58 @@ write Ok.v '#[bypass_check(positivity)] Inductive pb : Type := mk : (pb -> False
 run_phase prove
 expect "#[bypass_check] is refused (coqchk sees the flag)" 1 'unsafe (co)fixpoints'
 
+
+echo "== the module scan is an allow-list: comments and Unicode names cannot slip past it =="
 fresh_fixture
-write Ok.v 'Module Type T. End T.' 'Module Type F (X : T). End F.' 'Module M. Definition d := 1. End M.' 'Definition Module_x : nat := 1.'
-run_phase prove REQUIRED_THEOREMS=M.d
-expect "plain modules, module types, module type functors and similar names are not refused" 0 '1 required theorem(s) resolved'
+write Ok.v 'Module Type S.' '  Parameter bad : False.' 'End S.' 'Module (* hidden *) M : S.' '  Unset (* x *) Guard Checking.' \
+  '  Fixpoint loop (n : nat) : False := loop n.' '  Set Guard Checking.' '  Lemma bad : False. Proof. exact (loop 0). Qed.' 'End M.'
+run_phase prove
+expect "fixture comment-sealed: Module (* hidden *) M : S with Unset (* x *) Guard Checking" 1 'Refused fail-closed'
+
+fresh_fixture
+write Ok.v 'Module Type E. End E.' 'Module (* c *) F (X : E).' '  Axiom cheat : False.' 'End F.' 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove
+expect "fixture comment-functor: Module (* c *) F (X : E) with an axiom in the body" 1 'Refused fail-closed'
+
+fresh_fixture
+write Ok.v 'Module Type E. End E.' 'Module ℱ (X : E).' '  Axiom cheat : False.' 'End ℱ.' 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove
+expect "fixture unicode-functor: a functor with a non-ASCII name" 1 'Refused fail-closed'
+
+fresh_fixture
+write Ok.v 'Module ℳ.' '  Definition d := 1.' 'End ℳ.'
+run_phase prove
+expect "a plain module with a non-ASCII name is refused (the allow-list is ASCII)" 1 'Refused fail-closed'
+
+fresh_fixture
+write Ok.v 'Unset (* x *) Guard Checking.' 'Set Guard Checking.' 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove
+expect "fixture comment-unset: a comment between the words of Unset Guard Checking" 1 'Refused fail-closed'
+
+fresh_fixture
+write Ok.v 'Module Type E. End E.' 'Module Type F (X : E). End F.'
+run_phase prove
+expect "a functor signature is refused" 1 'Refused fail-closed'
+
+fresh_fixture
+write Ok.v 'Declare Scope my_scope.'
+run_phase prove
+expect "Declare (any form) is refused" 1 'Load, Add LoadPath'
+
+fresh_fixture
+write Ok.v 'Definition Module_x : nat := 1.'
+run_phase prove
+expect "any other word containing Module is refused (the scan is textual)" 1 'Refused fail-closed'
+
+fresh_fixture
+write Ok.v 'Module Type T. End T.' 'Module M. Definition d := 1. End M.' 'Module Import N. Definition e := 2. End N.' 'Module Type U.' ' Parameter p : nat.' 'End U.'
+run_phase prove REQUIRED_THEOREMS="M.d N.e"
+expect "plain modules, Import modules and module types pass" 0 '2 required theorem(s) resolved'
+
+fresh_fixture
+write Ok.v 'Module Type E. End E.' 'Module (* gap *) F (X : E).' '  Axiom cheat : False.' 'End F.' 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove
+expect "fixture comment-gap: CodeRabbit's exact comment-separated functor header" 1 'Refused fail-closed'
 
 echo "== controls are judged with no allowance, whatever the caller allows =="
 fresh_fixture
@@ -226,6 +274,10 @@ expect "fixture probe-collision: a listed file named like the old probe" 0 '1 re
 write GateProbe.v 'Lemma ok : True. Proof. exact I. Qed.'
 run_phase prove FILES=proofs/GateProbe.v REQUIRED_THEOREMS=ok
 expect "a listed file named like the current probe" 0 '1 required theorem(s) resolved'
+write GateProbeX.v 'Lemma okx : True. Proof. exact I. Qed.'
+write GateProbe.v 'Lemma ok : True. Proof. exact I. Qed.'
+run_phase prove FILES="proofs/GateProbeX.v proofs/GateProbe.v" REQUIRED_THEOREMS="okx ok"
+expect "fixture probe-order: GateProbeX.v listed before GateProbe.v" 0 '2 required theorem(s) resolved'
 
 echo "== two files, dependency order =="
 fresh_fixture

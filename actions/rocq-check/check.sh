@@ -184,33 +184,39 @@ JUDGE_ALLOWED=()
 is_allowed() { local a; for a in ${JUDGE_ALLOWED[@]+"${JUDGE_ALLOWED[@]}"}; do [ "$a" = "$1" ] && return 0; done; return 1; }
 
 # text_refusal <file>: print why the file uses a form that can hide something
-# from coqchk's summary; print nothing when it does not. Refusing is the safe
-# direction: no forgery can turn a refusal into a pass. The scan is of the raw
-# text, comments included, so a mention in a comment is refused too (false
-# refusals are accepted; false passes are not). Newlines count as spaces.
-#   - a module type ascription (`Module M : S`, `Module M <: S`) and a functor
-#     (`Module F (X : T)`): coqchk checks their bodies but its summary does not
-#     report an axiom in an uninstantiated functor body, or an unsafe fixpoint
-#     hidden by sealing;
-#   - Unset Guard Checking, Unset Positivity Checking, Unset Universe Checking
-#     and #[bypass_check(...)]: the unsealed forms are caught by coqchk, and a
-#     hidden one must not be left to a summary that cannot see it;
-#   - Load, Add LoadPath, Add ML Path, Declare ML Module: commands this scan
-#     cannot see would run.
+# from coqchk's summary; print nothing when it does not. This is an ALLOW-LIST,
+# so it is fail-closed by construction: the raw text is scanned, comments
+# included and never stripped, and anything it does not recognise is refused. A
+# false refusal is accepted; a false pass is not.
+#   - Every occurrence of `Module` (also inside a longer word, and in
+#     `Declare Module`) must be exactly `Module`, whitespace, an optional
+#     `Import`, `Export` or `Type`, whitespace, an ASCII identifier, optional
+#     whitespace, `.`, then whitespace or the end of the text. So `Module M.` and
+#     `Module Type S.` pass. A module type ascription (`Module M : S`, `<: S`), a
+#     functor (`Module F (X : T)`, also as a signature), a comment between the
+#     tokens, a non-ASCII or qualified name, an alias, all refuse. coqchk's
+#     summary does not see an axiom in an uninstantiated functor body, nor an
+#     unsafe fixpoint hidden by sealing.
+#   - Any occurrence of `Checking` (Unset Guard/Positivity/Universe Checking,
+#     whatever comments sit between the words), `bypass_check`, `typing_flags` or
+#     `Typing` (typing flags) refuses.
+#   - Any occurrence of `Load` (also LoadPath), `Declare` (Declare ML Module,
+#     Declare Module, ...) or the word `ML` refuses: code this scan cannot see
+#     could run.
+# Coq 8.18 has no further command or attribute that disables a check: the
+# flags are the three Checking options and the bypass_check attribute.
 text_refusal() {
-  local flat id="[A-Za-z_][^[:space:](:<.]*" pre="(^|[^A-Za-z0-9_'])"
+  local flat rest
   flat="$(tr '\n\r\t' '   ' < "$1")"
-  if grep -Eq "${pre}Module[[:space:]]+((Import|Export)[[:space:]]+)?${id}[[:space:]]*\\(" <<< "$flat"; then
-    echo "a functor (Module F (X : T)): its body is not covered by coqchk's summary. Refused fail-closed"; return 0
+  rest="$(sed -E "s/Module[[:space:]]+((Import|Export|Type)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_']*[[:space:]]*\\.([[:space:]]|\$)/ /g" <<< "$flat")"
+  if grep -qF -- 'Module' <<< "$rest"; then
+    echo "a Module form that is not plain 'Module M.' / 'Module Type S.': a module type ascription (Module M : S, <: S), a functor (Module F (X : T)), a comment or a non-ASCII or qualified name in its header. coqchk's summary cannot see inside them. Refused fail-closed"; return 0
   fi
-  if grep -Eq "${pre}Module[[:space:]]+((Import|Export)[[:space:]]+)?${id}[[:space:]]*(:|<:)" <<< "$flat"; then
-    echo "a module type ascription (Module M : S / <: S): sealing hides the implementation from coqchk's summary. Refused fail-closed"; return 0
+  if grep -qE -- "Checking|bypass_check|typing_flags|Typing" <<< "$flat"; then
+    echo "Unset Guard/Positivity/Universe Checking, #[bypass_check] or typing flags (any mention of Checking, bypass_check or Typing): refused fail-closed"; return 0
   fi
-  if grep -Eq "${pre}(Unset[[:space:]]+(Guard|Positivity|Universe)[[:space:]]+Checking|bypass_check)" <<< "$flat"; then
-    echo "Unset Guard/Positivity/Universe Checking or #[bypass_check]: refused fail-closed"; return 0
-  fi
-  if grep -Eq "${pre}(Load[[:space:]]|Add[[:space:]]+(Rec[[:space:]]+)?(LoadPath|ML[[:space:]]+Path)|Declare[[:space:]]+ML[[:space:]]+Module)" <<< "$flat"; then
-    echo "Load, Add LoadPath, Add ML Path or Declare ML Module: code this scan cannot see would run. Refused fail-closed"; return 0
+  if grep -qE -- "Load|Declare|(^|[^A-Za-z0-9_'])ML([^A-Za-z0-9_']|\$)" <<< "$flat"; then
+    echo "Load, Add LoadPath, Add ML Path or Declare (Declare ML Module, Declare Module, ...): code this scan cannot see would run. Refused fail-closed"; return 0
   fi
 }
 
@@ -271,8 +277,11 @@ judge_set() {
 # The probe module gets a name no listed file has, so it can never overwrite a
 # listed module's source or its compiled artefacts, nor import itself.
 probe_mod="GateProbe"
-for f in "${listed[@]}"; do
-  while [ "$(basename -- "$f" .v)" = "$probe_mod" ]; do probe_mod="${probe_mod}X"; done
+while :; do
+  clash=0
+  for f in "${listed[@]}"; do [ "$(basename -- "$f" .v)" != "$probe_mod" ] || clash=1; done
+  [ "$clash" -eq 1 ] || break
+  probe_mod="${probe_mod}X"
 done
 # Names the planted controls use are checked too, below.
 resolves() {

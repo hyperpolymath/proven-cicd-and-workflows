@@ -208,6 +208,17 @@ write Ok.lean 'set_option genInjectivity false in' 'structure S where' '  x : Na
 run_phase prove
 expect "fixture sametype-injeq: Lean's type, a hand-written proof through an axiom" 1 'not allowed:'
 
+fresh_fixture
+write Ok.lean 'set_option genInjectivity false in' 'structure S where' '  x : Nat' '' 'def S.mk.inj : Nat := 0' '' 'structure T where' '  y : Nat'
+run_phase prove
+expect "fixture mixed-regeneration: an authored S.mk.inj beside a type T with generated lemmas passes" 0 'generated T.mk.injEq'
+
+fresh_fixture
+write Ok.lean 'set_option genInjectivity false in' 'structure S where' '  x : Nat' '' 'def S.mk.inj : Nat := 0' \
+  'theorem S.mk.injEq : 1 = 1 := by have _ := Classical.em True; rfl'
+run_phase prove
+expect "fixture regeneration-collision: a name clash keeps the candidate an authored root, its axioms counted" 1 'not allowed:'
+
 echo "== controls are judged with no allowance, whatever the caller allows =="
 fresh_fixture
 run_phase prove ALLOWED_AXIOMS=planted_cheat

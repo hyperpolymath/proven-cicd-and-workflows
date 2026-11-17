@@ -584,15 +584,15 @@ runs `+lake build+` on a Lake project (a `+lakefile.lean+` or `+lakefile.toml+`)
 with whatever Lean is on PATH. It proves the project builds. It does not judge
 axioms: a `+sorry+` is a warning, and the build still exits 0. `+lean-axioms-gate+`
 takes plain `+.lean+` files that no Lake project owns, runs the pinned Lean 4.15.0
-on each, and judges the compiled module: a kernel replay of every constant, and
-the axioms of every authored constant, module-wide (see the Lean bullet above). Its detect step
+on each, and judges the compiled module: a kernel replay of every safe constant, and
+the axioms of every authored safe constant, module-wide (see the Lean bullet above). Its detect step
 ignores files inside a Lake project. A Lake project that needs the axiom check
 is not covered by either gate today.
 
-Not witnessed live (2026-11-16). The four `+test.sh+` suites ran against the
-real pinned tools in the authoring environment. The reusable workflows have
-not yet run on a GitHub runner; the first run proves the apt installs, the Lean
-archive fetch and the jar fetch.
+Runner evidence. The four `+test.sh+` suites ran against the real pinned tools in
+the authoring environment, and on a GitHub runner: Language Gates Self-Test run
+43949978719, on 7593837, passed all four. Later heads are pending their own CI.
+The reusable workflows themselves have not yet run in a consumer repository.
 
 ==== What a gate may use, and what a consumer's lock must hold
 

@@ -208,6 +208,16 @@ def injCandidates (consts : Std.HashMap Name ConstantInfo) : Array Name :=
       else acc
     | _ => acc
 
+/-- The inductive types the candidates belong to. -/
+def inductivesOf (consts : Std.HashMap Name ConstantInfo) (cands : Array Name) : NameSet :=
+  cands.foldl (init := {}) fun s c =>
+    match c with
+    | .str p _ =>
+      match consts[p]? with
+      | some (.ctorInfo cv) => s.insert cv.induct
+      | _ => s
+    | _ => s
+
 /-- Candidates and every constant of the module that uses one, transitively. -/
 def dependents (consts : Std.HashMap Name ConstantInfo) (cands : Array Name) : NameSet := Id.run do
   let mut dep : NameSet := cands.foldl (·.insert ·) {}
@@ -237,7 +247,7 @@ theorem and regenerates Lean's own theorems for every inductive type of the
 module in that environment. Pass two replays the rest on top. Returns the final
 environment and the environment holding the regenerated theorems. -/
 def replayAndRegenerate (base : Environment) (consts : Std.HashMap Name ConstantInfo)
-    (dep : NameSet) : IO (Environment × Environment) := do
+    (dep : NameSet) (needed : NameSet) : IO (Environment × Environment) := do
   let mut keep : Std.HashMap Name ConstantInfo := {}
   let mut rest : Std.HashMap Name ConstantInfo := {}
   for (n, ci) in consts.toList do
@@ -246,12 +256,20 @@ def replayAndRegenerate (base : Environment) (consts : Std.HashMap Name Constant
     let env0 ← base.replay keep
     let mut st : Core.State := { env := env0 }
     for (n, ci) in keep.toList do
-      if let .inductInfo _ := ci then
-        -- The heartbeat budget counts from now, as in a fresh command.
-        let ctx : Core.Context :=
-          { fileName := "<gate>", fileMap := default, initHeartbeats := (← IO.getNumHeartbeats) }
-        let ((), st') ← (Lean.Meta.mkInjectiveTheorems n |>.run').toIO ctx st
-        st := st'
+      -- Only inductive types that have a candidate, and only those: an authored
+      -- declaration that already holds one of Lean's names must not make the whole
+      -- module fail. If regeneration throws, the candidates of that type stay
+      -- authored roots and are judged like any other constant.
+      if needed.contains n then
+        if let .inductInfo _ := ci then
+          -- The heartbeat budget counts from now, as in a fresh command.
+          let ctx : Core.Context :=
+            { fileName := "<gate>", fileMap := default, initHeartbeats := (← IO.getNumHeartbeats) }
+          try
+            let ((), st') ← (Lean.Meta.mkInjectiveTheorems n |>.run').toIO ctx st
+            st := st'
+          catch e =>
+            IO.println s!"gate-checker: could not regenerate Lean's injectivity theorems for {n} ({e}); its candidates are treated as authored"
     return (env0, st.env)
   let env ← onFreshThread (env0.replay rest)
   return (env, env1)
@@ -276,7 +294,7 @@ def check (modStr allowedStr : String) : IO UInt32 := do
       if cands.isEmpty then
         let e ← onFreshThread (base.replay consts)
         pure (e, e)
-      else replayAndRegenerate base consts (dependents consts cands)
+      else replayAndRegenerate base consts (dependents consts cands) (inductivesOf consts cands)
     catch e =>
       return (← verdict false s!"kernel replay rejected the module (or regenerating Lean's injectivity theorems failed): {e}")
   IO.println s!"gate-checker: replayed {consts.size} constants of {modStr} through the kernel"

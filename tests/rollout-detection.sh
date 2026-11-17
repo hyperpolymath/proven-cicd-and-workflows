@@ -20,6 +20,8 @@ printf 'From Coq Require Import List.\nLemma foo : True. Proof. exact I. Qed.\n'
 printf 'Require Import Setoid.\n' > "$T/coqqual/q.v"
 printf '// Definition of the interface\n// Theorem 1 states the bound.\n/* Require the clock */\nmodule top(input a);\nendmodule\n' > "$T/ver1/t.v"
 printf 'Definition of the interface.\nLemma named below holds.\nTheorem one.\nmodule x();\nendmodule\n' > "$T/ver2/t.v"
+mkdir -p "$T/implicit"; printf 'Definition id {A : Type} (x : A) : A := x.\n' > "$T/implicit/i.v"
+mkdir -p "$T/ver3"; printf '/*\nQed.\n*/\nmodule top(input a); endmodule\n' > "$T/ver3/t.v"
 echo 'module M where' > "$T/agda/M.agda"
 echo '---- MODULE M ----' > "$T/tla/M.tla"
 echo 'theorem t : True := trivial' > "$T/lean/T.lean"
@@ -35,6 +37,8 @@ want "From ... Require and a Lemma with Qed" has_rocq coqfrom yes
 want "a lone Require Import" has_rocq coqqual yes
 want "Verilog with prose comments is not Coq" has_rocq ver1 no
 want "Verilog with Coq-looking prose and endmodule is not Coq" has_rocq ver2 no
+want "Verilog whose endmodule is mid-line after a comment holding Coq words is not Coq" has_rocq ver3 no
+want "a Definition with implicit binders" has_rocq implicit yes
 want "an empty tree is not Coq" has_rocq empty no
 want "a .agda file" has_agda agda yes
 want "an .agda file only under _build is not counted" has_agda builddir no

@@ -67,11 +67,11 @@ has_agda() { [ -n "$(prune_find "$1" -type f -name '*.agda' -print | head -n 1)"
 # Coq-specific sentences only, so prose in a Verilog comment ("Definition of the
 # interface") does not match; and a file with `endmodule` is Verilog, whatever
 # its comments say.
-coq_marker='^[[:space:]]*(Require[[:space:]]+(Import|Export)[[:space:]]|Require[[:space:]]+[A-Za-z_][A-Za-z0-9_'"'"']*(\.[A-Za-z0-9_'"'"']+)+\.[[:space:]]*$|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require[[:space:]]|(Definition|Lemma|Theorem|Fixpoint|Inductive)[[:space:]]+[A-Za-z_][A-Za-z0-9_'"'"']*[[:space:]]*(:|:=|\()|Print[[:space:]]+Assumptions[[:space:]]+[A-Za-z_][A-Za-z0-9_.'"'"']*[[:space:]]*\.|Qed\.[[:space:]]*$|Proof\.)'
+coq_marker='^[[:space:]]*(Require[[:space:]]+(Import|Export)[[:space:]]|Require[[:space:]]+[A-Za-z_][A-Za-z0-9_'"'"']*(\.[A-Za-z0-9_'"'"']+)+\.[[:space:]]*$|From[[:space:]]+[A-Za-z0-9_.]+[[:space:]]+Require[[:space:]]|(Definition|Lemma|Theorem|Fixpoint|Inductive)[[:space:]]+[A-Za-z_][A-Za-z0-9_'"'"']*[[:space:]]*(:|:=|\(|\{|\[)|Print[[:space:]]+Assumptions[[:space:]]+[A-Za-z_][A-Za-z0-9_.'"'"']*[[:space:]]*\.|Qed\.[[:space:]]*$|Proof\.)'
 has_rocq() {
   local f
   while IFS= read -r -d '' f; do
-    grep -qE '^[[:space:]]*endmodule' "$f" 2>/dev/null && continue
+    grep -qE '(^|[^A-Za-z0-9_])endmodule([^A-Za-z0-9_]|$)' "$f" 2>/dev/null && continue
     grep -qE "$coq_marker" "$f" 2>/dev/null && return 0
   done < <(prune_find "$1" -type f -name '*.v' -print0)
   return 1
