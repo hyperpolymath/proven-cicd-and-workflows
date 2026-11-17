@@ -13,8 +13,9 @@
 # It triggers on workflow_run, schedule and workflow_dispatch, all of which GitHub runs from the
 # DEFAULT branch: a pull request cannot alter this file, its pin or its list. The consequence:
 # the pull request that adds this caller can never receive `CI/gate` itself, and
-# must be merged past the gate once (owner action). There is no
-# pull_request trigger here, deliberately (tests/ci-gate.sh asserts it).
+# would be merged past the gate once (owner action) without the gate-pr job at the end. There is no
+# pull_request start here except the gate-pr job at the end (docs/CI-GATE.adoc, "The pull_request start"),
+# whose shape tests/ci-gate.sh asserts.
 #
 # `schedule` and `workflow_dispatch` run a SWEEP: the reusable lists the open pull requests and the
 # default branch head and re-evaluates each distinct head SHA with the same guarded publisher. A stale state
@@ -50,6 +51,7 @@
 name: CI gate
 
 on:
+  pull_request:
   workflow_run:
     workflows: ["**", "!CI gate"]
     types: [completed, in_progress]
@@ -65,8 +67,22 @@ permissions:
 
 jobs:
   gate:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate'
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate')
     uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@__CICD_SUITE_SHA__ # cicd-suite ci-gate
     with:
       context: "CI/gate"
       # timeout_minutes: 180   # how long a missing check keeps the gate pending
+
+  # The pull_request start. workflow_run, schedule and workflow_dispatch run only from the default
+  # branch, so without this job the pull request that adds or changes the gate never gets the status
+  # and a ruleset requiring it blocks that very pull request. This job runs from the pull request's own
+  # branch and posts the same verdict, waiting (bounded) for the checks named in the profile to report.
+  # Same-repository branches only: a fork's or Dependabot's pull_request token cannot write statuses,
+  # and those are covered by the workflow_run job. No trust decision uses github.actor.
+  # Because a pull request can edit this file, the Gate tamper guard (ci-gate-tamper-guard.yml, run from
+  # the default branch) fails a pull request that touches gate files unless the owner has approved it.
+  gate-pr:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@__CICD_SUITE_SHA__ # cicd-suite ci-gate
+    with:
+      context: "CI/gate"

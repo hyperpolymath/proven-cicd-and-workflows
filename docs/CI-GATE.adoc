@@ -95,3 +95,32 @@ The event is still refused for anything except `workflow_run`, `schedule` and `w
 == The suite gates itself
 
 `.github/workflows/ci-gate-caller.yml` has the caller shape of the template, with the local reusable `./.github/workflows/ci-gate.yml` in place of the pinned remote one and the context `CI / gate`, the status context the suite's `main` ruleset requires. Its profile is `profiles/ci-gate/hyperpolymath/proven-cicd-and-workflows.json`, derived as recorded in link:../profiles/ci-gate/README.adoc[profiles/ci-gate/README.adoc]. Because the reusable is local, `job.workflow_repository` and `job.workflow_sha` are the suite and its own default-branch commit, so the profile and the scripts are read from the commit that runs; a pull request still can not change them before merge. The lock-scope guard (`scripts/check-workflow-lock-scope.sh`) accepts a local reusable workflow reference only when it names a plain file under `.github/workflows` that exists and is in `config/workflow-lock-scope.json`, and inspects that file's own references like any other workflow.
+
+== The pull_request start
+
+`workflow_run`, `schedule` and `workflow_dispatch` run only from the default branch, so on their own the gate can never run on the pull request that adds it, while a ruleset that requires the status blocks that very pull request. Every caller therefore also has a `gate-pr` job on `pull_request` (same-repository branches only: a fork's or Dependabot's `pull_request` token cannot write statuses; those are gated by the `workflow_run` job, which also re-evaluates after late workflows). It calls the same reusable and the same verdict; only the starting point and one wait differ. This start is permanent.
+
+* The reusable resolves the head SHA from `github.event.pull_request.head.sha` (or `workflow_run.head_sha`); any other event is refused.
+* A `pull_request` run evaluates once and no later `workflow_run` re-evaluates it, and it can start before the other workflows have created their runs. So `scripts/ci-gate-publish.sh` runs with `WAIT_SECONDS` (input `wait_minutes`, default 30; `poll_seconds`, default 20): while the verdict only means "not finished" (`pending`, `never reported: ...`, `never completed: ...`) it writes nothing and polls. A real failure, and success, are written at once. When the wait is used up, `pending` becomes `failure: gave up after N min: waiting for ...`; `never reported` already names what is missing. The verdict script is unchanged; the wait keys on its descriptions, which `tests/ci-gate.sh` pins.
+* The context stands `pending` ("waiting for the required checks to report") while it waits. On every other event `WAIT_SECONDS` is 0 and nothing changes.
+* No trust decision uses `github.actor` or any other forgeable field (Sonar S8232). The job runs only for same-repository pull requests by comparing the head repository with `github.repository`.
+
+== Tamper guard
+
+Because the `pull_request` job runs from the pull request's own branch, a pull request can edit the gate and pass itself. The tamper guard makes that visible: `.github/workflows/ci-gate-tamper-guard.yml` (reusable), called from a workflow on `pull_request_target`, which GitHub runs from the DEFAULT branch, so the pull request cannot edit the guard that judges it. It never checks out or runs pull request code. It reads the changed files (`previous_filename` of a rename included), the label events and the commit dates through the API (permissions `pull-requests: read`, `contents: read`; no secrets) and fetches its one script, `scripts/ci-gate-tamper-guard.sh`, from the suite at the pinned commit.
+
+*Gate files:* `.github/workflows/ci-gate*.yml` and `.yaml` (callers, reusable, guard callers), `scripts/check-required-contexts.sh`, `scripts/ci-gate-*.sh`, `scripts/validate-ci-gate-profile.sh`, `templates/ci-gate*.yml`, `profiles/ci-gate/**`. A pull request that touches one fails the check `guard / check` unless the owner has applied the label `gate-change-approved` AFTER the pull request's newest commit.
+
+*Approval, and who may give it.* The label is the owner's act. *Agents must never apply it.* It is re-checked on `labeled`, `unlabeled` and `synchronize`. The label is valid only if its latest label event is `labeled` and is later than the newest commit date of the pull request, so the owner re-applies it after every push.
+
+*The limit, stated plainly.* A commit date is written by the pusher, and GitHub gives a read-only job no reliable push time, so a deliberate backdating or a force-push of older commits can defeat the comparison. And all agents act with the owner's account, so the label cannot tell the owner from an agent. This guard is tamper-EVIDENT and deliberate, not tamper-proof. A review-based approval is impossible because the owner cannot approve their own pull requests.
+
+*Stronger form (proposed, not built).* Require commits that touch gate files to be signed by the owner's own key once the separate agent signing key exists, and have the guard verify the signer of each such commit from the API's `verification` data.
+
+*Listing it in the profile.* The check is `{job: "guard / check", workflow: ".github/workflows/ci-gate-tamper-guard.yml"}` (suite local caller: `.github/workflows/ci-gate-tamper-guard-caller.yml`). It is NOT in any shipped profile yet, for two reasons that the owner should weigh: a `pull_request_target` workflow runs only from the default branch, so on the pull request that adds the guard the entry would read `never reported` and the gate would fail its own introduction; and a `pull_request_target` run's `head_sha` is not shown to be the pull request head, so whether the gate's per-commit run listing sees it is unverified. List it after the guard is on main and one later pull request shows its run in `actions/runs?head_sha=<head>`.
+
+== What the owner must do once per repository
+
+. Merge the pull request that adds the gate. The `gate-pr` job posts the status on it, so no ruleset edit is needed. If the pull request also touches gate files, the guard (once on main) will ask for the label.
+. Apply the label `gate-change-approved` (create it once, colour free) to a pull request that touches gate files, after its newest commit, when you have read the change. Not an agent.
+. After the guard workflow is on main, confirm on a later pull request that `guard / check` appears under `actions/runs?head_sha=<head>`, then add the profile entry above (a suite change that needs the label itself).

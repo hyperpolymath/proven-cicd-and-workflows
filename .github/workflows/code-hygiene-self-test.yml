@@ -192,6 +192,10 @@
           # shipped profiles, and static guards on the reusable and its caller.
           run: "bash tests/ci-gate.sh",
         },
+        {
+          # The tamper guard: file matching, label logic, fail-closed errors, static guards.
+          run: "bash tests/ci-gate-tamper-guard.sh",
+        },
       ],
     },
     # proven/registry/sq-map.tsv against both of its sources: the praxis column

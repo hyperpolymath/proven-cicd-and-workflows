@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# ci-gate-tamper-guard.yml (reusable) - fail a pull request that touches the gate's own files
+# unless the owner approved the change with the label `gate-change-approved`.
+#
+# WHY: the gate's pull_request start runs from the pull request's own branch, so a pull request can
+# edit the gate and pass itself. This guard is called from a workflow on `pull_request_target`, which
+# GitHub runs from the DEFAULT branch, so the pull request cannot edit the guard that judges it.
+#
+# SAFETY: it never checks out, builds or runs pull request code. It reads the changed-file list, the
+# label events and the commit dates through the API, and fetches its one script from THIS suite at
+# the commit it was called at (job.workflow_sha). Values reach scripts through env: only. It uses no
+# actions. Permissions: pull-requests: read, contents: read. No secrets. No trust decision uses
+# github.actor or any other forgeable field.
+#
+# APPROVAL: the label `gate-change-approved`, applied by the repository OWNER after the newest commit
+# (re-apply it after every push). AGENTS MUST NEVER APPLY THAT LABEL: all agents act with the owner's
+# account, so this is tamper-EVIDENT and deliberate, not tamper-proof (docs/CI-GATE.adoc, "Tamper guard").
+#
+# The caller must grant: pull-requests: read, contents: read, and run on pull_request_target with the
+# types opened, reopened, synchronize, labeled, unlabeled.
+name: Gate tamper guard (reusable)
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pull-requests: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      WF_REPO: ${{ job.workflow_repository }}
+      WF_SHA: ${{ job.workflow_sha }}
+    steps:
+      - name: Refuse anything but pull_request_target
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == pull_request_target ]] \
+            || { echo "::error::the tamper guard runs only on pull_request_target (got '$EVENT_NAME'); NO VERDICT WAS PRODUCED"; exit 1; }
+          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ && "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::job.workflow_repository / job.workflow_sha are empty or malformed; NO VERDICT WAS PRODUCED"; exit 1; }
+      - name: Read the guard script from this suite at its own commit
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/tamper-guard"; mkdir -p "$d"
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/$WF_REPO/contents/scripts/ci-gate-tamper-guard.sh?ref=$WF_SHA" > "$d/guard.sh"
+          [[ -s "$d/guard.sh" ]] || { echo "::error::the guard script is empty"; exit 1; }
+          echo "guard=$d/guard.sh" >> "$GITHUB_ENV"
+      - name: Check the changed files against the gate files
+        run: bash "$guard"

@@ -10,6 +10,9 @@
 #   WORK             scratch directory (default: a fresh mktemp -d)
 #   SERVER_URL RUN_ID WF_REPO WF_SHA                    for target_url and the step summary
 #   CI_GATE_NOW      test hook: epoch seconds instead of `date +%s`
+#   WAIT_SECONDS POLL_SECONDS  pull_request: keep polling while the verdict only means
+#                    "not finished" (pending, never reported, never completed); 0 elsewhere
+#   CI_GATE_SLEEP    test hook: the sleep command
 #   GITHUB_STEP_SUMMARY, GITHUB_OUTPUT                  optional; `published=true` is written
 #                                                       once a verdict status was posted
 #
@@ -38,12 +41,14 @@
 #     failure status and exits 1; descriptions are at most 140 characters.
 set -uo pipefail
 MAX_ROUNDS=5
+WAIT_SECONDS=${WAIT_SECONDS:-0}; POLL_SECONDS=${POLL_SECONDS:-20}   # pull_request wait; 0 = evaluate once
 SUITE=${SUITE:-}; WORK=${WORK:-}
 SERVER_URL=${SERVER_URL:-https://github.com}; RUN_ID=${RUN_ID:-0}; WF_REPO=${WF_REPO:-}; WF_SHA=${WF_SHA:-}
 for v in REPO HEAD_SHA CONTEXT TIMEOUT_MINUTES GATE_NAME SUITE; do
   [[ -n ${!v:-} ]] || { echo "::error::ci-gate-publish: $v is not set; NO VERDICT WAS PRODUCED"; exit 1; }
 done
 [[ $HEAD_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::ci-gate-publish: HEAD_SHA is not a 40-hex commit"; exit 1; }
+[[ $WAIT_SECONDS =~ ^[0-9]+$ && $POLL_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo "::error::ci-gate-publish: WAIT_SECONDS must be a non-negative and POLL_SECONDS a positive integer; NO VERDICT WAS PRODUCED"; exit 1; }
 [[ -n $WORK ]] || WORK=$(mktemp -d) || exit 1
 mkdir -p "$WORK" || exit 1
 PROFILE="$SUITE/profiles/ci-gate/$REPO.json"
@@ -108,8 +113,9 @@ write_summary() { # <state> <description> <detail-from-summary-file: 1|0>
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 }
 
-state='' description='' rc=1 settled=0
-for ((round = 1; round <= MAX_ROUNDS; round++)); do
+state='' description='' rc=1 settled=0 round=0 waited=0
+while ((round < MAX_ROUNDS)); do
+  round=$((round + 1))
   # b. snapshot, fingerprint, jobs, verdict
   fetch_runs || die 'could not read the workflow runs'
   fp_before=$(fingerprint "$WORK/workflow-runs.json") || die 'workflow runs are malformed'
@@ -138,6 +144,29 @@ for ((round = 1; round <= MAX_ROUNDS; round++)); do
     0:success | 3:pending | 1:failure) ;;
     *) state=failure; description="ci-gate: verdict script gave exit $rc and state '${state:-none}'"; rc=1 ;;
   esac
+  # b2. pull_request wait (pull_request only; WAIT_SECONDS=0 everywhere else, so workflow_run and
+  # the sweep are untouched). A pull_request run evaluates once, with no later workflow_run to
+  # re-evaluate it, and it can start before the other workflows have created their runs. So a
+  # verdict that only means "not finished yet" (pending, or never reported / never completed)
+  # is not written: poll, and do not count the poll as a settle round. A real failure, and
+  # success, are written at once. When the wait is used up, pending becomes a failure that
+  # names what was still running; never reported / never completed already name theirs.
+  if ((WAIT_SECONDS > 0)); then
+    case "$state:$description" in
+      pending:* | failure:'never reported: '* | failure:'never completed: '*)
+        if ((waited < WAIT_SECONDS)); then
+          waited=$((waited + POLL_SECONDS))
+          echo "wait: $state ($description); $waited of ${WAIT_SECONDS}s used, polling again"
+          round=$((round - 1))
+          "${CI_GATE_SLEEP:-sleep}" "$POLL_SECONDS"
+          continue
+        fi
+        if [[ $state == pending ]]; then
+          state=failure; rc=1
+          description="gave up after $((WAIT_SECONDS / 60)) min: $description"
+        fi ;;
+    esac
+  fi
   # c. guard: did the runs move while we evaluated? Applies to every state.
   fetch_runs || die 'could not re-read the workflow runs'
   fp_guard=$(fingerprint "$WORK/workflow-runs.json") || die 'workflow runs are malformed'

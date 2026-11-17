@@ -389,6 +389,52 @@ pubreset; snap 1 "$DONE"; publish HEAD_SHA=abc
 chk "a head SHA that is not 40 hex: exit 1, no POST" "$RC/$NPOSTS" "1/0"
 pubreset
 
+echo "== pull_request wait loop: WAIT_SECONDS, POLL_SECONDS =="
+NOQ='map(select(.name != "CI quality"))'   # CI quality produces the required jobs Lint and Test
+WAITENV=(WAIT_SECONDS=30 POLL_SECONDS=10 CI_GATE_SLEEP=true)
+echo "-- required checks that have not reported yet are waited for, never failed early --"
+pubreset; snap 1 "$NOQ"; snap 2 "$NOQ"; snap 3 "$DONE"; publish "${WAITENV[@]}"
+chk "late reporter: exactly one POST" "$NPOSTS" 1
+chk "late reporter: the only status written is success (no early 'never reported' failure)" "$(post_n 1 | cut -f1)" success
+chk "late reporter: exit 0" "$RC" 0
+chk "late reporter: two waits were logged" "$(grep -c '^wait: ' <<<"$PUBOUT")" 2
+chk "late reporter: waits do not use the settle rounds (2 waiting fetches + 3 for the settle)" "$CALLS" 5
+pubreset; snap 1 "$RERUN"; snap 2 "$DONE"; publish "${WAITENV[@]}"
+chk "an active run is waited for, then success is the only POST" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/success/0"
+chk "an active run is waited for: the pending verdict was logged as a wait, not written" "$(grep -c '^wait: pending' <<<"$PUBOUT")" 1
+echo "-- negative controls: a required check that never reports, a run that never ends --"
+pubreset; snap 1 "$NOQ"; publish "${WAITENV[@]}"
+chk "never reports: one POST only, after the wait is used up" "$NPOSTS" 1
+chk "never reports: failure" "$(post_n 1 | cut -f1)" failure
+chk "never reports: names what never reported (Lint and Test)" "$(post_n 1 | cut -f2 | grep -c 'never reported: ci-quality.yml:Lint, ci-quality.yml:Test')" 1
+chk "never reports: three polls, 30 s used" "$(grep -c '^wait: ' <<<"$PUBOUT")" 3
+chk "never reports: exit 1 (red job)" "$RC" 1
+pubreset; snap 1 "$RERUN"; publish "${WAITENV[@]}"
+chk "never ends: failure, one POST" "$(post_n 1 | cut -f1)/$NPOSTS" "failure/1"
+chk "never ends: says it gave up and names the run" "$(post_n 1 | cut -f2 | grep -c 'gave up after 0 min: waiting for 1 workflow runs: CI quality')" 1
+chk "never ends: exit 1" "$RC" 1
+pubreset; snap 1 "$RERUN"; publish WAIT_SECONDS=120 POLL_SECONDS=10 CI_GATE_SLEEP=true
+chk "wait of 2 min is reported as 2 min" "$(post_n 1 | cut -f2 | grep -c 'gave up after 2 min')" 1
+echo "-- a real failure is written at once, never waited out --"
+pubreset; snap 1 "$DONE"; jq 'map(if .name == "Test" then .conclusion = "failure" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"
+publish "${WAITENV[@]}"
+chk "failed job: failure, one POST" "$(post_n 1 | cut -f1)/$NPOSTS" "failure/1"
+chk "failed job: no wait" "$(grep -c '^wait: ' <<<"$PUBOUT")" 0
+chk "failed job: exit 1" "$RC" 1
+echo "-- without WAIT_SECONDS (workflow_run, sweep) nothing changes --"
+pubreset; snap 1 "$NOQ"; publish
+chk "no wait: never reported is an immediate failure, one POST" "$(post_n 1 | cut -f1)/$NPOSTS" "failure/1"
+chk "no wait: no polling" "$(grep -c '^wait: ' <<<"$PUBOUT")" 0
+pubreset; snap 1 "$RERUN"; publish
+chk "no wait: pending is written as pending, exit 0" "$(post_n 1 | cut -f1)/$RC" "pending/0"
+echo "-- bad wait settings fail closed --"
+pubreset; snap 1 "$DONE"; publish WAIT_SECONDS=abc
+chk "WAIT_SECONDS=abc: refused, no POST, exit 1" "$NPOSTS/$RC" "0/1"
+pubreset; snap 1 "$DONE"; publish WAIT_SECONDS=30 POLL_SECONDS=0
+chk "POLL_SECONDS=0: refused, no POST, exit 1" "$NPOSTS/$RC" "0/1"
+echo "-- the wait keys on the verdict script's descriptions: pin them --"
+grep -q '"never reported: "' "$VERDICT" && grep -q '"never completed: "' "$VERDICT" && ok "the verdict still words 'never reported: ' and 'never completed: ' (the wait depends on both prefixes)" || bad "the verdict wording changed; the pull_request wait would stop waiting"
+
 echo "== context guard: the workflow's own regex, and a context with spaces =="
 CTX_RE_LINES=$(grep -E "^[[:space:]]*ctx_re='" "$WORKFLOW" | sed 's/^[[:space:]]*//')
 chk "ci-gate.yml has two ctx_re guards (validation step and failure fallback)" "$(grep -c . <<<"$CTX_RE_LINES")" 2
@@ -406,11 +452,12 @@ for c in ' CI/gate' 'CI/gate ' 'CI  /gate' $'CI\t/gate' $'CI/\tgate' $'CI/gate\n
 done
 ctx_re_only "$(rep 'a ' 127)a" && ok "control: the regex alone admits 255 characters, so the length cap is what bounds the context" || bad "control: the regex alone is already bounded; re-check the cap"
 CALLER="$ROOT/.github/workflows/ci-gate-caller.yml"
-CALLER_CTX=$(sed -n 's/^[[:space:]]*context:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$CALLER")
+CALLER_CTX=$(sed -n 's/^[[:space:]]*context:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$CALLER" | sort -u)
+chk "the dogfood caller has two context lines (gate and gate-pr), identical" "$(sed -n 's/^[[:space:]]*context:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$CALLER" | grep -c .)" 2
 chk "the dogfood caller sets exactly one with.context" "$(grep -c . <<<"$CALLER_CTX")" 1
 chk "the dogfood caller's context is CI / gate" "$CALLER_CTX" "CI / gate"
 ctx_ok "$CALLER_CTX" && ok "the dogfood caller's context passes the workflow's own guard" || bad "the dogfood caller's context fails the workflow's guard"
-TEMPLATE_CTX=$(sed -n 's/^[[:space:]]*context:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$TEMPLATE")
+TEMPLATE_CTX=$(sed -n 's/^[[:space:]]*context:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$TEMPLATE" | sort -u)
 ctx_ok "$TEMPLATE_CTX" && ok "the template's context ('$TEMPLATE_CTX') passes the workflow's own guard" || bad "the template's context fails the workflow's guard"
 
 echo "-- CONTEXT='CI / gate' end to end through the publisher --"
@@ -722,8 +769,8 @@ grep -qE '^  workflow_call:' "$WORKFLOW" && ! grep -qE '^  (push|pull_request|pu
 ! grep -qE '^[[:space:]]*secrets:' "$WORKFLOW" "$TEMPLATE" && ok "no secrets: line in the reusable or the template" || bad "a secrets: line is present"
 grep -q "event_name" "$WORKFLOW" && grep -q "workflow_run" "$WORKFLOW" && ok "ci-gate.yml checks the event" || bad "ci-gate.yml does not check the event"
 REFUSE=$(sed -n "/- name: Refuse anything/,/- name: Mark a started/p" "$WORKFLOW")
-grep -qE "workflow_run \| schedule \| workflow_dispatch\) ;;" <<<"$REFUSE" && grep -q "\*) echo .*exit 1 ;;" <<<"$REFUSE" \
-  && ok "the refusal admits exactly workflow_run, schedule and workflow_dispatch and fails on any other event" || bad "the event refusal is not workflow_run | schedule | workflow_dispatch only"
+grep -qE "workflow_run \| pull_request \| schedule \| workflow_dispatch\) ;;" <<<"$REFUSE" && grep -q "\*) echo .*exit 1 ;;" <<<"$REFUSE" \
+  && ok "the refusal admits exactly workflow_run, pull_request, schedule and workflow_dispatch and fails on any other event" || bad "the event refusal is not workflow_run | schedule | workflow_dispatch only"
 grep -qE "^      pull-requests: read" "$WORKFLOW" && ok "ci-gate.yml asks for pull-requests: read (the sweep lists open pull requests)" || bad "ci-gate.yml does not ask for pull-requests: read"
 grep -q "fetch scripts/ci-gate-sweep.sh" "$WORKFLOW" && grep -q "scripts/ci-gate-sweep.sh" <(sed -n "/- name: Evaluate the commit/,/- name: Publish a failure/p" "$WORKFLOW") \
   && ok "ci-gate.yml fetches the sweep script and runs it for events other than workflow_run" || bad "ci-gate.yml does not fetch or run the sweep script"
@@ -732,9 +779,20 @@ grep -q "fetch scripts/ci-gate-publish.sh" "$WORKFLOW" && ok "ci-gate.yml fetche
 grep -qE '^  gate:' "$WORKFLOW" && ok "job id is gate" || bad "job id is not gate"
 grep -qE 'default: *"?CI/gate"?' "$WORKFLOW" && ok "context input defaults to CI/gate" || bad "context default is not CI/gate"
 grep -qE 'default: *180' "$WORKFLOW" && ok "timeout_minutes defaults to 180" || bad "timeout_minutes default is not 180"
-# Template: workflow_run only, never pull_request (a PR must not be able to run or edit the gate).
+# Template: workflow_run main path; pull_request only as the permanent gate-pr job (pr_start_ok).
 tpl_code() { grep -vE '^[[:space:]]*#' "$1"; }
-tpl_code "$TEMPLATE" | grep -q 'pull_request' && bad "template mentions pull_request outside comments" || ok "template has no pull_request trigger"
+# A pull_request trigger is allowed ONLY together with a same-repo-only gate-pr job
+# and a main job that does not also run on pull_request. pr_start_ok <code-lines-fn> <file>
+pr_start_ok() {
+  local code=$1 file=$2
+  "$code" "$file" | grep -qE '^  pull_request:' || return 1
+  "$code" "$file" | grep -qE "^    if: github.event_name != 'pull_request' && \(github.event_name != 'workflow_run' \|\| github.event.workflow_run.name != 'CI gate'\)" || return 1
+  "$code" "$file" | grep -qE "^    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository$" || return 1
+  "$code" "$file" | grep -qE '^  gate-pr:' || return 1
+  grep -q 'permanent\|The pull_request start' "$file" || return 1
+  ! "$code" "$file" | grep -qE 'pull_request_target|actions/checkout|github\.actor|actor\.login' || return 1
+}
+pr_start_ok tpl_code "$TEMPLATE" && ok "template: pull_request appears only as the gate-pr job (same-repo gate-pr job, main job excludes pull_request, no actor test)" || bad "template: the gate-pr shape is wrong"
 tpl_code "$FX/bad-template.yml" | grep -q 'pull_request' && ok "control: the template check sees a pull_request trigger" || bad "control: the template check missed pull_request"
 tpl_code "$TEMPLATE" | grep -qE '^[[:space:]]*concurrency:' && bad "template has a concurrency block" || ok "template has no concurrency block"
 tpl_code "$FX/bad-template.yml" | grep -qE '^[[:space:]]*concurrency:' && ok "control: the concurrency check sees a planted block" || bad "control: no concurrency block in bad-template.yml"
@@ -746,7 +804,7 @@ tpl_code "$TEMPLATE" | grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\
 tpl_code "$TEMPLATE" | grep -qE '^  schedule:' && tpl_code "$TEMPLATE" | grep -qE '^    - cron: ' && ok "template has the schedule trigger" || bad "template has no schedule trigger"
 tpl_code "$TEMPLATE" | grep -qE '^  workflow_dispatch:' && ok "template has the workflow_dispatch trigger" || bad "template has no workflow_dispatch trigger"
 tpl_code "$TEMPLATE" | grep -qE '^  pull-requests: read' && ok "template grants pull-requests: read" || bad "template does not grant pull-requests: read"
-tpl_code "$TEMPLATE" | grep -qE "^    if: github.event_name != 'workflow_run' \|\| github.event.workflow_run.name != 'CI gate'" && ok "template excludes only the gate's own workflow_run events" || bad "template if: is not the self-exclusion for workflow_run only"
+tpl_code "$TEMPLATE" | grep -qE "^    if: github.event_name != 'pull_request' && \(github.event_name != 'workflow_run' \|\| github.event.workflow_run.name != 'CI gate'\)" && ok "template excludes the gate's own workflow_run events and pull_request from the main job" || bad "template main job if: is wrong"
 tpl_code "$TEMPLATE" | grep -qE '^  gate:' && ok "template job id is gate" || bad "template job id is not gate"
 tpl_code "$TEMPLATE" | grep -qE 'context: *"CI/gate"' && ok "template publishes CI/gate" || bad "template does not publish CI/gate"
 
@@ -759,7 +817,7 @@ self_code | grep -qE '^name: CI gate$' && ok "its workflow name is CI gate (the 
 self_code | grep -qE '^    uses: \./\.github/workflows/ci-gate\.yml$' && ok "it calls the local reusable, so the gate runs at the suite's own default-branch commit" || bad "it does not call ./.github/workflows/ci-gate.yml"
 self_code | grep -qE 'context: *"CI / gate"' && ok "it publishes the context the suite's main ruleset requires (CI / gate)" || bad "it does not publish CI / gate"
 self_code | grep -qE '^  gate:' && ok "its job id is gate" || bad "its job id is not gate"
-self_code | grep -q 'pull_request' && bad "the suite's caller mentions pull_request outside comments" || ok "the suite's caller has no pull_request trigger"
+pr_start_ok self_code "$SELF" && ok "the suite's caller: pull_request appears only as the gate-pr job" || bad "the suite's caller: the gate-pr shape is wrong"
 self_code | grep -qE '^[[:space:]]*concurrency:' && bad "the suite's caller has a concurrency block" || ok "the suite's caller has no concurrency block"
 self_code | grep -qE '^    types: \[[^]]*\bcompleted\b[^]]*\]' && self_code | grep -qE '^    types: \[[^]]*\bin_progress\b[^]]*\]' && self_code | grep -qE '^  schedule:' && self_code | grep -qE '^  workflow_dispatch:' \
   && ok "it has workflow_run (completed, in_progress), schedule and workflow_dispatch" || bad "its triggers are not the caller shape"
