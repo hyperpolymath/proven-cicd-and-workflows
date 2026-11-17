@@ -36,6 +36,33 @@ if ! cargo test --locked --manifest-path "$here/source-facts/Cargo.toml" --targe
   exit 1
 fi
 
+echo "== the reader manifest is standalone inside a caller Cargo workspace =="
+# The gate is checked out under the caller's tree (.cicd-suite/). If the caller
+# is itself a Cargo workspace, a reader manifest without its own [workspace]
+# table is rejected by cargo ("believes it's in a workspace when it's not").
+CALLER="$WORK/caller-workspace"
+rm -rf "$CALLER"; mkdir -p "$CALLER/member/src" "$CALLER/.cicd-suite/actions"
+git -C "$CALLER" init -q
+printf '[workspace]\nmembers = ["member"]\nresolver = "2"\n' > "$CALLER/Cargo.toml"
+printf '[package]\nname = "member"\nversion = "0.1.0"\nedition = "2021"\n' > "$CALLER/member/Cargo.toml"
+printf 'pub fn f() {}\n' > "$CALLER/member/src/lib.rs"
+cp -a "$here" "$CALLER/.cicd-suite/actions/creusot-check"
+rm -rf "$CALLER/.cicd-suite/actions/creusot-check/source-facts/target"
+nested_reader="$CALLER/.cicd-suite/actions/creusot-check/source-facts/Cargo.toml"
+if cargo metadata --locked --format-version 1 --no-deps --manifest-path "$nested_reader" > "$WORK/nested-metadata.json" 2> "$WORK/nested-metadata.err"; then
+  ok "cargo metadata on the reader succeeds inside a caller workspace (no exclude)"
+else
+  bad "cargo metadata on the nested reader failed: $(cat "$WORK/nested-metadata.err")"
+fi
+git -C "$CALLER" add -A >/dev/null && git -C "$CALLER" -c user.email=t@example.invalid -c user.name=t -c commit.gpgsign=false commit -qm caller >/dev/null
+if ( cd "$CALLER" && env CREUSOT_GATE_PHASE=detect CREUSOT_FACTS="$WORK/nested-facts" \
+      bash --noprofile --norc -e -o pipefail "$CALLER/.cicd-suite/actions/creusot-check/check.sh" ) > "$OUT" 2>&1; then
+  ok "the gate builds its reader from a checkout nested in a caller workspace"
+else
+  bad "gate from a nested checkout failed: $(cat "$OUT")"
+fi
+rm -rf "$CALLER"
+
 fresh_fixture() {
     rm -rf "$FIX"; mkdir -p "$FIX/src" "$FIX/docs"
     git -C "$FIX" init -q
@@ -331,6 +358,100 @@ run_phase prove PATH="$STAND_IN:$PATH"
 [[ "$RC" -eq 1 ]] && ok "an unproved crate fails the gate" || bad "unproved crate exits $RC, expected 1"
 grep -qx 'execution_stage=substantive' "$WORK/receipt" && grep -qx 'execution_outcome=failed' "$WORK/receipt" && grep -qx 'proof_completed=true' "$WORK/receipt" && ok "a completed failing invocation is distinguished from a prerequisite" || bad "wrong caller failure attribution"
 grep -q "::error file=./Cargo.toml::creusot-check\[prove\]" "$OUT" && ok "the failing crate is annotated" || bad "crate not annotated: $(cat "$OUT")"
+
+echo "== detect: every spelling of the dependency selects its package; lookalikes select nothing =="
+cp -a "$FIX" "$WORK/pre-detect-forms"
+detect_manifest() { # <label> <expect: select|none> <manifest body after the [package] header>
+    local label="$1" expect="$2"
+    printf '[package]\nname = "fx"\nversion = "0.1.0"\nedition = "2021"\n%s\n' "$3" > "$FIX/Cargo.toml"; commit
+    run_phase detect
+    local selected; selected="$(cat "$WORK/facts/crates")"
+    if [[ "$expect" = select ]]; then
+      [[ "$RC" -eq 0 && "$selected" = "." ]] && grep -qx 'obligations=true' "$OUT" \
+        && ok "selects: $label" || { bad "not selected: $label (exit $RC, crates='$selected')"; cat "$OUT"; }
+    else
+      [[ "$RC" -eq 0 && -z "$selected" ]] && grep -qx 'obligations=false' "$OUT" \
+        && ok "selects nothing: $label" || { bad "wrongly selected: $label (exit $RC, crates='$selected')"; cat "$OUT"; }
+    fi
+}
+fresh_fixture
+detect_manifest 'inline value'                       select '[dependencies]
+creusot-std = "0.14"'
+detect_manifest 'inline table'                       select '[dependencies]
+creusot-std = { version = "0.14", features = ["x"] }'
+detect_manifest 'table header'                       select '[dependencies.creusot-std]
+version = "0.14"'
+detect_manifest 'legacy name, inline'                select '[dependencies]
+creusot-contracts = "0.8"'
+detect_manifest 'legacy name, table header'          select '[dependencies.creusot-contracts]
+version = "0.8"'
+for sub in 'workspace = true' 'version = "0.14"' 'path = "../creusot-std"' 'git = "https://example.invalid/creusot"' \
+           'features = ["nightly"]' 'optional = true' 'default-features = false' 'package = "creusot-std"'; do
+  detect_manifest "dotted key creusot-std.${sub%% *}"       select "[dependencies]
+creusot-std.$sub"
+done
+detect_manifest 'dotted key, legacy name'            select '[dependencies]
+creusot-contracts.workspace = true'
+detect_manifest 'dotted key, spaces around dot'      select '[dependencies]
+creusot-std . workspace = true'
+detect_manifest 'quoted dotted key'                  select '[dependencies]
+"creusot-std".workspace = true'
+detect_manifest 'dev-dependencies, dotted'           select '[dev-dependencies]
+creusot-std.workspace = true'
+detect_manifest 'build-dependencies, dotted'         select '[build-dependencies]
+creusot-std.workspace = true'
+detect_manifest 'target table, dotted'               select "[target.'cfg(unix)'.dependencies]
+creusot-std.workspace = true"
+detect_manifest 'target dev table header'            select "[target.x86_64-unknown-linux-gnu.dev-dependencies.creusot-std]
+workspace = true"
+detect_manifest 'trailing comment after header'      select '[dependencies] # proof library
+creusot-std.workspace = true'
+detect_manifest 'no creusot dependency at all'       none   '[dependencies]
+serde = "1"'
+detect_manifest '[features] key of the same name'    none   '[features]
+creusot-std = []
+creusot-contracts = ["dep:other"]
+creusot-std.x = []'
+detect_manifest 'commented-out inline line'          none   '[dependencies]
+# creusot-std = "0.14"
+  #creusot-contracts.workspace = true'
+detect_manifest 'commented-out table header'         none   '# [dependencies.creusot-std]
+[dependencies]
+serde = "1"'
+detect_manifest '[workspace.dependencies] in a package root' none '[workspace]
+[workspace.dependencies]
+creusot-std = "0.14"'
+detect_manifest '[workspace.dependencies.creusot-std] header'   none '[workspace]
+[workspace.dependencies.creusot-std]
+version = "0.14"'
+detect_manifest '[package.metadata] key of the same name'       none '[package.metadata.docs]
+creusot-std = "0.14"'
+detect_manifest 'similarly named crates'             none   '[dependencies]
+my-creusot-std.workspace = true
+creusot-std-extra = "1"
+creusot-stdx = "1"'
+# A virtual root has no [package]: it must never be selected, even though the
+# dependency is declared in it (members inherit it).
+printf '[workspace]\nmembers = ["member"]\nresolver = "2"\n[workspace.dependencies]\ncreusot-std = "0.14"\ncreusot-contracts.version = "0.8"\n' > "$FIX/Cargo.toml"
+rm -rf "$FIX/member"; mkdir -p "$FIX/member"; git -C "$FIX" rm -rq --cached src 2>/dev/null; mv "$FIX/src" "$FIX/member/src"
+printf '[package]\nname = "fx-member"\nversion = "0.1.0"\nedition = "2021"\n' > "$FIX/member/Cargo.toml"; commit
+run_phase detect
+[[ "$RC" -eq 0 && -z "$(cat "$WORK/facts/crates")" ]] && grep -qx 'obligations=false' "$OUT" \
+  && ok "selects nothing: virtual root with only [workspace.dependencies] and a member without the dependency" \
+  || { bad "virtual root or bare member wrongly selected: crates='$(cat "$WORK/facts/crates")'"; cat "$OUT"; }
+# The reported case: the member inherits through a dotted key, and only it is selected.
+printf '[package]\nname = "fx-member"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ncreusot-std.workspace = true\n' > "$FIX/member/Cargo.toml"; commit
+run_phase detect
+[[ "$RC" -eq 0 && "$(cat "$WORK/facts/crates")" = "member" ]] && grep -qx 'obligations=true' "$OUT" \
+  && ok "virtual root + member with creusot-std.workspace = true: only the member is selected" \
+  || { bad "workspace member not selected: crates='$(cat "$WORK/facts/crates")'"; cat "$OUT"; }
+grep -qx 'creusot_version=0.14' "$OUT" && ok "version of an inherited dependency comes from [workspace.dependencies]" || bad "inherited version not read: $(cat "$OUT")"
+run_phase prove PATH="$STAND_IN:$PATH"
+[[ "$RC" -eq 0 ]] && grep -qx 'crates_expected=1' "$WORK/receipt" && grep -qx 'controls_passed=true' "$WORK/receipt" \
+  && grep -q 'stub: selected package fx-member' "$OUT" && grep -q 'false contract refused' "$OUT" && grep -q 'true contract proved' "$OUT" \
+  && ok "prove reaches the planted controls and proves the member (stub cargo-creusot)" \
+  || { bad "dotted-key workspace did not reach the controls (exit $RC)"; cat "$OUT"; }
+rm -rf "$FIX"; mv "$WORK/pre-detect-forms" "$FIX"
 
 echo "== prove: an oracle that can only say yes makes the verdict VOID =="
 cat > "$STAND_IN/cargo-creusot" <<'SH'
