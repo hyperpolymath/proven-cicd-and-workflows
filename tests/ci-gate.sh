@@ -205,12 +205,12 @@ PROFILE="$FX/profile.json"
 
 echo "== publisher: stub gh, settle guard, status writes =="
 PUBLISH="$ROOT/scripts/ci-gate-publish.sh"
-SUITE_DIR="$WORK/suite"; STUB="$WORK/stub"
-mkdir -p "$SUITE_DIR/scripts" "$SUITE_DIR/profiles/ci-gate/example" "$STUB/bin"
+SUITE_DIR="$WORK/suite"; FAKEGH="$WORK/stub"
+mkdir -p "$SUITE_DIR/scripts" "$SUITE_DIR/profiles/ci-gate/example" "$FAKEGH/bin"
 cp "$ROOT"/scripts/ci-gate-verdict.sh "$ROOT"/scripts/validate-ci-gate-profile.sh "$PUBLISH" "$SUITE_DIR/scripts/"
 cp "$ROOT"/profiles/ci-gate/validate.jq "$ROOT"/profiles/ci-gate/select-runs.jq "$SUITE_DIR/profiles/ci-gate/"
 cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
-cat > "$STUB/bin/gh" <<'STUB_EOF'
+cat > "$FAKEGH/bin/gh" <<'STUB_EOF'
 #!/usr/bin/env bash
 # Stub gh: canned runs (the Nth runs call returns runs.N.json, else the highest-numbered file),
 # canned jobs, a POST log, and injected failures (fail.N = the Nth runs call errors; failjobs).
@@ -235,21 +235,21 @@ case $args in
   *) echo "stub gh: unexpected call: $args" >&2; exit 1 ;;
 esac
 STUB_EOF
-chmod +x "$STUB/bin/gh"
+chmod +x "$FAKEGH/bin/gh"
 SHA=$(printf 'a%.0s' $(seq 40))
 snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
-  jq -c "$2" "$FX/workflow-runs.json" > "$STUB/runs.$1.json"
+  jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/runs.$1.json"
 }
-pubreset() { rm -f "$STUB"/runs.*.json "$STUB"/fail.* "$STUB"/failjobs "$STUB"/failpost "$STUB/posts.log" "$STUB/runs.count" "$WORK/gho"; cp "$FX/jobs.json" "$STUB/jobs.json"; }
+pubreset() { rm -f "$FAKEGH"/runs.*.json "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
-  : > "$STUB/posts.log"; rm -f "$STUB/runs.count"; rm -rf "$WORK/pw"
-  PUBOUT=$(env PATH="$STUB/bin:$PATH" STUB_DIR="$STUB" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
+  : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
+  PUBOUT=$(env PATH="$FAKEGH/bin:$PATH" STUB_DIR="$FAKEGH" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
     TIMEOUT_MINUTES=180 GATE_NAME='CI gate' SUITE="$SUITE_DIR" WORK="$WORK/pw" CI_GATE_NOW="$NOW" \
     GITHUB_OUTPUT="$WORK/gho" GITHUB_STEP_SUMMARY="$WORK/gss" "$@" bash "$SUITE_DIR/scripts/ci-gate-publish.sh" 2>&1)
   RC=$?
-  NPOSTS=$(grep -c . "$STUB/posts.log"); POSTS=$(cat "$STUB/posts.log"); CALLS=$(cat "$STUB/runs.count" 2>/dev/null || echo 0)
+  NPOSTS=$(grep -c . "$FAKEGH/posts.log"); POSTS=$(cat "$FAKEGH/posts.log"); CALLS=$(cat "$FAKEGH/runs.count" 2>/dev/null || echo 0)
 }
-post_n() { sed -n "${1}p" "$STUB/posts.log"; }
+post_n() { sed -n "${1}p" "$FAKEGH/posts.log"; }
 chk() { # <label> <actual> <expected>
   [ "$2" = "$3" ] && ok "$1" || bad "$1: got '$2', expected '$3'"
 }
@@ -300,21 +300,21 @@ chk "never stable: 5 rounds, two fetches each" "$CALLS" 10
 chk "never stable: never success, exit 0" "$RC" 0
 echo "-- a late evaluator cannot leave a stale failure either --"
 pubreset; snap 1 "$DONE"; snap 2 "map(if .id == 11 then .status = \"in_progress\" else . end)"
-jq 'map(if .name == "Test" then .conclusion = "failure" else . end)' "$FX/jobs.json" > "$STUB/jobs.json"
+jq 'map(if .name == "Test" then .conclusion = "failure" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"
 snap 3 "$DONE"
 publish EVENT_ACTION=completed
 chk "stale failure not written when the runs moved; re-evaluated: failure on settled data" "$(post_n 1 | cut -f1)" failure
 chk "failure verdict: exit 1" "$RC" 1
 chk "failure verdict: names the job" "$(post_n 1 | cut -f2 | grep -c 'Test (failure)')" 1
 echo "-- errors fail closed --"
-pubreset; snap 1 "$DONE"; touch "$STUB/fail.1"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.1"; publish EVENT_ACTION=completed
 chk "gh error on the first runs fetch: a failure POST" "$(post_n 1 | cut -f1)" failure
 chk "gh error: exit 1, one POST" "$RC/$NPOSTS" "1/1"
-pubreset; snap 1 "$DONE"; touch "$STUB/fail.2"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.2"; publish EVENT_ACTION=completed
 chk "gh error on the guard fetch: a failure POST" "$(post_n 1 | cut -f1)" failure
-pubreset; snap 1 "$DONE"; touch "$STUB/failjobs"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/failjobs"; publish EVENT_ACTION=completed
 chk "gh error reading jobs: a failure POST" "$(post_n 1 | cut -f1)" failure
-pubreset; snap 1 "$DONE"; touch "$STUB/failpost"; publish EVENT_ACTION=completed
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/failpost"; publish EVENT_ACTION=completed
 chk "the status POST itself fails: exit 1, no published=true" "$RC/$([ -s "$WORK/gho" ] && echo 1 || echo 0)" "1/0"
 pubreset; snap 1 "$DONE"; rm -f "$SUITE_DIR/profiles/ci-gate/example/repo.json"; publish EVENT_ACTION=completed
 chk "no profile: a failure POST, exit 1" "$(post_n 1 | cut -f1)/$RC" "failure/1"
