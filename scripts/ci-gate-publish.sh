@@ -12,6 +12,7 @@
 #   CI_GATE_NOW      test hook: epoch seconds instead of `date +%s`
 #   WAIT_SECONDS POLL_SECONDS  pull_request: keep polling while the verdict only means
 #                    "not finished" (pending, never reported, never completed); 0 elsewhere
+#   CI_GATE_CLOCK    test hook: command returning elapsed-clock seconds (default: date +%s)
 #   CI_GATE_SLEEP    test hook: the sleep command
 #   GITHUB_STEP_SUMMARY, GITHUB_OUTPUT                  optional; `published=true` is written
 #                                                       once a verdict status was posted
@@ -19,7 +20,7 @@
 # (The `pending` "re-run started" write for an in_progress event is the FIRST STEP of the
 #  workflow, before any suite file is read; this script posts only verdicts.)
 #
-# Order of work, each round (at most 5 rounds in all):
+# Order of work, each round (5 rounds, or the pull_request elapsed wait deadline):
 #  b. Snapshot the workflow runs of the SHA, fingerprint them (id, status, conclusion,
 #     run_attempt, updated_at of every run but the gate's own), read the jobs, run the verdict.
 #  c. Guard: just before the POST, fetch the runs again. If the fingerprint moved, do not
@@ -29,7 +30,8 @@
 #     This shortens, but cannot remove, the window in which an evaluator paused between its
 #     last check and its POST overwrites a newer status: the statuses API has no
 #     compare-and-swap.
-#  e. Still moving after 5 rounds: the last write is `pending` "runs still changing", never
+#  e. Still moving after 5 rounds: retry until the pull_request deadline, then fail;
+#     other events leave `pending` "runs still changing", never
 #     success. Every state is guarded and verified, which narrows but does not close the
 #     window for a stale write of any state (statuses are last-writer-wins); see
 #     docs/CI-GATE.adoc, "Residual limit".
@@ -113,8 +115,28 @@ write_summary() { # <state> <description> <detail-from-summary-file: 1|0>
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 }
 
-state='' description='' rc=1 settled=0 round=0 waited=0
-while ((round < MAX_ROUNDS)); do
+clock_now() { "${CI_GATE_CLOCK:-date}" +%s; }
+deadline=$(( $(clock_now) + WAIT_SECONDS ))
+wait_again() {
+  local remaining delay
+  remaining=$((deadline - $(clock_now)))
+  ((remaining > 0)) || return 1
+  delay=$POLL_SECONDS
+  ((delay <= remaining)) || delay=$remaining
+  echo "wait: $state ($description); ${remaining}s remaining, polling again in ${delay}s"
+  "${CI_GATE_SLEEP:-sleep}" "$delay"
+}
+
+state='' description='' rc=1 settled=0 round=0
+while :; do
+  if ((round > 0 && WAIT_SECONDS > 0 && $(clock_now) >= deadline)); then break; fi
+  if ((round >= MAX_ROUNDS)); then
+    if ((WAIT_SECONDS > 0)) && wait_again && (($(clock_now) < deadline)); then
+      round=0
+    else
+      break
+    fi
+  fi
   round=$((round + 1))
   # b. snapshot, fingerprint, jobs, verdict
   fetch_runs || die 'could not read the workflow runs'
@@ -154,11 +176,8 @@ while ((round < MAX_ROUNDS)); do
   if ((WAIT_SECONDS > 0)); then
     case "$state:$description" in
       pending:* | failure:'never reported: '* | failure:'never completed: '*)
-        if ((waited < WAIT_SECONDS)); then
-          waited=$((waited + POLL_SECONDS))
-          echo "wait: $state ($description); $waited of ${WAIT_SECONDS}s used, polling again"
+        if wait_again; then
           round=$((round - 1))
-          "${CI_GATE_SLEEP:-sleep}" "$POLL_SECONDS"
           continue
         fi
         if [[ $state == pending ]]; then
@@ -182,13 +201,21 @@ while ((round < MAX_ROUNDS)); do
   fetch_runs || die 'could not re-read the workflow runs after publishing'
   fp_post=$(fingerprint "$WORK/workflow-runs.json") || die 'workflow runs are malformed'
   if [[ $fp_before == "$fp_post" ]]; then settled=1; break; fi
+  # A bootstrap PR may have no default-branch evaluator to clear our stale success.
+  if ((WAIT_SECONDS > 0)) && [[ $state == success ]]; then
+    post pending 'runs still changing' || die 'could not publish the status'
+    finish_output
+  fi
   echo "round $round: the workflow runs changed while publishing; evaluating again"
 done
 
-# e. never settled: the last write is pending, never success
+# e. never settled: fail at the pull_request deadline, pending for other events
 if [[ $settled -ne 1 ]]; then
   state=pending; description='runs still changing'; rc=0
-  echo "::warning::the workflow runs of $HEAD_SHA kept changing for $MAX_ROUNDS rounds; publishing pending"
+  if ((WAIT_SECONDS > 0)); then
+    state=failure; description='gave up waiting: runs still changing'; rc=1
+  fi
+  echo "::warning::the workflow runs of $HEAD_SHA kept changing for $MAX_ROUNDS rounds; publishing $state"
   write_summary "$state" "$description" 0
   post "$state" "$description" || die 'could not publish the status'
   finish_output

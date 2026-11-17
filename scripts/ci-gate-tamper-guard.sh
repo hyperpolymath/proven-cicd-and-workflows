@@ -51,9 +51,9 @@ fi
 [[ ${PR_NUMBER:-} =~ ^[1-9][0-9]*$ ]] || fail 'PR_NUMBER is not a pull request number'
 [[ $APPROVAL_LABEL =~ ^[A-Za-z0-9._-]{1,50}$ ]] || fail 'APPROVAL_LABEL is malformed'
 
-files=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)') \
+files=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[] | {filename, previous_filename}') \
   || fail 'could not list the changed files; no verdict'
-n=$(printf '%s\n' "$files" | grep -c . || true)
+n=$(jq -s 'length' <<< "$files") || fail 'could not count the changed files'
 # The files API stops at 3000 files: a larger pull request cannot be checked, so it is refused.
 (( n < 3000 )) || fail 'the pull request has 3000 or more changed files; the guard cannot check it'
 
@@ -61,9 +61,9 @@ touched=()
 while IFS= read -r f; do
   [[ -n $f ]] || continue
   protected "$f" && touched+=("$f")
-done <<< "$files"
+done < <(jq -rs '.[] | .filename, (.previous_filename // empty)' <<< "$files")
 if (( ${#touched[@]} == 0 )); then
-  echo "gate tamper guard: no gate file is touched by this pull request ($n paths checked)"; exit 0
+  echo "gate tamper guard: no gate file is touched by this pull request ($n files checked)"; exit 0
 fi
 list=$(printf '%s\n' "${touched[@]}" | LC_ALL=C sort -u | paste -sd, -)
 

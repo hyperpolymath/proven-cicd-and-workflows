@@ -243,6 +243,9 @@ cat > "$FAKEGH/bin/gh" <<'FAKEGH_EOF'
 # reads many); the jobs call is answered from the commit named by the latest runs call.
 # Listings for the sweep: pulls.json (open PRs), default_branch, default_sha, failpulls, faildefault.
 D=${FAKEGH_DIR:?}
+if [[ ${CLOCK_API_COST:-0} != 0 ]]; then
+  echo "$(( $(cat "$D/clock") + CLOCK_API_COST ))" > "$D/clock"
+fi
 if [[ " $* " == *" -X POST "* ]]; then
   state=''; desc=''; psha=''; ctx=''
   for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; context=*) ctx=${a#context=} ;; repos/*/statuses/*) psha=${a##*/} ;; esac; done
@@ -298,6 +301,7 @@ snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
 pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
+  echo 0 > "$FAKEGH/clock"; : > "$FAKEGH/sleeps"
   PUBOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
     TIMEOUT_MINUTES=180 GATE_NAME='CI gate' SUITE="$SUITE_DIR" WORK="$WORK/pw" CI_GATE_NOW="$NOW" \
     GITHUB_OUTPUT="$WORK/gho" GITHUB_STEP_SUMMARY="$WORK/gss" "$@" bash "$SUITE_DIR/scripts/ci-gate-publish.sh" 2>&1)
@@ -391,7 +395,17 @@ pubreset
 
 echo "== pull_request wait loop: WAIT_SECONDS, POLL_SECONDS =="
 NOQ='map(select(.name != "CI quality"))'   # CI quality produces the required jobs Lint and Test
-WAITENV=(WAIT_SECONDS=30 POLL_SECONDS=10 CI_GATE_SLEEP=true)
+cat > "$FAKEGH/bin/clock" <<'CLOCK'
+#!/usr/bin/env bash
+cat "$FAKEGH_DIR/clock"
+CLOCK
+cat > "$FAKEGH/bin/poll-sleep" <<'SLEEP'
+#!/usr/bin/env bash
+echo "$1" >> "$FAKEGH_DIR/sleeps"
+echo "$(( $(cat "$FAKEGH_DIR/clock") + $1 ))" > "$FAKEGH_DIR/clock"
+SLEEP
+chmod +x "$FAKEGH/bin/clock" "$FAKEGH/bin/poll-sleep"
+WAITENV=(WAIT_SECONDS=30 POLL_SECONDS=10 CI_GATE_CLOCK="$FAKEGH/bin/clock" CI_GATE_SLEEP="$FAKEGH/bin/poll-sleep")
 echo "-- required checks that have not reported yet are waited for, never failed early --"
 pubreset; snap 1 "$NOQ"; snap 2 "$NOQ"; snap 3 "$DONE"; publish "${WAITENV[@]}"
 chk "late reporter: exactly one POST" "$NPOSTS" 1
@@ -413,7 +427,7 @@ pubreset; snap 1 "$RERUN"; publish "${WAITENV[@]}"
 chk "never ends: failure, one POST" "$(post_n 1 | cut -f1)/$NPOSTS" "failure/1"
 chk "never ends: says it gave up and names the run" "$(post_n 1 | cut -f2 | grep -c 'gave up after 0 min: waiting for 1 workflow runs: CI quality')" 1
 chk "never ends: exit 1" "$RC" 1
-pubreset; snap 1 "$RERUN"; publish WAIT_SECONDS=120 POLL_SECONDS=10 CI_GATE_SLEEP=true
+pubreset; snap 1 "$RERUN"; publish "${WAITENV[@]}" WAIT_SECONDS=120
 chk "wait of 2 min is reported as 2 min" "$(post_n 1 | cut -f2 | grep -c 'gave up after 2 min')" 1
 echo "-- a real failure is written at once, never waited out --"
 pubreset; snap 1 "$DONE"; jq 'map(if .name == "Test" then .conclusion = "failure" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"
@@ -427,6 +441,25 @@ chk "no wait: never reported is an immediate failure, one POST" "$(post_n 1 | cu
 chk "no wait: no polling" "$(grep -c '^wait: ' <<<"$PUBOUT")" 0
 pubreset; snap 1 "$RERUN"; publish
 chk "no wait: pending is written as pending, exit 0" "$(post_n 1 | cut -f1)/$RC" "pending/0"
+echo "-- elapsed deadline and reruns during bootstrap --"
+pubreset; snap 1 "$NOQ"; publish "${WAITENV[@]}" WAIT_SECONDS=25
+chk "final sleep is capped at the remaining budget" "$(paste -sd, "$FAKEGH/sleeps")/$RC" "10,10,5/1"
+pubreset; snap 1 "$NOQ"; publish "${WAITENV[@]}" CLOCK_API_COST=4
+chk "API time counts towards the deadline" "$(paste -sd, "$FAKEGH/sleeps")/$RC" "10/1"
+pubreset; snap 1 "$DONE"; publish "${WAITENV[@]}"
+chk "bootstrap settled success remains immediate" "$NPOSTS/$(post_n 1 | cut -f1)/$RC/$(wc -l < "$FAKEGH/sleeps")" "1/success/0/0"
+pubreset; snap 1 "$DONE"; snap 2 "$DONE"; snap 3 "$RERUN"; snap 4 "$RERUN"; snap 5 "$DONE"
+publish "${WAITENV[@]}"
+chk "rerun invalidates our success before polling, then settles" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)/$RC" "success,pending,success/0"
+pubreset; snap 1 "$DONE"; snap 2 "$DONE"; snap 3 "$RERUN"; publish "${WAITENV[@]}"
+chk "rerun that never ends clears success and fails by the deadline" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)/$RC" "success,pending,failure/1"
+pubreset; for i in $(seq 1 40); do snap "$i" "map(.updated_at = \"t$i\")"; done
+publish "${WAITENV[@]}"
+chk "PR keeps settling beyond five rounds until its deadline, then fails" "$(post_n 1 | cut -f1)/$RC/$CALLS/$(paste -sd, "$FAKEGH/sleeps")" "failure/1/30/10,10,10"
+pubreset; for i in $(seq 1 10); do snap "$i" "map(.updated_at = \"t$i\")"; done
+snap 11 "$DONE"; publish "${WAITENV[@]}"
+chk "PR can settle successfully after five moving rounds" "$(post_n 1 | cut -f1)/$RC/$CALLS" "success/0/13"
+
 echo "-- bad wait settings fail closed --"
 pubreset; snap 1 "$DONE"; publish WAIT_SECONDS=abc
 chk "WAIT_SECONDS=abc: refused, no POST, exit 1" "$NPOSTS/$RC" "0/1"

@@ -20,7 +20,7 @@ D=${FAKEGH_DIR:?}
 args="$*"; jqarg=''; prev=''
 for a in "$@"; do [[ $prev == --jq ]] && jqarg=$a; prev=$a; done
 case $args in
-  *"/pulls/"*"/files"*)   [[ ! -f $D/failfiles ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -r "$jqarg" "$D/files.json" ;;
+  *"/pulls/"*"/files"*)   [[ ! -f $D/failfiles ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -c "$jqarg" "$D/files.json" ;;
   *"/issues/"*"/events"*) [[ ! -f $D/failevents ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -c "$jqarg" "$D/events.json" ;;
   *"/pulls/"*"/commits"*) [[ ! -f $D/failcommits ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -r "$jqarg" "$D/commits.json" ;;
   *) echo "fake gh: unexpected call: $args" >&2; exit 1 ;;
@@ -86,6 +86,12 @@ reset; run APPROVAL_LABEL='a b;c'
 chk "bad label name: exit 1" "$RC" 1
 reset; seq 1 3000 | sed 's|^|f|' > /dev/null; jq -n '[range(0;3000) | {filename: ("f" + tostring)}]' > "$D/files.json"; run
 chk "3000 changed files cannot be checked: exit 1" "$RC" 1
+reset; jq -n '[range(0;2999) | {filename: ("f" + tostring), previous_filename: ("old" + tostring)}]' > "$D/files.json"; run
+chk "2999 renamed files count once each: exit 0" "$RC" 0
+jq '.[0].previous_filename = "scripts/ci-gate-publish.sh"' "$D/files.json" > "$D/renamed.json"; mv "$D/renamed.json" "$D/files.json"; run
+chk "old protected path still detected among 2999 renames" "$RC/$(grep -c "scripts/ci-gate-publish.sh.*not applied" <<< "$OUT")" "1/1"
+reset; jq -n '[range(0;3000) | {filename: ("f" + tostring), previous_filename: ("old" + tostring)}]' > "$D/files.json"; run
+chk "3000 renamed files reach the API record limit: exit 1" "$RC" 1
 reset; files .github/workflows/ci-gate.yml; events "labeled gate-change-approved 2026-11-17T11:00:00Z"; : > "$D/commits.json"; echo '[]' > "$D/commits.json"; run
 chk "no commits listed: exit 1" "$RC" 1
 chk "the guard never applies a label: it calls only read endpoints" "$(grep -c -- '-X \(POST\|PUT\|PATCH\|DELETE\)\|--method' "$GUARD")" 0
