@@ -114,12 +114,13 @@ jobs:
           set -euo pipefail
           url="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
           publish() { # <state> <description>
+            local state=$1
             local d=$2
             (( ${#d} > 140 )) && d="${d:0:139}…"
             gh api -X POST "repos/$REPO/statuses/$SHA" \
-              -f state="$1" -f context="$CONTEXT" -f description="$d" -f target_url="$url" > /dev/null
+              -f state="$state" -f context="$CONTEXT" -f description="$d" -f target_url="$url" > /dev/null
             echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "$CONTEXT = $1: $d"
+            echo "$CONTEXT = $state: $d"
           }
           deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
           prev=""
