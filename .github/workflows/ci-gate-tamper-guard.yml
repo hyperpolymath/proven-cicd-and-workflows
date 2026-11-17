@@ -13,7 +13,8 @@
 # actions. Permissions: pull-requests: read, contents: read. No secrets. No trust decision uses
 # github.actor or any other forgeable field.
 #
-# APPROVAL: the label `gate-change-approved`, applied by the repository OWNER after the newest commit
+# APPROVAL: the label `gate-change-approved`, applied by a repository ADMIN (checked through the collaborator
+# permission API, failing closed) after the newest commit
 # (re-apply it after every push). AGENTS MUST NEVER APPLY THAT LABEL: all agents act with the owner's
 # account, so this is tamper-EVIDENT and deliberate, not tamper-proof (docs/CI-GATE.adoc, "Tamper guard").
 #

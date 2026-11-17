@@ -22,15 +22,20 @@ for a in "$@"; do [[ $prev == --jq ]] && jqarg=$a; prev=$a; done
 case $args in
   *"/pulls/"*"/files"*)   [[ ! -f $D/failfiles ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -c "$jqarg" "$D/files.json" ;;
   *"/issues/"*"/events"*) [[ ! -f $D/failevents ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -c "$jqarg" "$D/events.json" ;;
+  *"/collaborators/"*"/permission"*)
+    [[ ! -f $D/failperm ]] || { echo "gh: HTTP 500" >&2; exit 1; }
+    u=${args#*/collaborators/}; u=${u%%/*}; echo "$u" >> "$D/perm.reads"
+    p=$(jq -r --arg u "$u" '.[$u] // empty' "$D/perms.json") && [[ -n $p ]] || { echo "gh: HTTP 404" >&2; exit 1; }
+    echo "$p" ;;
   *"/pulls/"*"/commits"*) [[ ! -f $D/failcommits ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -r "$jqarg" "$D/commits.json" ;;
   *) echo "fake gh: unexpected call: $args" >&2; exit 1 ;;
 esac
 GH
 chmod +x "$D/bin/gh"
 files() { printf '%s\n' "$@" | jq -R '{filename: .}' | jq -s . > "$D/files.json"; }
-events() { printf '%s\n' "$@" | jq -R 'split(" ") | {event: .[0], label: {name: .[1]}, created_at: .[2]}' | jq -s . > "$D/events.json"; }
+events() { printf '%s\n' "$@" | jq -R 'split(" ") | {event: .[0], label: {name: .[1]}, created_at: .[2], actor: (if (.[3] // "boss") == "none" then null else {login: (.[3] // "boss")} end)}' | jq -s . > "$D/events.json"; }
 commits() { printf '%s\n' "$@" | jq -R '{commit: {committer: {date: .}}}' | jq -s . > "$D/commits.json"; }
-reset() { rm -f "$D"/fail*; files README.adoc; events; commits 2026-11-17T10:00:00Z; }
+reset() { rm -f "$D"/fail* "$D/perm.reads"; printf '{"boss":"admin","dev":"write","mnt":"maintain","rdr":"read"}' > "$D/perms.json"; files README.adoc; events; commits 2026-11-17T10:00:00Z; }
 run() { OUT=$(env PATH="$D/bin:$PATH" FAKEGH_DIR="$D" REPO=o/r PR_NUMBER=7 "$@" bash "$GUARD" 2>&1); RC=$?; }
 
 echo "== which files are gate files =="
@@ -68,6 +73,38 @@ reset; files scripts/ci-gate-publish.sh; events "labeled gate-change-approved 20
 chk "the label name is configurable and the default label is then not enough: exit 1" "$RC" 1
 reset; files scripts/ci-gate-publish.sh; events "labeled gate-change-approved 2026-11-17T11:00:00Z"; commits 2026-11-17T10:00:00Z; run
 chk "label time equal to commit time is not enough (strictly after)" "$( commits 2026-11-17T11:00:00Z; run; echo $RC)" 1
+echo "== the label counts only if its latest labeled event was by an admin =="
+LBL="labeled gate-change-approved 2026-11-17T11:00:00Z"
+reset; files scripts/ci-gate-publish.sh; events "$LBL boss"; run
+chk "admin actor, label after the newest commit: exit 0" "$RC" 0
+chk "admin actor: the permission endpoint was read for that login" "$(cat "$D/perm.reads")" boss
+reset; files scripts/ci-gate-publish.sh; events "$LBL dev"; run
+chk "write actor: exit 1" "$RC" 1
+chk "write actor: says not admin and names the actor and permission" "$(grep -c "applied by 'dev' whose repository permission is 'write', not admin" <<<"$OUT")" 1
+reset; files scripts/ci-gate-publish.sh; events "$LBL mnt"; run
+chk "maintain actor: exit 1" "$RC" 1
+chk "maintain actor: says not admin" "$(grep -c "permission is 'maintain', not admin" <<<"$OUT")" 1
+reset; files scripts/ci-gate-publish.sh; events "$LBL rdr"; run
+chk "read actor: exit 1" "$RC" 1
+reset; files scripts/ci-gate-publish.sh; events "$LBL boss"; : > "$D/failperm"; run
+chk "permission API error: exit 1" "$RC" 1
+chk "permission API error: says no verdict" "$(grep -c 'could not read the repository permission of .boss.; no verdict' <<<"$OUT")" 1
+reset; files scripts/ci-gate-publish.sh; events "$LBL stranger"; run
+chk "actor unknown to the permission API (404): exit 1" "$RC" 1
+reset; files scripts/ci-gate-publish.sh; events "$LBL none"; run
+chk "no actor on the event (deleted account): exit 1" "$RC" 1
+chk "no actor: never calls the permission endpoint" "$(cat "$D/perm.reads" 2>/dev/null | grep -c . || true)" 0
+reset; files scripts/ci-gate-publish.sh; events "$LBL ../../x"; run
+chk "a login that is not a login is refused before any URL is built" "$RC/$(cat "$D/perm.reads" 2>/dev/null | grep -c . || true)" "1/0"
+reset; files scripts/ci-gate-publish.sh; events "labeled gate-change-approved 2026-11-17T09:00:00Z dev" "unlabeled gate-change-approved 2026-11-17T09:30:00Z boss" "labeled gate-change-approved 2026-11-17T11:00:00Z boss"; run
+chk "the LATEST labeled event decides: an earlier write actor does not matter" "$RC" 0
+reset; files scripts/ci-gate-publish.sh; events "labeled gate-change-approved 2026-11-17T09:00:00Z boss" "unlabeled gate-change-approved 2026-11-17T09:30:00Z boss" "labeled gate-change-approved 2026-11-17T11:00:00Z dev"; run
+chk "the LATEST labeled event decides: an earlier admin does not rescue a later write actor" "$RC" 1
+reset; files scripts/ci-gate-publish.sh; events "labeled gate-change-approved 2026-11-17T09:00:00Z boss"; commits 2026-11-17T10:00:00Z; run
+chk "admin label older than the newest commit: still exit 1" "$RC" 1
+reset; files README.adoc; events "$LBL dev"; run
+chk "no gate file touched: the permission endpoint is not even read" "$RC/$(cat "$D/perm.reads" 2>/dev/null | grep -c . || true)" "0/0"
+
 echo "-- a rename counts through its old name --"
 printf '%s\n' '[{"filename":"docs/x.adoc","previous_filename":".github/workflows/ci-gate.yml"}]' > "$D/files.json"; events; run
 chk "renamed away from a gate file: exit 1" "$RC" 1
@@ -120,6 +157,27 @@ code "$TPL" | grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\.github/w
 code "$SELF" | grep -qE '^    uses: \./\.github/workflows/ci-gate-tamper-guard\.yml$' && ok "the suite's caller uses the local reusable" || bad "the suite's caller does not use the local reusable"
 for b in ci-gate-tamper-guard.yml ci-gate-tamper-guard-caller.yml; do
   jq -e --arg p ".github/workflows/$b" 'any(.workflows[]; .path == $p)' "$ROOT/config/workflow-lock-scope.json" >/dev/null && ok "lock scope lists $b" || bad "lock scope lacks $b"
+done
+for f in "$WF" "$SELF" "$TPL"; do
+  b=$(basename "$f")
+  [ -z "$(awk '
+    function ind(s) { match(s, /^ */); return RLENGTH }
+    { line = $0
+      if (inblock) { if (line ~ /^[[:space:]]*$/ || ind(line) > keycol) { if (line ~ /\$\{\{/) print NR; next } inblock = 0 }
+      if (line ~ /^[[:space:]]*(- )?run:/) { keycol = ind(line) + (line ~ /^[[:space:]]*- / ? 2 : 0)
+        rest = line; sub(/^[[:space:]]*(- )?run:[[:space:]]*/, "", rest)
+        if (rest ~ /^[|>]/) inblock = 1; else if (rest ~ /\$\{\{/) print NR } }' "$f")" ] \
+    && ok "$b has no \${{ }} inside a run: script" || bad "$b interpolates into a run: script"
+done
+code "$WF" | grep -qE '^[[:space:]]+run:' && ok "the reusable has run: steps (the check had something to scan)" || bad "the reusable has no run: steps"
+echo "== the approval label name: one default, said the same everywhere =="
+chk "the default is defined exactly once, in the script" "$(grep -c 'APPROVAL_LABEL:-' "$GUARD")" 1
+DEFAULT_LABEL=$(sed -n 's/^APPROVAL_LABEL=\${APPROVAL_LABEL:-\([^}]*\)}$/\1/p' "$GUARD")
+chk "the script's default label" "$DEFAULT_LABEL" gate-change-approved
+for f in "$WF" "$SELF" "$TPL" "$ROOT/templates/ci-gate-caller.yml" "$ROOT/.github/workflows/ci-gate-caller.yml" "$ROOT/docs/CI-GATE.adoc"; do
+  b=$(basename "$f")
+  others=$(grep -oE '[a-z]+(-[a-z]+)*-approved\b' "$f" | sort -u | grep -vxF "$DEFAULT_LABEL" || true)
+  [ -z "$others" ] && ok "$b names no approval label but the default" || bad "$b names another approval label: $others"
 done
 echo
 printf 'ci-gate-tamper-guard: %d passed, %d failed\n' "$PASS" "$FAIL"

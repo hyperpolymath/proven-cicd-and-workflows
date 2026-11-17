@@ -19,8 +19,10 @@ PROTECTED=(
   'profiles/ci-gate/*'
 )
 #
-# Approval = the label is on the pull request NOW (its latest labeled/unlabeled event is `labeled`)
-# AND it was applied AFTER the newest commit of the pull request (committer date). So any later
+# Approval = the label is on the pull request NOW (its latest labeled/unlabeled event is `labeled`),
+# the actor of that labeled event holds `admin` on the repository (GET collaborators/{login}/permission,
+# `.permission == "admin"`; a write or maintain actor, an unreadable or malformed answer, or a missing
+# actor all refuse), AND it was applied AFTER the newest commit of the pull request (committer date). So any later
 # push needs the label re-applied. THE LIMIT: a commit date is written by the pusher, so a deliberate
 # backdating or a force-push of older commits can defeat the comparison; GitHub exposes no reliable
 # push time to a read-only job. This is tamper-EVIDENT, not tamper-proof, and AGENTS MUST NEVER APPLY
@@ -67,14 +69,25 @@ if (( ${#touched[@]} == 0 )); then
 fi
 list=$(printf '%s\n' "${touched[@]}" | LC_ALL=C sort -u | paste -sd, -)
 
-events=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events?per_page=100" --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | {event, label: .label.name, at: .created_at}') \
+events=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events?per_page=100" --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | {event, label: .label.name, at: .created_at, actor: (.actor.login // "")}') \
   || fail 'could not read the label events; no verdict'
-label_at=$(jq -rs --arg l "$APPROVAL_LABEL" '
-  map(select(.label == $l)) | sort_by(.at) | if length == 0 then "" else last | if .event == "labeled" then .at else "" end end' <<< "$events") \
+latest=$(jq -rs --arg l "$APPROVAL_LABEL" '
+  map(select(.label == $l)) | sort_by(.at) | if length == 0 then "" else last | if .event == "labeled" then [.at, .actor] | @tsv else "" end end' <<< "$events") \
   || fail 'could not evaluate the label events'
-if [[ -z $label_at ]]; then
+if [[ -z $latest ]]; then
   fail "this pull request touches gate files ($list) and the label '$APPROVAL_LABEL' is not applied. Only the repository owner may apply it; agents must not."
 fi
+IFS=$'\t' read -r label_at actor <<< "$latest"
+[[ -n $label_at ]] || fail 'the label event has no time'
+
+# The actor of the latest labeled event must hold admin. The login is validated before it is put into
+# a URL; a missing actor (a deleted account), a bot, an API error or an unexpected answer all refuse.
+[[ $actor =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] \
+  || fail "gate files are touched ($list); the actor of the latest '$APPROVAL_LABEL' event is missing or not a user login, so it cannot be shown to be an admin"
+perm=$(gh api "repos/$REPO/collaborators/$actor/permission" --jq '.permission') \
+  || fail "could not read the repository permission of '$actor'; no verdict"
+[[ $perm == admin ]] \
+  || fail "gate files are touched ($list); '$APPROVAL_LABEL' was applied by '$actor' whose repository permission is '${perm:-none}', not admin. Only an admin's label counts."
 
 commits=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits?per_page=100" --jq '.[] | .commit.committer.date') \
   || fail 'could not read the pull request commits; no verdict'
@@ -84,7 +97,7 @@ newest=$(printf '%s\n' "$commits" | jq -Rn '[inputs | select(length > 0) | fromd
   || fail 'could not parse the commit dates'
 applied=$(jq -rn --arg t "$label_at" '$t | fromdateiso8601') || fail 'could not parse the label time'
 if (( applied > newest )); then
-  echo "gate tamper guard: gate files touched ($list); '$APPROVAL_LABEL' applied after the newest commit; approved by the owner's label"
+  echo "gate tamper guard: gate files touched ($list); '$APPROVAL_LABEL' applied by admin '$actor' after the newest commit; approved"
   exit 0
 fi
 fail "gate files are touched ($list) and '$APPROVAL_LABEL' was applied before the newest commit; the owner must re-apply it after every push."
