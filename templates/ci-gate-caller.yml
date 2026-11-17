@@ -10,11 +10,18 @@
 # (see rust-ci-caller.yml: `rust-ci / Cargo test`), which always contains
 # " / " and can never equal `CI/gate`.
 #
-# It triggers on workflow_run, which GitHub runs from the DEFAULT branch: a
-# pull request cannot alter this file, its pin or its list. The consequence:
+# It triggers on workflow_run, schedule and workflow_dispatch, all of which GitHub runs from the
+# DEFAULT branch: a pull request cannot alter this file, its pin or its list. The consequence:
 # the pull request that adds this caller can never receive `CI/gate` itself, and
 # must be merged past the gate once (owner action). There is no
 # pull_request trigger here, deliberately (tests/ci-gate.sh asserts it).
+#
+# `schedule` and `workflow_dispatch` run a SWEEP: the reusable lists the open pull requests and the
+# default branch head and re-evaluates each distinct head SHA with the same guarded publisher. A stale state
+# then normally lasts until the next sweep. It is still last-writer-wins, a sweep is itself an evaluator,
+# and GitHub may delay or skip scheduled runs (docs/CI-GATE.adoc, "Residual limit"). The cron below runs at minutes
+# 7, 22, 37 and 52 of every hour; keep the minutes off :00 and :30, where scheduled load is highest.
+# The sweep reads open pull requests, so the caller must grant `pull-requests: read`.
 #
 # It also fires when a workflow run STARTS (`in_progress`, which GitHub also sends for a rerun):
 # any active run makes the verdict pending, so a rerun replaces a stale success with pending,
@@ -46,15 +53,19 @@ on:
   workflow_run:
     workflows: ["**", "!CI gate"]
     types: [completed, in_progress]
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch: {}
 
 permissions:
   statuses: write
   actions: read
   contents: read
+  pull-requests: read
 
 jobs:
   gate:
-    if: github.event.workflow_run.name != 'CI gate'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate'
     uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@__CICD_SUITE_SHA__ # cicd-suite ci-gate
     with:
       context: "CI/gate"

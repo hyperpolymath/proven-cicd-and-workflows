@@ -213,27 +213,44 @@ cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
 cat > "$FAKEGH/bin/gh" <<'FAKEGH_EOF'
 #!/usr/bin/env bash
 # Fake gh: canned runs (the Nth runs call returns runs.N.json, else the highest-numbered file),
-# canned jobs, a POST log, and injected failures (fail.N = the Nth runs call errors; failjobs).
+# canned jobs, a POST log (state, description, sha), and injected failures (fail.N = the Nth runs
+# call errors; failjobs). A directory by/<sha>/ holds the same files for ONE commit (the sweep
+# reads many); the jobs call is answered from the commit named by the latest runs call.
+# Listings for the sweep: pulls.json (open PRs), default_branch, default_sha, failpulls, faildefault.
 D=${FAKEGH_DIR:?}
 if [[ " $* " == *" -X POST "* ]]; then
-  state=''; desc=''
-  for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; esac; done
+  state=''; desc=''; psha=''
+  for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; repos/*/statuses/*) psha=${a##*/} ;; esac; done
   [[ ! -f $D/failpost ]] || { echo "gh: HTTP 500 (post)" >&2; exit 1; }
   # a newer evaluator's write that lands just before this one (deterministic pause control)
   if [[ -f $D/prepost ]]; then cat "$D/prepost" >> "$D/posts.log"; rm -f "$D/prepost"; fi
-  printf '%s\t%s\n' "$state" "$desc" >> "$D/posts.log"; exit 0
+  printf '%s\t%s\t%s\n' "$state" "$desc" "$psha" >> "$D/posts.log"; exit 0
 fi
 args="$*"
+jqarg='' ; prev=''
+for a in "$@"; do [[ $prev == --jq ]] && jqarg=$a; prev=$a; done
 case $args in
   *"actions/runs?head_sha"*)
-    n=$(( $(cat "$D/runs.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$D/runs.count"
-    [[ ! -f $D/fail.$n ]] || { echo "gh: HTTP 500" >&2; exit 1; }
-    f=$D/runs.$n.json; [[ -f $f ]] || f=$(ls "$D"/runs.*.json | sort -V | tail -1)
+    sha=${args#*head_sha=}; sha=${sha%%&*}; echo "$sha" > "$D/cursha"
+    R=$D; [[ ! -d $D/by/$sha ]] || R=$D/by/$sha
+    n=$(( $(cat "$R/runs.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$R/runs.count"
+    [[ ! -f $R/fail.$n ]] || { echo "gh: HTTP 500" >&2; exit 1; }
+    f=$R/runs.$n.json; [[ -f $f ]] || f=$(ls "$R"/runs.*.json | sort -V | tail -1)
     jq -c '.[]' "$f" ;;
   *"/jobs?filter=latest"*)
-    [[ ! -f $D/failjobs ]] || { echo "gh: HTTP 500 (jobs)" >&2; exit 1; }
+    R=$D; [[ ! -d $D/by/$(cat "$D/cursha" 2>/dev/null) ]] || R=$D/by/$(cat "$D/cursha")
+    [[ ! -f $R/failjobs ]] || { echo "gh: HTTP 500 (jobs)" >&2; exit 1; }
     id=${args#*actions/runs/}; id=${id%%/*}
-    jq -c --argjson id "$id" '.[] | select(.run.id == $id) | del(.run)' "$D/jobs.json" ;;
+    jq -c --argjson id "$id" '.[] | select(.run.id == $id) | del(.run)' "$R/jobs.json" ;;
+  *"/pulls?state=open"*)
+    [[ ! -f $D/failpulls ]] || { echo "gh: HTTP 500 (pulls)" >&2; exit 1; }
+    jq -r "$jqarg" "$D/pulls.json" ;;
+  *"--jq .default_branch"*)
+    [[ ! -f $D/faildefault ]] || { echo "gh: HTTP 500 (repo)" >&2; exit 1; }
+    cat "$D/default_branch" ;;
+  *"/branches/"*)
+    [[ ! -f $D/faildefault ]] || { echo "gh: HTTP 500 (branch)" >&2; exit 1; }
+    cat "$D/default_sha" ;;
   *) echo "fake gh: unexpected call: $args" >&2; exit 1 ;;
 esac
 FAKEGH_EOF
@@ -242,7 +259,7 @@ SHA=$(printf 'a%.0s' $(seq 40))
 snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
   jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/runs.$1.json"
 }
-pubreset() { rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
+pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
   PUBOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
@@ -346,6 +363,116 @@ grep -q 'EVENT_ACTION' <<<"$EARLY" && grep -q 'in_progress' <<<"$EARLY" && grep 
 ! grep -qE '\$suite|fetch |scripts/' <<<"$EARLY" && ok "the early step reads no suite file" || bad "the early step touches the suite"
 ! grep -q '\${{' <(awk '/^        run: \|/{f=1;next} f' <<<"$EARLY") && ok "the early step has no \${{ }} inside its run: script" || bad "the early step interpolates into run:"
 
+echo "== sweep: schedule and workflow_dispatch re-evaluate every open pull request head and the default branch head =="
+cp "$ROOT/scripts/ci-gate-sweep.sh" "$SUITE_DIR/scripts/"
+sha_n() { printf '%040x' "$1"; }
+sweep_sha() { # <n> <runs jq filter> [jobs jq filter] -> by/<sha n>/ holds the runs and jobs of that one commit
+  local s; s=$(sha_n "$1"); mkdir -p "$FAKEGH/by/$s"
+  jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/by/$s/runs.1.json"
+  jq -c "${3:-.}" "$FX/jobs.json" > "$FAKEGH/by/$s/jobs.json"
+}
+set_pulls() { # "<number> <updated_at> <sha n>" ... -> the open pull requests
+  local t num upd idx
+  for t in "$@"; do read -r num upd idx <<<"$t"; printf '%s %s %s\n' "$num" "$upd" "$(sha_n "$idx")"; done \
+    | jq -R -s 'split("\n") | map(select(length > 0) | split(" ") | {number: (.[0] | tonumber), updated_at: .[1], head: {sha: .[2]}})' > "$FAKEGH/pulls.json"
+}
+set_default() { echo main > "$FAKEGH/default_branch"; sha_n "$1" > "$FAKEGH/default_sha"; }
+seed() { printf '%s\t%s\t%s\n' "$1" "$3" "$(sha_n "$2")" >> "$FAKEGH/posts.log"; }   # a status already on the commit
+sweep() { # [VAR=value ...] -> RC, SOUT; the posts are in posts.log, the summary table in $WORK/gss
+  : > "$WORK/gss"; rm -rf "$WORK/sw"
+  SOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" REPO=example/repo CONTEXT=CI/gate \
+    TIMEOUT_MINUTES=180 GATE_NAME='CI gate' SUITE="$SUITE_DIR" WORK="$WORK/sw" CI_GATE_NOW="$NOW" \
+    GITHUB_STEP_SUMMARY="$WORK/gss" "$@" bash "$SUITE_DIR/scripts/ci-gate-sweep.sh" 2>&1)
+  RC=$?
+}
+last_for() { grep -P "\t$(sha_n "$1")$" "$FAKEGH/posts.log" | tail -1 | cut -f1; }
+count_for() { grep -cP "\t$(sha_n "$1")$" "$FAKEGH/posts.log" || true; }
+TESTFAIL='map(if .name == "Test" then .conclusion = "failure" else . end)'
+T1=2026-11-17T10:00:00Z
+
+pubreset; set_pulls "1 $T1 1"; set_default 2
+sweep_sha 1 "$DONE" "$TESTFAIL"; sweep_sha 2 "$DONE"
+seed success 1 'all 3 required checks passed'
+sweep
+chk "a stale success on a SHA whose latest runs show a failed required job: corrected to failure" "$(last_for 1)" failure
+chk "that correction is a new write after the stale success (success, then failure)" "$(grep -P "\t$(sha_n 1)$" "$FAKEGH/posts.log" | cut -f1 | paste -sd, -)" "success,failure"
+chk "the default branch head, all green, is success" "$(last_for 2)" success
+chk "a failed SHA makes the sweep exit non-zero" "$RC" 1
+grep -q 'Test (failure)' "$FAKEGH/posts.log" && ok "the failure names the job" || bad "the failure does not name the job"
+grep -qF "| \`$(sha_n 1 | cut -c1-12)\` | PR #1 | failure |" "$WORK/gss" && ok "the step summary table has the failed row" || bad "no failed row in the summary table"
+grep -qF "| default branch | success |" "$WORK/gss" && ok "the step summary table has the default branch row" || bad "no default branch row in the summary table"
+
+pubreset; set_pulls "1 $T1 3"; set_default 4
+sweep_sha 3 "$DONE"; sweep_sha 4 "$DONE"
+seed pending 3 'waiting for 1 workflow runs: CI quality'
+sweep
+chk "a stuck pending on a settled all-green SHA is corrected to success" "$(grep -P "\t$(sha_n 3)$" "$FAKEGH/posts.log" | cut -f1 | paste -sd, -)" "pending,success"
+chk "settled and green everywhere: exit 0" "$RC" 0
+
+pubreset; set_pulls "1 $T1 5" "2 2026-11-17T10:01:00Z 6" "3 2026-11-17T10:02:00Z 7" "4 2026-11-17T10:03:00Z 5"; set_default 7
+for i in 5 6 7; do sweep_sha "$i" "$DONE"; done
+sweep
+chk "two pull requests plus the default branch: three evaluations (a head shared by two PRs, or by a PR and the default branch, once)" "$(cut -f3 "$FAKEGH/posts.log" | sort -u | grep -c .)/$(grep -c . "$FAKEGH/posts.log")" "3/3"
+chk "each of the three SHAs was written once" "$(count_for 5)$(count_for 6)$(count_for 7)" 111
+chk "three evaluations, all green: exit 0" "$RC" 0
+[ "$(grep -c '^| `' "$WORK/gss")" = 3 ] && ok "the step summary table has three rows" || bad "the step summary table does not have three rows"
+chk "a sweep writes no 're-run started' pending" "$(grep -c 're-run started' "$FAKEGH/posts.log" || true)" 0
+
+echo "-- more SHAs than the cap: the most recently updated are evaluated, the rest are named in a warning --"
+pubreset; set_default 8
+set_pulls "1 2026-11-17T10:05:00Z 9" "2 2026-11-17T10:03:00Z 10" "3 2026-11-17T10:01:00Z 11"
+for i in 8 9 10 11; do sweep_sha "$i" "$DONE"; done
+sweep CI_GATE_SWEEP_MAX=2
+chk "over the cap of 2: the default branch head and the newest pull request are evaluated" "$(count_for 8)$(count_for 9)" 11
+chk "over the cap: the older pull requests are not evaluated" "$(count_for 10)$(count_for 11)" 00
+grep -qE '^::warning::.*4 distinct head SHAs.*exceed the cap of 2; 2 .*NOT evaluated' <<<"$SOUT" && ok "the over-cap warning names the count skipped" || bad "no over-cap warning: $SOUT"
+grep -q 'over the cap' "$WORK/gss" && ok "the step summary table names the skipped SHAs" || bad "the summary does not mention the skip"
+chk "skipped heads are a loud warning, not a failure: exit 0" "$RC" 0
+pubreset; set_default 8
+set_pulls "1 2026-11-17T10:05:00Z 9"
+for i in 8 9; do sweep_sha "$i" "$DONE"; done
+sweep CI_GATE_SWEEP_MAX=2
+grep -q '::warning::' <<<"$SOUT" && bad "a warning without an excess" || ok "at the cap exactly: no warning"
+grep -qE 'CI_GATE_SWEEP_MAX:-100' "$ROOT/scripts/ci-gate-sweep.sh" && ok "the default cap is 100" || bad "the default cap is not 100"
+pubreset; set_default 1
+for i in $(seq 1 101); do printf '%s 2026-11-17T%02d:%02d:00Z %s\n' "$i" $((10 + i / 60)) $((i % 60)) "$((i + 1))"; done > "$WORK/many.txt"
+mapfile -t MANY < "$WORK/many.txt"; set_pulls "${MANY[@]}"
+snap 1 "$DONE"
+sweep
+chk "101 pull requests plus the default branch (102 SHAs): 100 are evaluated at the default cap" "$(cut -f3 "$FAKEGH/posts.log" | sort -u | grep -c .)" 100
+grep -qE '^::warning::.*102 distinct head SHAs.*exceed the cap of 100; 2 .*NOT evaluated' <<<"$SOUT" && ok "the default-cap warning names 2 skipped" || bad "no default-cap warning"
+chk "the oldest two pull requests are the ones skipped" "$(count_for 2)$(count_for 3)" 00
+
+echo "-- one SHA's error does not stop the others; the sweep still exits non-zero --"
+pubreset; set_pulls "1 2026-11-17T10:03:00Z 12" "2 2026-11-17T10:02:00Z 13" "3 2026-11-17T10:01:00Z 15"; set_default 14
+for i in 12 13 14 15; do sweep_sha "$i" "$DONE"; done
+touch "$FAKEGH/by/$(sha_n 13)/fail.1"
+sweep
+chk "the SHA whose runs could not be read gets a failure status" "$(last_for 13)" failure
+chk "the SHAs before and after it are still evaluated (12, 14, 15 success)" "$(last_for 12) $(last_for 14) $(last_for 15)" "success success success"
+chk "one SHA's API error: the sweep exits non-zero" "$RC" 1
+grep -qF "| \`$(sha_n 13 | cut -c1-12)\` | PR #2 | error |" "$WORK/gss" && ok "the table marks it as an error" || bad "the table does not mark the error"
+pubreset; set_pulls "1 $T1 12"; set_default 14
+for i in 12 14; do sweep_sha "$i" "$DONE"; done
+touch "$FAKEGH/failpulls"
+sweep
+chk "the pull request listing fails: the default branch head is still evaluated" "$(last_for 14)" success
+chk "the pull request listing fails: exit non-zero and a loud error" "$RC/$(grep -c '^::error::ci-gate-sweep: could not list the open pull requests' <<<"$SOUT")" "1/1"
+pubreset; set_pulls "1 $T1 12"; set_default 14
+for i in 12 14; do sweep_sha "$i" "$DONE"; done
+touch "$FAKEGH/faildefault"
+sweep
+chk "the default branch head is unreadable: the pull request is still evaluated" "$(last_for 12)" success
+chk "the default branch head is unreadable: exit non-zero and a loud error" "$RC/$(grep -c '^::error::ci-gate-sweep: could not read the default branch head' <<<"$SOUT")" "1/1"
+pubreset; set_pulls; set_default 14; sweep_sha 14 "$DONE"
+sweep
+chk "no open pull requests: only the default branch head, exit 0" "$(count_for 14)/$RC" "1/0"
+pubreset; set_pulls "1 $T1 12"; set_default 14
+sweep_sha 12 "$DONE" "$TESTFAIL"; sweep_sha 14 "$DONE" "$TESTFAIL"
+sweep
+chk "every SHA failing: both failure statuses are written, exit 1" "$(last_for 12) $(last_for 14)/$RC" "failure failure/1"
+pubreset
+
 echo "== profile validator =="
 v_ok()  { bash "$VALIDATE" "$1" "${2:-example/repo}" >/dev/null 2>&1 && ok "accepted $3" || bad "rejected $3"; }
 v_bad() { bash "$VALIDATE" "$1" "${2:-example/repo}" >/dev/null 2>&1 && bad "accepted $3" || ok "rejected $3"; }
@@ -405,7 +532,7 @@ for f in "$ROOT"/profiles/ci-gate/*/*.json; do
   v_ok "$f" "$repo" "shipped profile $repo"
   # I-JSON / JCS: sorted keys, compact, one line. (Strings here are plain ASCII/BMP text.)
   [ "$(jq -cS . "$f")" = "$(cat "$f")" ] && ok "$repo: JCS-serialised (sorted, compact)" || bad "$repo: not in JCS form"
-  jq -e '.checks | all(.[]; .job != "CI/gate" and .job != "estate-gate")' "$f" >/dev/null \
+  jq -e '.checks | all(.[]; .job != "CI/gate" and .job != "CI / gate" and .job != "estate-gate")' "$f" >/dev/null \
     && ok "$repo: no gate context in the list" || bad "$repo: lists a gate context"
   n=$((n+1))
 done
@@ -423,6 +550,7 @@ for spec in "resource-algebra:Proofs verdict:proofs.yml" "mathesis:Proven suite 
 done
 for f in "$ROOT"/profiles/ci-gate/*/*.json; do
   repo="$(basename "$(dirname "$f")")/$(basename "$f" .json)"
+  [ "$repo" = hyperpolymath/proven-cicd-and-workflows ] && continue   # the suite has no Empty-linter workflow
   jq -e '[.checks[] | select(.job == "🔴 GATE: Empty-linter (invisible characters)") | .workflow] | sort == [".github/workflows/dogfood-gate.yml", ".github/workflows/empty-linter.yml"]' "$f" >/dev/null && ok "$repo: both Empty-linter producers are required" || bad "$repo: Empty-linter producers are not both listed"
 done
 
@@ -454,7 +582,13 @@ grep -qE '^  workflow_call:' "$WORKFLOW" && ! grep -qE '^  (push|pull_request|pu
   && ok "ci-gate.yml is workflow_call only" || bad "ci-gate.yml has triggers other than workflow_call"
 ! grep -qE '^[[:space:]]*(- )?uses:' "$WORKFLOW" && ok "ci-gate.yml uses no actions (nothing from the consumer or PR is checked out or run)" || bad "ci-gate.yml has a uses: line"
 ! grep -qE '^[[:space:]]*secrets:' "$WORKFLOW" "$TEMPLATE" && ok "no secrets: line in the reusable or the template" || bad "a secrets: line is present"
-grep -q "event_name" "$WORKFLOW" && grep -q "workflow_run" "$WORKFLOW" && ok "ci-gate.yml refuses events other than workflow_run" || bad "ci-gate.yml does not check the event"
+grep -q "event_name" "$WORKFLOW" && grep -q "workflow_run" "$WORKFLOW" && ok "ci-gate.yml checks the event" || bad "ci-gate.yml does not check the event"
+REFUSE=$(sed -n "/- name: Refuse anything/,/- name: Mark a started/p" "$WORKFLOW")
+grep -qE "workflow_run \| schedule \| workflow_dispatch\) ;;" <<<"$REFUSE" && grep -q "\*) echo .*exit 1 ;;" <<<"$REFUSE" \
+  && ok "the refusal admits exactly workflow_run, schedule and workflow_dispatch and fails on any other event" || bad "the event refusal is not workflow_run | schedule | workflow_dispatch only"
+grep -qE "^      pull-requests: read" "$WORKFLOW" && ok "ci-gate.yml asks for pull-requests: read (the sweep lists open pull requests)" || bad "ci-gate.yml does not ask for pull-requests: read"
+grep -q "fetch scripts/ci-gate-sweep.sh" "$WORKFLOW" && grep -q "scripts/ci-gate-sweep.sh" <(sed -n "/- name: Evaluate the commit/,/- name: Publish a failure/p" "$WORKFLOW") \
+  && ok "ci-gate.yml fetches the sweep script and runs it for events other than workflow_run" || bad "ci-gate.yml does not fetch or run the sweep script"
 grep -q "fetch scripts/ci-gate-publish.sh" "$WORKFLOW" && ok "ci-gate.yml fetches the publisher from the suite" || bad "ci-gate.yml does not fetch ci-gate-publish.sh"
 ! grep -qE '^[[:space:]]*gh api -X POST' <(sed -n '/- name: Evaluate the commit/,/- name: Publish a failure/p' "$WORKFLOW") && ok "the evaluate step publishes only through the script" || bad "the evaluate step posts a status itself"
 grep -qE '^  gate:' "$WORKFLOW" && ok "job id is gate" || bad "job id is not gate"
@@ -471,8 +605,38 @@ tpl_code "$TEMPLATE" | grep -qE '^    types: \[[^]]*\bcompleted\b[^]]*\]' && tpl
   && ok "template triggers on workflow_run types completed and in_progress" || bad "template types lack completed or in_progress"
 tpl_code "$TEMPLATE" | grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\.github/workflows/ci-gate\.yml@__CICD_SUITE_SHA__' \
   && ok "template calls the reusable at the __CICD_SUITE_SHA__ placeholder" || bad "template does not call the reusable at the placeholder"
+tpl_code "$TEMPLATE" | grep -qE '^  schedule:' && tpl_code "$TEMPLATE" | grep -qE '^    - cron: ' && ok "template has the schedule trigger" || bad "template has no schedule trigger"
+tpl_code "$TEMPLATE" | grep -qE '^  workflow_dispatch:' && ok "template has the workflow_dispatch trigger" || bad "template has no workflow_dispatch trigger"
+tpl_code "$TEMPLATE" | grep -qE '^  pull-requests: read' && ok "template grants pull-requests: read" || bad "template does not grant pull-requests: read"
+tpl_code "$TEMPLATE" | grep -qE "^    if: github.event_name != 'workflow_run' \|\| github.event.workflow_run.name != 'CI gate'" && ok "template excludes only the gate's own workflow_run events" || bad "template if: is not the self-exclusion for workflow_run only"
 tpl_code "$TEMPLATE" | grep -qE '^  gate:' && ok "template job id is gate" || bad "template job id is not gate"
 tpl_code "$TEMPLATE" | grep -qE 'context: *"CI/gate"' && ok "template publishes CI/gate" || bad "template does not publish CI/gate"
+
+echo "== the suite gates itself (dogfood) =="
+SELF="$ROOT/.github/workflows/ci-gate-caller.yml"
+SELFPROFILE="$ROOT/profiles/ci-gate/hyperpolymath/proven-cicd-and-workflows.json"
+[ -f "$SELF" ] && ok "the suite's own caller exists" || bad "the suite's own caller is missing"
+self_code() { grep -vE '^[[:space:]]*#' "$SELF"; }
+self_code | grep -qE '^name: CI gate$' && ok "its workflow name is CI gate (the gate's own runs are excluded by this name)" || bad "its workflow name is not CI gate"
+self_code | grep -qE '^    uses: \./\.github/workflows/ci-gate\.yml$' && ok "it calls the local reusable, so the gate runs at the suite's own default-branch commit" || bad "it does not call ./.github/workflows/ci-gate.yml"
+self_code | grep -qE 'context: *"CI / gate"' && ok "it publishes the context the suite's main ruleset requires (CI / gate)" || bad "it does not publish CI / gate"
+self_code | grep -qE '^  gate:' && ok "its job id is gate" || bad "its job id is not gate"
+self_code | grep -q 'pull_request' && bad "the suite's caller mentions pull_request outside comments" || ok "the suite's caller has no pull_request trigger"
+self_code | grep -qE '^[[:space:]]*concurrency:' && bad "the suite's caller has a concurrency block" || ok "the suite's caller has no concurrency block"
+self_code | grep -qE '^    types: \[[^]]*\bcompleted\b[^]]*\]' && self_code | grep -qE '^    types: \[[^]]*\bin_progress\b[^]]*\]' && self_code | grep -qE '^  schedule:' && self_code | grep -qE '^  workflow_dispatch:' \
+  && ok "it has workflow_run (completed, in_progress), schedule and workflow_dispatch" || bad "its triggers are not the caller shape"
+self_code | grep -qE '^  pull-requests: read' && self_code | grep -qE '^  statuses: write' && self_code | grep -qE '^  actions: read' && self_code | grep -qE '^  contents: read' \
+  && ok "it grants statuses: write, actions: read, contents: read, pull-requests: read" || bad "its permissions are not the caller shape"
+! grep -qE '^[[:space:]]*secrets:' "$SELF" && ok "the suite's caller has no secrets: line" || bad "the suite's caller has a secrets: line"
+[ "$(jq -r .repository "$SELFPROFILE")" = hyperpolymath/proven-cicd-and-workflows ] && ok "the suite's profile names the suite" || bad "the suite's profile names another repository"
+bash "$VALIDATE" "$SELFPROFILE" hyperpolymath/proven-cicd-and-workflows "CI / gate" >/dev/null 2>&1 && ok "the suite's profile validates with the caller's context CI / gate forbidden" || bad "the suite's profile does not validate"
+w "$(p "$(e A a.yml),$(e 'CI / gate' b.yml)")"
+bash "$VALIDATE" "$WORK/p.json" example/repo "CI / gate" >/dev/null 2>&1 && bad "accepted a job named CI / gate" || ok "rejected a job named CI / gate when that is the caller's context"
+jq -e '[.checks[].workflow] | all(.[]; . != ".github/workflows/ci-gate.yml" and . != ".github/workflows/ci-gate-caller.yml")' "$SELFPROFILE" >/dev/null \
+  && ok "the suite's profile requires neither the reusable nor the caller (the gate cannot wait for itself)" || bad "the suite's profile requires the gate's own workflow"
+for wf in $(jq -r '.checks[].workflow' "$SELFPROFILE" | sort -u); do
+  [ -f "$ROOT/$wf" ] && ok "the suite's profile names an existing workflow $wf" || bad "the suite's profile names a missing workflow $wf"
+done
 
 echo
 printf 'ci-gate: %d passed, %d failed\n' "$PASS" "$FAIL"

@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MPL-2.0
+# CI gate — the suite gates itself with its own interim gate (dogfood). Same shape as
+# templates/ci-gate-caller.yml, with two differences: the reusable is the LOCAL file
+# ./.github/workflows/ci-gate.yml (so the gate runs at the suite's own default-branch commit, with no
+# second pin to drift), and the context is "CI / gate", the one this repository's `main` ruleset requires.
+#
+# workflow_run, schedule and workflow_dispatch all run from the DEFAULT branch, so a pull request cannot
+# edit this file or the profile (profiles/ci-gate/hyperpolymath/proven-cicd-and-workflows.json) that
+# judges it. The pull request that first adds this file therefore never receives `CI / gate` itself and
+# is merged past the gate once (docs/CI-GATE.adoc, "Bootstrap").
+#
+# The job id MUST stay `gate` and the workflow name MUST stay `CI gate`: the reusable drops runs of
+# that name from the evaluation, and the `if:` below keeps the gate from triggering itself.
+# There is deliberately NO `concurrency:` block and no pull_request trigger (tests/ci-gate.sh).
+# No `secrets:` line: the reusable consumes none.
+name: CI gate
+
+on:
+  workflow_run:
+    workflows: ["**", "!CI gate"]
+    types: [completed, in_progress]
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  statuses: write
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate'
+    uses: ./.github/workflows/ci-gate.yml
+    with:
+      context: "CI / gate"

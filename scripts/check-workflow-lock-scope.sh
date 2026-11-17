@@ -40,6 +40,17 @@ while IFS= read -r row; do
         grep -Fxq "$ref" "$tmp/seen" && continue
         printf '%s\n' "$ref" >> "$tmp/seen"
         case $ref in
+            # A job-level LOCAL reusable workflow is the same commit as its caller: nothing to pin. It must be
+            # a plain file name under .github/workflows that exists and is itself in the scope inventory (the
+            # inventory comparison above), and its own references are inspected like any other workflow.
+            ./.github/workflows/*)
+                [[ $ref =~ ^\./\.github/workflows/[a-zA-Z0-9_-]+\.ya?ml$ ]] || { echo "$wf: unsupported local workflow reference $ref" >&2; exit 1; }
+                local_wf=${ref#./}
+                [[ -f $ROOT/$local_wf ]] || { echo "$wf: local reusable $ref does not exist" >&2; exit 1; }
+                jq -e --arg p "$local_wf" 'any(.workflows[]; .path == $p)' "$scope" >/dev/null || { echo "$wf: local reusable $ref is not in the lock scope" >&2; exit 1; }
+                yq -o=json '.' "$ROOT/$local_wf" > "$tmp/local.json" || exit 2
+                jq -r '.jobs[] | (.uses // empty), (.steps[]?.uses // empty)' "$tmp/local.json" >> "$tmp/queue"
+                ;;
             '$/'*|./*)
                 [[ $mode == managed && $ref == '$/'* ]] || { echo "$wf: unsupported unpinned local reference $ref" >&2; exit 1; }
                 # GitHub accepts both metadata names; prefer action.yml when both exist.

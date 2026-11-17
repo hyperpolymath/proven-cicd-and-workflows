@@ -12,7 +12,7 @@ Format (I-JSON, JCS-serialised: sorted keys, compact, one line):
 
 A required check is an identity, not a bare name: the job display name AND the workflow file that produces it. A display name produced by two workflows (the Empty-linter gate) is two entries, one per producer, and both are required; a name alone could be satisfied by one producer while the other never ran.
 
-`scripts/validate-ci-gate-profile.sh` rejects: `schema_version` 1 (no silent fallback) or anything but 2; unknown, missing or duplicate members at either level; a different repository; an empty list; an entry that is not exactly `{job, workflow}`; a `workflow` that is not `^.github/workflows/[A-Za-z0-9_.-]+.ya?ml$` (so no `..`, no subdirectory, no ref suffix); an empty, untrimmed or unclean `job`; a `job` naming `CI/gate`, `estate-gate` or the context the caller publishes; a duplicate (workflow, job) pair; and entries not sorted by (workflow, job). No `ijson-jcs` check was reachable when this was written; `tests/ci-gate.sh` asserts the serialisation as `jq -cS`.
+`scripts/validate-ci-gate-profile.sh` rejects: `schema_version` 1 (no silent fallback) or anything but 2; unknown, missing or duplicate members at either level; a different repository; an empty list; an entry that is not exactly `{job, workflow}`; a `workflow` that is not `^.github/workflows/[A-Za-z0-9_.-]+.ya?ml$` (so no `..`, no subdirectory, no ref suffix); an empty, untrimmed or unclean `job`; a `job` naming `CI/gate`, `estate-gate` or the context the caller publishes (the validator takes the caller's `context` as its third argument; the suite's own context is `CI / gate`, with spaces); a duplicate (workflow, job) pair; and entries not sorted by (workflow, job). No `ijson-jcs` check was reachable when this was written; `tests/ci-gate.sh` asserts the serialisation as `jq -cS`.
 
 == How the lists were derived (read 2026-11-17, unauthenticated GitHub API)
 
@@ -29,6 +29,7 @@ triggers, `if:` conditions and `continue-on-error`.
 |`hyperpolymath/resource-algebra` |`fb9f18553d3af81eca13e153565ff85aeb1665d4` (PR 36) |`f0818f2b108e273c47a52dda6b9406381071bcbb`
 |`hyperpolymath/mathesis` |`2100dfa171a73c821de843fee5f044849f12ff3f` (PR 96) |`261e6dc2e9b683abb48278d518d463def773fcb6`
 |`hyperpolymath/rsr-template-repo` |`b7ad304a4433f318e478c48d09704d5f753653d8` (PR 431) |`0044ad92f9e6ef258b89f3e9b5ee7b748a4db2d2` (103 runs, two pages read)
+|`hyperpolymath/proven-cicd-and-workflows` |`eaf59c629a80efd30c59e44b09374ecbef55615a` (PR 139) |`9eb0bbf9bd80b7964ce5b9957e75821b3cd4a55b`
 |===
 
 Each name below was migrated to one entry per producing workflow, using the `path` of the workflow runs read at the two commits above (the producers were identical at both). Included in all three: `estate-rules`, `Estate Governance Policy`, `Central Estate CI/CD Audit`,
@@ -62,3 +63,25 @@ Each is a renamed in-workflow aggregator and exists only once the consumer renam
 * Ambiguous names: `check` (two jobs, `guix-policy.yml` and `security-policy.yml`), `lint`, `docs`, `build`, `publish`, `triage`, `gate`, `deploy`.
 * Conditional: `Workflow Security Linter` / `lint-workflows` (workflow-path filter), `analyze (actions, none)` (CodeQL matrix names can change; code scanning reports the same results), `Analyze (...)` in rsr-template-repo, `Dependabot`, `canary`, `validate` (scheduled or dispatch only).
 * A job called `CI/gate` was seen on resource-algebra and mathesis (`main`). It is never listed: the validator forbids it. Its renamed successors are listed above.
+
+== The suite's own profile (`hyperpolymath/proven-cicd-and-workflows.json`)
+
+The suite's own `main` ruleset requires the status context `CI / gate`, which its own caller (`.github/workflows/ci-gate-caller.yml`) now publishes. Read 2026-11-17 from the unauthenticated GitHub API: `actions/runs?head_sha=<sha>` (9 runs on the pull request head, 10 on `main`) and each run's `jobs?filter=latest` (19 and 25 jobs). Evidence commits: pull request head `eaf59c629a80efd30c59e44b09374ecbef55615a` (PR 139) and `main` `9eb0bbf9bd80b7964ce5b9957e75821b3cd4a55b`. Before this change the suite had no workflow named `CI gate`, so neither commit has a run of it.
+
+Required (every job ran and succeeded at both commits, in an unconditional workflow with no `continue-on-error`):
+
+* `main-estate-audit.yml`: `governance`, `hygiene`, `languages`, `manifests` (trigger `pull_request` to `main` and `push` to `main`, no path filter, no job `if:`).
+* `proven-lock-gate.yml`: `Proven lock gate`.
+* `secret-scanner.yml`: `scan / gitleaks`, `scan / rust-secrets`, `scan / shell-secrets`. The two `-secrets` jobs are a static matrix of `rust` and `shell` in the reusable.
+* `secret-scanner-legacy.yml`: `rust supplemental secrets`, `shell supplemental secrets` (a static matrix of `rust` and `shell`).
+* `secret-scanner-self-test.yml`: `controls`.
+
+Judgement call: `governance`, `hygiene`, `languages`, `manifests` and `controls` are short names. They are listed because every entry is pinned to its workflow file and no other workflow of this repository produces them at either commit; if one is added that does, the entry stays exact.
+
+Excluded, and why:
+
+* `Composite shell contract`, `Gate controls`, `SQ map against Hypatia's praxis registry` (`code-hygiene-self-test.yml`) and `Each gate can fail for what it checks` (`language-gates-self-test.yml`): path-filtered on both `pull_request` and `push`, so a pull request that touches none of the paths would fail the gate as `never reported`. The scheduled run of `code-hygiene-self-test.yml` on `main` also failed at `SQ map against Hypatia's praxis registry` (it reads an external registry), another reason to leave it out.
+* `advisory` (`main-estate-audit.yml`): advisory by its own name.
+* `Analyze (actions)` and `Analyze (rust)`: CodeQL, a third-party app (`dynamic/github-code-scanning`), not an Actions job of this repository.
+* The gate itself (`CI gate`, context `CI / gate`): never listed, and the validator forbids the caller's context.
+* Not read from a live run: the profile was checked by replaying the verdict script offline over these two commits (both `success`, all 11 required checks passed). No run of the gate itself has happened on GitHub.

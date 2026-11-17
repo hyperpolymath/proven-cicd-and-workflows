@@ -17,6 +17,11 @@
       "reason": "Interim CI/gate reusable: uses no actions, reads only API metadata and its own suite files at job.workflow_sha; nothing from a consumer is checked out or run."
     },
     {
+      "path": ".github/workflows/ci-gate-caller.yml",
+      "mode": "immutable",
+      "reason": "The suite gates itself: caller of its own local reusable ci-gate.yml (no remote reference, no actions); runs from the default branch only."
+    },
+    {
       "path": ".github/workflows/code-hygiene-self-test.yml",
       "mode": "managed",
       "reason": "Existing actions.lock onboarding; preserve direct and declared composite closure."

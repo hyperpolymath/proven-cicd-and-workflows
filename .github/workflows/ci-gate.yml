@@ -22,10 +22,16 @@
 # `${{ }}` value reaches a script through `env:`, never inline into `run:`. It uses no
 # actions, so there is nothing to pin: `gh` and `jq` ship on the runner image.
 #
-# FAIL CLOSED: a missing or invalid profile, an empty `job.workflow_sha`, any API error, or
-# any event other than workflow_run is a failure, never a pass or a pending.
+# SWEEP: on `schedule` and `workflow_dispatch` there is no triggering run, so the job instead lists the
+# open pull requests and the default branch head of `github.repository` and runs the same guarded
+# publisher on each distinct head SHA (scripts/ci-gate-sweep.sh), with no early pending. That bounds
+# nothing by itself: a sweep is one more last-writer-wins evaluator (docs/CI-GATE.adoc, "Residual limit").
 #
-# The caller must grant: statuses: write, actions: read, contents: read.
+# FAIL CLOSED: a missing or invalid profile, an empty `job.workflow_sha`, any API error, or
+# any event other than workflow_run, schedule or workflow_dispatch is a failure, never a pass or a pending.
+#
+# The caller must grant: statuses: write, actions: read, contents: read, pull-requests: read
+# (the last one is read only by the sweep, to list open pull requests).
 # No `secrets:` — the reusable consumes none.
 
 name: CI gate (reusable)
@@ -55,11 +61,12 @@ jobs:
   gate:
     name: CI gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       statuses: write
       actions: read
       contents: read
+      pull-requests: read
     env:
       GH_TOKEN: ${{ github.token }}
       EVENT_NAME: ${{ github.event_name }}
@@ -71,13 +78,17 @@ jobs:
       SERVER_URL: ${{ github.server_url }}
       RUN_ID: ${{ github.run_id }}
     steps:
-      - name: Refuse anything but a workflow_run event
+      - name: Refuse anything but a workflow_run, schedule or workflow_dispatch event
         run: |
           set -euo pipefail
-          [[ "$EVENT_NAME" == workflow_run ]] \
-            || { echo "::error::ci-gate runs only on workflow_run (got '$EVENT_NAME'); NO VERDICT WAS PRODUCED"; exit 1; }
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "::error::workflow_run head_sha is not a 40-hex commit; NO VERDICT WAS PRODUCED"; exit 1; }
+          case "$EVENT_NAME" in
+            workflow_run | schedule | workflow_dispatch) ;;
+            *) echo "::error::ci-gate runs only on workflow_run, schedule and workflow_dispatch (got '$EVENT_NAME'); NO VERDICT WAS PRODUCED"; exit 1 ;;
+          esac
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+              || { echo "::error::workflow_run head_sha is not a 40-hex commit; NO VERDICT WAS PRODUCED"; exit 1; }
+          fi
           [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
             || { echo "::error::repository name is not an owner/name coordinate"; exit 1; }
           [[ "$CONTEXT" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] \
@@ -124,6 +135,7 @@ jobs:
           fetch scripts/ci-gate-verdict.sh
           fetch scripts/validate-ci-gate-profile.sh
           fetch scripts/ci-gate-publish.sh
+          fetch scripts/ci-gate-sweep.sh
           fetch profiles/ci-gate/validate.jq
           fetch profiles/ci-gate/select-runs.jq
           mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
@@ -139,11 +151,16 @@ jobs:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
         # All of the reading, the settle guard and the publishing is scripts/ci-gate-publish.sh
-        # (fetched from the suite above), so a stub `gh` can test it offline. The workflow only
-        # hands it values through env.
+        # (fetched from the suite above), so a stub `gh` can test it offline. On schedule and
+        # workflow_dispatch scripts/ci-gate-sweep.sh runs that same publisher once per open pull
+        # request head and the default branch head. The workflow only hands them values through env.
         run: |
           set -euo pipefail
-          SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" bash "$suite/scripts/ci-gate-publish.sh"
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" bash "$suite/scripts/ci-gate-publish.sh"
+          else
+            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-sweep" bash "$suite/scripts/ci-gate-sweep.sh"
+          fi
       - name: Publish a failure status when no verdict could be produced
         if: ${{ failure() && steps.publish.outputs.published != 'true' }}
         run: |
