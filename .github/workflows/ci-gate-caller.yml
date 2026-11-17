@@ -9,7 +9,10 @@
 # this file: that is what makes the gate self-starting. workflow_run (runs from the
 # default branch only, so it takes effect after merge) covers fork and Dependabot pull
 # requests, whose pull_request token is read-only and cannot write statuses.
-# The two jobs never both evaluate the same pull request.
+# No trust decision rests on github.actor or other forgeable context (Sonar S8232): a
+# same-repository pull request may be evaluated by both jobs; each evaluation is fresh
+# and idempotent. A Dependabot pull request makes gate-pr fail loudly (read-only token);
+# gate-wr then supplies its status after merge of this file.
 #
 # Job id and workflow name are free; the status context comes from `with: context`,
 # which must equal the spelling the ruleset requires (here with spaces: `CI / gate`).
@@ -32,17 +35,13 @@ jobs:
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
-      && github.actor != 'dependabot[bot]'
-    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@dbfc5ccc5e2937e3de802b7815a266b7a553ec0f
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@ace986bbc8793bdfb94024d288053dd8b6e7ee16
     with:
       context: "CI / gate"
   gate-wr:
     if: >-
       github.event_name == 'workflow_run'
       && github.event.workflow_run.name != 'CI gate caller'
-      && !(github.event.workflow_run.event == 'pull_request'
-           && github.event.workflow_run.head_repository.full_name == github.repository
-           && github.event.workflow_run.actor.login != 'dependabot[bot]')
-    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@dbfc5ccc5e2937e3de802b7815a266b7a553ec0f
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@ace986bbc8793bdfb94024d288053dd8b6e7ee16
     with:
       context: "CI / gate"
