@@ -27,8 +27,9 @@
 #     last check and its POST overwrites a newer status: the statuses API has no
 #     compare-and-swap.
 #  e. Still moving after 5 rounds: the last write is `pending` "runs still changing", never
-#     success. Every state is guarded, so a late evaluator cannot leave a stale pending or
-#     failure either.
+#     success. Every state is guarded and verified, which narrows but does not close the
+#     window for a stale write of any state (statuses are last-writer-wins); see
+#     docs/CI-GATE.adoc, "Residual limit".
 #  f. Fail closed: verdict exit code and state must agree; any API or input error posts a
 #     failure status and exits 1; descriptions are at most 140 characters.
 set -uo pipefail

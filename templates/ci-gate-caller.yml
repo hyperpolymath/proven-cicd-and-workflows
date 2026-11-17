@@ -18,7 +18,7 @@
 #
 # It also fires when a workflow run STARTS (`in_progress`, which GitHub also sends for a rerun):
 # any active run makes the verdict pending, so a rerun replaces a stale success with pending,
-# as a native required check would. `completed` then settles it.
+# approximating a native required check. `completed` then re-evaluates it (last-writer-wins; see docs/CI-GATE.adoc, "Residual limit").
 #
 # The required-check list is NOT in this repository: it lives in
 # proven-cicd-and-workflows/profiles/ci-gate/<owner>/<repo>.json at the pinned
