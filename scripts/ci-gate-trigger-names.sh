@@ -20,7 +20,7 @@ while IFS= read -r wf; do
   [[ -f $root/$wf ]] || { echo "workflow file missing: $wf" >&2; exit 2; }
   name=$(yq -r '.name // ""' "$root/$wf") || { echo "cannot parse $wf" >&2; exit 2; }
   [[ -n $name && $name != null ]] || { echo "workflow has no name: $wf" >&2; exit 2; }
-  [[ $name != *[\*\?\[\]\!]* ]] || { echo "workflow name contains a glob character (* ? [ ] !): '$name' in $wf" >&2; exit 2; }
+  [[ $name != *[\*\?\[\]\!+]* ]] || { echo "workflow name contains a glob character (* ? [ ] ! +): '$name' in $wf" >&2; exit 2; }
   [[ $name != "$GATE_NAME" ]] || { echo "workflow name is the gate's own ('$GATE_NAME'): $wf" >&2; exit 2; }
   names+=("$name")
 done < <(sort -u <<<"$files")
