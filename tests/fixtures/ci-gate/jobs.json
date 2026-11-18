@@ -1,0 +1,6 @@
+[
+  {"id": 1001, "name": "Build", "status": "completed", "conclusion": "success", "run": {"id": 11, "name": "CI build", "status": "completed"}},
+  {"id": 1002, "name": "Test", "status": "completed", "conclusion": "success", "run": {"id": 12, "name": "CI quality", "status": "completed"}},
+  {"id": 1003, "name": "Lint", "status": "completed", "conclusion": "success", "run": {"id": 12, "name": "CI quality", "status": "completed"}},
+  {"id": 1004, "name": "Advisory scan", "status": "completed", "conclusion": "success", "run": {"id": 13, "name": "Advisory", "status": "completed"}}
+]
