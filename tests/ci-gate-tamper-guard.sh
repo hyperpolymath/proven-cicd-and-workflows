@@ -40,8 +40,8 @@ run() { OUT=$(env PATH="$D/bin:$PATH" FAKEGH_DIR="$D" REPO=o/r PR_NUMBER=7 "$@" 
 
 echo "== which files are gate files =="
 for f in .github/workflows/ci-gate.yml .github/workflows/ci-gate-caller.yml .github/workflows/ci-gate-tamper-guard.yml .github/workflows/ci-gate.yaml \
-         scripts/check-required-contexts.sh scripts/ci-gate-verdict.sh scripts/ci-gate-tamper-guard.sh scripts/validate-ci-gate-profile.sh \
-         templates/ci-gate-caller.yml profiles/ci-gate/hyperpolymath/mathesis.json profiles/ci-gate/validate.jq; do
+         scripts/check-required-contexts.sh scripts/ci-gate-verdict.sh scripts/ci-gate-lib.sh scripts/ci-gate-tamper-guard.sh scripts/validate-ci-gate-profile.sh \
+         templates/ci-gate-caller.yml profiles/ci-gate/hyperpolymath/mathesis.json profiles/ci-gate/validate.jq profiles/ci-gate/join-checks.jq; do
   bash "$GUARD" --match "$f" > /dev/null && ok "gate file: $f" || bad "not recognised as a gate file: $f"
 done
 for f in .github/workflows/ci.yml .github/workflows/actions.lock .github/workflows/rust-ci.yml scripts/build.sh scripts/check-required.sh \

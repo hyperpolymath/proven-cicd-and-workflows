@@ -1,0 +1,8 @@
+[
+  {"id": 1001, "name": "Build", "status": "completed", "conclusion": "success", "check_suite": {"id": 9011}, "app": {"slug": "github-actions"}},
+  {"id": 1002, "name": "Test", "status": "completed", "conclusion": "success", "check_suite": {"id": 9012}, "app": {"slug": "github-actions"}},
+  {"id": 1003, "name": "Lint", "status": "completed", "conclusion": "success", "check_suite": {"id": 9012}, "app": {"slug": "github-actions"}},
+  {"id": 1004, "name": "Advisory scan", "status": "completed", "conclusion": "success", "check_suite": {"id": 9013}, "app": {"slug": "github-actions"}},
+  {"id": 1005, "name": "scan / gitleaks", "status": "completed", "conclusion": "success", "check_suite": {"id": 9013}, "app": {"slug": "github-actions"}},
+  {"id": 1006, "name": "SonarCloud Code Analysis", "status": "completed", "conclusion": "success", "check_suite": {"id": 777}, "app": {"slug": "sonarqubecloud"}}
+]
