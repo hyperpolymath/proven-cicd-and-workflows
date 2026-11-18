@@ -51,13 +51,21 @@
 # reusable also re-reads the runs just before it writes and re-evaluates when they moved
 # (scripts/ci-gate-publish.sh; tests/ci-gate.sh asserts the template has no concurrency of its own).
 #
+# ⚠ REPLACE `workflow_run.workflows` below. It matches workflow NAMES (the top-level `name:` of a workflow
+# file), never paths, and it must be an EXPLICIT list, with no globs: it is the `name:` of every workflow
+# file in your profile. Generate it from a checkout of this suite and of your repository:
+#   proven-cicd-and-workflows/scripts/ci-gate-trigger-names.sh \
+#     proven-cicd-and-workflows/profiles/ci-gate/<owner>/<repo>.json <path-to-your-repo>
+# and paste the printed array. Left unchanged, the placeholder matches no workflow, the gate is never
+# triggered by a workflow_run, and any check that compares the list with this script's output (as
+# tests/ci-gate.sh does for the suite's own caller) fails on it. Do not leave the placeholder.
 # No `secrets:` line: the reusable consumes none.
 name: CI gate
 
 on:
   pull_request:
   workflow_run:
-    workflows: ["**", "!CI gate"]
+    workflows: ["Replace with the name: of each workflow in your profile"] # PLACEHOLDER: see the comment above
     types: [completed]
   schedule:
     - cron: "7,22,37,52 * * * *"

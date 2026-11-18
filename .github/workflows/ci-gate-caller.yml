@@ -15,13 +15,19 @@
 # (repository, context, head SHA; cancel-in-progress) so that every consumer gets it with the pin, and
 # its sweep group is separate. The pull_request job at the end is permanent
 # (docs/CI-GATE.adoc, "The pull_request start"); tests/ci-gate.sh pins its shape.
+# `workflow_run.workflows` is an EXPLICIT list, with no globs: it is the `name:` of every workflow file in
+# the profile (profiles/ci-gate/hyperpolymath/proven-cicd-and-workflows.json), so a push starts one evaluation
+# per listed workflow, not one per workflow of the repository. Regenerate it whenever the profile changes:
+#   scripts/ci-gate-trigger-names.sh profiles/ci-gate/hyperpolymath/proven-cicd-and-workflows.json .
+# tests/ci-gate.sh pins it to that output. A required workflow missing from the list never triggers an
+# evaluation (the sweep or a pull_request event still evaluates the commit; docs/CI-GATE.adoc, "Liveness").
 # No `secrets:` line: the reusable consumes none.
 name: CI gate
 
 on:
   pull_request:
   workflow_run:
-    workflows: ["**", "!CI gate"]
+    workflows: ["Bounded secret scanner controls", "Central Estate CI/CD Audit", "Proven lock gate", "Secret Scanner", "Supplemental secret checks"]
     types: [completed]
   schedule:
     - cron: "7,22,37,52 * * * *"
