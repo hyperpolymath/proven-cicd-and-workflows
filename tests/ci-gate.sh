@@ -82,7 +82,9 @@ publish_of failure "$(printf 'x%.0s' $(seq 1 200))"
 echo "== static guard: every status description is static or goes through publish() =="
 bad_sites=$(grep -n -- 'description=' "$WORKFLOW" | grep -v '^[0-9]*: *#' | grep -vE 'description="\$d"' | grep -E 'description="[^"]*[$`]' || true)
 [ -z "$bad_sites" ] && ok "no description is built from a variable outside publish()" || bad "a description interpolates a variable outside publish(): $bad_sites"
-[ "$(grep -c 'gsub("\[\\\\x{10000}-\\\\x{10FFFF}\]"; "")' "$WORKFLOW")" -eq 1 ] && ok "exactly one strip expression, in the one write site" || bad "the strip expression is not in exactly one place"
+BMP_ONLY='explode | map(select(. <= 65535)) | implode'   # the canonical sanitiser, as shipped in #144
+[ "$(grep -cF "$BMP_ONLY" "$WORKFLOW")" -eq 1 ] && ok "exactly one BMP_ONLY strip expression, in the one write site" || bad "the BMP_ONLY strip expression is not in exactly one place"
+! grep -q 'x{10000}' "$WORKFLOW" && ok "no gsub range strip remains in the workflow" || bad "a gsub range strip remains in the workflow"
 
 echo
 printf 'ci-gate: %d passed, %d failed\n' "$PASS" "$FAIL"
