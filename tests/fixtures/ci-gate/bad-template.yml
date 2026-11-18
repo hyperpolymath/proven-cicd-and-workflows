@@ -3,7 +3,7 @@ name: CI gate
 on:
   pull_request:
   workflow_run:
-    workflows: ["**"]
+    workflows: ["Example check"]
     types: [completed]
 concurrency:
   group: ci-gate-x

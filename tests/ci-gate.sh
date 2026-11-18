@@ -1649,6 +1649,45 @@ for wf in $(jq -r '.checks[].workflow' "$SELFPROFILE" | sort -u); do
   [ -f "$ROOT/$wf" ] && ok "the suite's profile names an existing workflow $wf" || bad "the suite's profile names a missing workflow $wf"
 done
 
+
+echo "== the explicit workflow_run list (scripts/ci-gate-trigger-names.sh) =="
+NAMES="$ROOT/scripts/ci-gate-trigger-names.sh"
+wfl() { yq -o=json -I=0 "$ON.workflow_run.workflows" "$1" 2> /dev/null; }   # <caller> -> the list as JSON (null if absent)
+list_of() { wfl "$1" | jq -c 'if type == "array" then sort else null end'; }   # order-insensitive
+globbad() { wfl "$1" | jq -c '[.[] | select(type != "string" or test("[*?\\[\\]!+]") or . == "CI gate")] | length'; }   # glob or gate name
+want=$(bash "$NAMES" "$SELFPROFILE" "$ROOT" 2>/dev/null | jq -c 'sort')
+[ -n "$want" ] && ok "the script prints a list for the suite's profile: $want" || bad "the script printed nothing for the suite's profile"
+chk "the suite's caller workflow_run.workflows equals the script's output for the suite's profile" "$(list_of "$SELF")" "$want"
+# The control: the same comparison must FAIL for the retired glob, so the check above can fail.
+GLOBCALLER="$WORK/glob-caller.yml"; sed 's|^    workflows: \[.*\]$|    workflows: ["**", "!CI gate"]|' "$SELF" > "$GLOBCALLER"
+[ "$(wfl "$GLOBCALLER")" = '["**","!CI gate"]' ] && ok "control: the temporary caller really carries [\"**\", \"!CI gate\"]" || bad "control: the glob caller was not built"
+[ "$(list_of "$GLOBCALLER")" != "$want" ] && ok "control: the equality check FAILS for a caller that still has [\"**\", \"!CI gate\"]" || bad "control: the equality check passed for the retired glob"
+for f in "$SELF" "$TEMPLATE"; do
+  n=$(basename "$f")
+  chk "$n: workflow_run.workflows has no glob character and not the gate's own name" "$(globbad "$f")" 0
+  chk "$n: workflow_run.workflows is a non-empty list" "$(wfl "$f" | jq -c 'type == "array" and length > 0')" true
+done
+chk "control: the glob check sees the retired glob in a planted caller" "$(globbad "$FX/bad-glob-caller.yml")" 2
+printf 'on:\n  workflow_run:\n    workflows: ["Build C+"]\n' > "$WORK/plus-caller.yml"
+chk "control: the glob check rejects Build C+ in a planted caller" "$(globbad "$WORK/plus-caller.yml")" 1
+chk "the template's list is a placeholder that is not any profile's output (a consumer must replace it)" "$(wfl "$TEMPLATE" | jq -c 'length == 1 and (.[0] | startswith("Replace with"))')" true
+echo "-- negative cases of the script: each exits 2 --"
+NR="$WORK/names-root"; mkdir -p "$NR/.github/workflows"
+printf 'name: Alpha build\non: push\n' > "$NR/.github/workflows/a.yml"
+printf 'on: push\n' > "$NR/.github/workflows/noname.yml"
+printf 'name: "Build *"\non: push\n' > "$NR/.github/workflows/glob.yml"
+printf 'name: "!Alpha"\non: push\n' > "$NR/.github/workflows/bang.yml"
+printf 'name: "Build C+"\non: push\n' > "$NR/.github/workflows/plus.yml"
+printf 'name: CI gate\non: push\n' > "$NR/.github/workflows/gate.yml"
+np() { printf '{"checks":[%s],"repository":"example/repo","schema_version":2}\n' "$(jq -nr --args '$ARGS.positional | map("{\"job\":\"j\",\"workflow\":\".github/workflows/\(.)\"}") | join(",")' "$@")" > "$WORK/np.json"; }
+np a.yml a.yml; OUT=$(bash "$NAMES" "$WORK/np.json" "$NR" 2>&1); RC=$?
+chk "positive control: two jobs of one workflow give one name, exit 0" "$RC/$OUT" '0/["Alpha build"]'
+for spec in missing.yml:missing noname.yml:'has no name' glob.yml:'glob character' bang.yml:'glob character' plus.yml:'glob character' gate.yml:"gate's own"; do
+  wf=${spec%%:*}; msg=${spec#*:}
+  np a.yml "$wf"; OUT=$(bash "$NAMES" "$WORK/np.json" "$NR" 2>&1); RC=$?
+  [ "$RC" = 2 ] && [[ $OUT == *"$msg"* ]] && [ "$(grep -c '^\[' <<<"$OUT")" = 0 ] && ok "script: $wf exits 2 with '$msg' and prints no list" || bad "script: $wf gave exit $RC: $OUT"
+done
+bash "$NAMES" "$WORK/np.json" >/dev/null 2>&1; [ $? = 2 ] && ok "script: a missing argument exits 2" || bad "script: a missing argument did not exit 2"
 echo
 printf 'ci-gate: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
