@@ -22,7 +22,7 @@ on:
   pull_request:
   workflow_run:
     workflows: ["**", "!CI gate"]
-    types: [completed]
+    types: [completed, requested]
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch: {}
@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   gate:
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate')
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || (github.event.workflow_run.name != 'CI gate' && (github.event.action != 'requested' || github.event.workflow_run.run_attempt > 1)))
     uses: ./.github/workflows/ci-gate.yml
     with:
       context: "CI / gate"

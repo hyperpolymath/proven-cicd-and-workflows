@@ -283,7 +283,8 @@ cat > "$FAKEGH/bin/gh" <<'FAKEGH_EOF'
 #   inject.<kind> / inject.always.<kind>   lines `status~Header: v|Header: v~body`: the next call of that
 #                 kind (runs checks status post contents) answers so; `always` is never consumed
 #   fail.N        (in a by/<sha>/ or the root) the Nth runs listing answers with the line in the file, else 500
-#   failpost failstatus badstatus failpulls faildefault   flags
+#   failpost failstatus badstatus failpulls faildefault lands500   flags (failpulls/faildefault may hold a `status~headers~body` line; lands500: the next status POST lands and answers 500)
+#   total.<key>   the number the listing of that wrapper key (workflow_runs, check_runs, statuses) reports as total_count
 #   posts.log status.log calls.log status.reads fetched   what was asked
 D=${FAKEGH_DIR:?}
 method=GET; ep=''; fields=(); a=("$@"); i=0; incl=0
@@ -329,6 +330,7 @@ page_of() { # <items file: a JSON array> <wrapper key or -> <page size>
     body=$(jq -c --argjson p "$page" --argjson s "$size" '.[($p - 1) * $s : $p * $s]' "$file")
   else
     body=$(jq -c --argjson p "$page" --argjson s "$size" --arg k "$key" '{total_count: length, ($k): .[($p - 1) * $s : $p * $s]}' "$file")
+    if [[ -f $D/total.$key ]]; then body=$(jq -c --argjson t "$(cat "$D/total.$key")" '.total_count = $t' <<< "$body"); fi   # a listing that reports more than it returns
   fi
   reply 200 "$next" "$body"
 }
@@ -348,6 +350,7 @@ if [[ $method == POST && $ep == repos/*/statuses/* ]]; then
   fi
   printf '%s\t%s\t%s\n' "$state" "$desc" "$psha" >> "$D/posts.log"
   printf '%s\t%s\t%s\t%s\n' "$psha" "$ctx" "$state" "$desc" >> "$D/status.log"
+  if [[ -f $D/lands500 ]]; then rm -f "$D/lands500"; reply 500 '' '{"message":"Server Error"}'; fi   # the write landed, the answer did not say so
   reply 201 '' '{"id":1}'
 elif [[ $ep == repos/*/commits/*/status\?* ]]; then
   echo "$ep" >> "$D/status.reads"
@@ -379,10 +382,10 @@ elif [[ $ep == repos/*/commits/*/check-runs\?* ]]; then
   if [[ -f $R/checkruns.extra.json ]]; then jq -c -s 'add' "$t" "$R/checkruns.extra.json" > "$t.2"; mv "$t.2" "$t"; fi
   page_of "$t" check_runs "${CHECKS_PAGE_SIZE:-100}"
 elif [[ $ep == repos/*/pulls\?state=open* ]]; then
-  [[ ! -f $D/failpulls ]] || reply 500 '' '{"message":"Server Error"}'
+  if [[ -f $D/failpulls ]]; then line=$(cat "$D/failpulls"); [[ -n $line ]] || line='500~~{"message":"Server Error"}'; reply_line "$line"; fi
   page_of "$D/pulls.json" - "${PULLS_PAGE_SIZE:-100}"
 elif [[ $ep == repos/*/branches/* ]]; then
-  [[ ! -f $D/faildefault ]] || reply 500 '' '{"message":"Server Error"}'
+  if [[ -f $D/faildefault ]]; then line=$(cat "$D/faildefault"); [[ -n $line ]] || line='500~~{"message":"Server Error"}'; reply_line "$line"; fi
   reply 200 '' "{\"commit\":{\"sha\":\"$(cat "$D/default_sha")\"}}"
 elif [[ $ep == repos/*/contents/* ]]; then
   p=${ep#*/contents/}; p=${p%%\?*}
@@ -391,7 +394,7 @@ elif [[ $ep == repos/*/contents/* ]]; then
   if [[ -f $D/contents.404 ]] && grep -qxF -- "$p" "$D/contents.404"; then reply 404 '' '{"message":"Not Found"}'; fi
   reply 200 '' 'x'
 elif [[ $ep =~ ^repos/[^/]+/[^/?]+$ ]]; then
-  [[ ! -f $D/faildefault ]] || reply 500 '' '{"message":"Server Error"}'
+  if [[ -f $D/faildefault ]]; then line=$(cat "$D/faildefault"); [[ -n $line ]] || line='500~~{"message":"Server Error"}'; reply_line "$line"; fi
   reply 200 '' "{\"default_branch\":\"$(cat "$D/default_branch")\"}"
 else
   echo "fake gh: unexpected call: $method $ep" >&2; exit 1
@@ -420,12 +423,12 @@ pubreset() {
   rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"
   rm -f "$FAKEGH"/runs.*.json "$FAKEGH/runs.cur" "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/inject.* "$FAKEGH/checkruns.extra.json" "$FAKEGH/failpost" \
     "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" \
-    "$FAKEGH/contents.404" "$FAKEGH/fetched" "$FAKEGH/boot.sleeps" "$WORK/gho"
+    "$FAKEGH/contents.404" "$FAKEGH/fetched" "$FAKEGH/boot.sleeps" "$WORK/gho" "$FAKEGH/lands500" "$FAKEGH"/total.*
   cp "$FX/jobs.json" "$FAKEGH/jobs.json"
   cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
 }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description<TAB>sha lines), CALLS (runs listings)
-  : > "$FAKEGH/posts.log"; : > "$FAKEGH/calls.log"; : > "$FAKEGH/sleeps"
+  : > "$FAKEGH/posts.log"; : > "$FAKEGH/calls.log"; : > "$FAKEGH/sleeps"; : > "$WORK/gho"
   rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
   echo 0 > "$FAKEGH/clock"
   PUBOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
@@ -506,6 +509,13 @@ chk "zero check runs at all: not success, pending" "$RC/$(post_n 1 | cut -f1)" "
 pubreset; many 22; echo '[]' > "$FAKEGH/jobs.json"
 jq -nc '[{id: 1, name: "w1 / build", status: "completed", conclusion: "success", check_suite: {id: 4242}, app: {slug: "github-actions"}}, {id: 2, name: "SonarCloud", status: "completed", conclusion: "success", check_suite: {id: 777}, app: {slug: "sonarqubecloud"}}]' > "$FAKEGH/checkruns.extra.json"; publish
 chk "check runs of suites that belong to no workflow run (a third-party spoof of a required name): zero matches, not success" "$RC/$(post_n 1 | cut -f1)" "0/pending"
+echo "-- a third-party check named like a required job never satisfies it; the Actions check does --"
+pubreset; many 22; jq 'map(select(.name != "w1 / build"))' "$FAKEGH/jobs.json" > "$FAKEGH/jobs.tmp" && mv "$FAKEGH/jobs.tmp" "$FAKEGH/jobs.json"
+jq -nc '[{id: 4242, name: "w1 / build", status: "completed", conclusion: "success", check_suite: {id: 4242}, app: {slug: "sonarqubecloud"}}, {id: 777, name: "SonarCloud", status: "completed", conclusion: "success", check_suite: {id: 777}, app: {slug: "sonarqubecloud"}}]' > "$FAKEGH/checkruns.extra.json"; publish
+chk "the other 43 required jobs succeed; a third-party 'w1 / build' in an unmatched suite: w1 / build is the ONLY missing check, pending" "$RC/$(post_n 1 | cut -f1)/$(post_n 1 | cut -f2)" "0/pending/not yet reported: w1.yml:w1 / build"
+chk "the third-party check is in the check-runs listing (43 + 2 check runs) and still not counted" "$(jq 'length' "$FAKEGH/jobs.json")" 43
+jq '. + [{id: 10, name: "w1 / build", status: "completed", conclusion: "success", run: {id: 101, name: "Workflow 1", status: "completed"}}]' "$FAKEGH/jobs.json" > "$FAKEGH/jobs.tmp" && mv "$FAKEGH/jobs.tmp" "$FAKEGH/jobs.json"; publish
+chk "the legitimate Actions check 'w1 / build' (a suite of a workflow run) is added: all 44 pass, success" "$RC/$(post_n 1 | cut -f1)/$(post_n 1 | cut -f2)" "0/success/all 44 required checks passed"
 
 echo "-- the runs change between evaluation and publish --"
 pubreset; snap 1 "$RERUN"; snap 2 "$DONE"; snap 3 "$DONE"
@@ -589,7 +599,7 @@ chk "403 rate limit with x-ratelimit-reset 40 (clock 0): waits until the reset (
 pubreset; snap 1 "$DONE"; echo "403~x-ratelimit-remaining: 0|x-ratelimit-reset: 40|Retry-After: 5~$RL" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
 chk "Retry-After wins over x-ratelimit-reset" "$(sleeps)" "5"
 pubreset; snap 1 "$DONE"; echo '403~~{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}' > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
-chk "403 'secondary rate limit' with no headers: exponential back-off (2 s), then succeeds" "$(sleeps)/$RC" "2/0"
+chk "403 'secondary rate limit' with no headers (budget left): backs off from 60 s, then succeeds" "$(sleeps)/$RC" "60/0"
 pubreset; snap 1 "$DONE"; echo '403~x-ratelimit-remaining: 0~{"message":"Forbidden"}' > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
 chk "403 with x-ratelimit-remaining: 0 and no body hint is a rate limit too" "$(sleeps)/$RC" "2/0"
 pubreset; snap 1 "$DONE"; { echo '503~~{"message":"unavailable"}'; echo '502~~{}'; echo '500~~{}'; } > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
@@ -640,6 +650,131 @@ chk "pull_request, the pending write is rate-limited past the bound: exit 1, no 
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.1"; publish EVENT_NAME=pull_request
 chk "pull_request, the API is down at the read: pending, then pending (API unavailable); never failure" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)/$RC" "pending,pending/75"
 
+echo "== the back-off, refined: every 5xx, Retry-After as an HTTP-date, decimal parsing, secondary limits =="
+pubreset; snap 1 "$DONE"; echo '505~~{"message":"HTTP Version Not Supported"}' > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "HTTP 505 is transient like every 5xx: retried after 2 s, then succeeds" "$(sleeps)/$RC/$(post_n 1 | cut -f1)" "2/0/success"
+pubreset; snap 1 "$DONE"; echo '599~~{}' > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "HTTP 599 is transient as well" "$(sleeps)/$RC" "2/0"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: $(date -u -d @30 '+%a, %d %b %Y %H:%M:%S GMT')~$RL" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "Retry-After as an HTTP-date 30 s ahead of the clock: sleeps 30 s, then succeeds" "$(sleeps)/$RC" "30/0"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: $(date -u -d @-100 '+%a, %d %b %Y %H:%M:%S GMT')~$RL" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "Retry-After as an HTTP-date in the past: the delay is clamped to 1 s" "$(sleeps)/$RC" "1/0"
+pubreset; snap 1 "$DONE"; echo "503~Retry-After: Someday, whenever~{}" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "an invalid Retry-After falls back to the exponential delay (2 s)" "$(sleeps)/$RC" "2/0"
+pubreset; snap 1 "$DONE"; echo "503~Retry-After: Wed, 99 Foo 2015 07:28:00 GMT~{}" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "an HTTP-date-shaped but impossible Retry-After falls back to the exponential delay (2 s)" "$(sleeps)/$RC" "2/0"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 000010~$RL" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "Retry-After 000010 is decimal ten (not octal): sleeps 10 s" "$(sleeps)/$RC" "10/0"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 08~$RL" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "Retry-After 08 (an invalid octal digit) is decimal eight: sleeps 8 s, no arithmetic error" "$(sleeps)/$RC" "8/0"
+pubreset; snap 1 "$DONE"; echo "403~x-ratelimit-remaining: 0|x-ratelimit-reset: 000040~$RL" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "x-ratelimit-reset 000040 is decimal forty: waits until the reset (41 s)" "$(sleeps)/$RC" "41/0"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 99999999999999999999~$RL" > "$FAKEGH/inject.always.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "an absurdly long Retry-After is bounded, overruns the budget and gives up at once: pending, exit 75, no sleep" "$(sleeps)/$RC/$(post_n 1 | cut -f1)" "/75/pending"
+echo "-- a secondary rate limit: x-ratelimit-reset only when remaining is 0; else 60 s, doubling, no early retry --"
+pubreset; snap 1 "$DONE"; echo "429~x-ratelimit-remaining: 4000|x-ratelimit-reset: 40~$RL" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "429 with budget left (remaining 4000), a reset header and no Retry-After: the reset is ignored, backs off 60 s, then succeeds" "$(sleeps)/$RC" "60/0"
+pubreset; snap 1 "$DONE"; { echo "429~x-ratelimit-remaining: 4000~$RL"; echo "429~x-ratelimit-remaining: 4000~$RL"; } > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "a repeated secondary limit doubles: 60 s then 120 s" "$(sleeps)/$RC" "60,120/0"
+pubreset; snap 1 "$DONE"; echo "429~x-ratelimit-remaining: 4000~$RL" > "$FAKEGH/inject.always.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=30
+chk "the remaining budget (30 s) cannot cover 60 s: returns 75 at once, no early retry (no sleep), pending, never failure" "$(sleeps)/$RC/$(post_n 1 | cut -f1,2 | tr '\t' '|')" "/75/pending|$UNAVAIL_DESC"
+pubreset; snap 1 "$DONE"; echo "403~x-ratelimit-remaining: 12~$RL" > "$FAKEGH/inject.always.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=59
+chk "a rate-limit 403 with remaining > 0 and a 59 s budget: 75 at once, no sleep" "$(sleeps)/$RC" "/75"
+pubreset; snap 1 "$DONE"; echo "403~x-ratelimit-remaining: 0|x-ratelimit-reset: 40~$RL" > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "remaining 0 with a reset header still waits for the reset (41 s)" "$(sleeps)/$RC" "41/0"
+
+echo "== listings are validated: one JSON document of the expected shape per page =="
+read_runs() { # -> LOUT "<rc>|<GATE_API_ERR or the page as compact JSON>": gate_read_runs from the repository's library, one request, no back-off
+  LOUT=$( ( export PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" CI_GATE_BACKOFF_MAX_SECONDS=0 CI_GATE_CLOCK="$FAKEGH/bin/clock" GATE_WAITED_FILE="$WORK/lib.waited"
+    rm -f "$GATE_WAITED_FILE"
+    # shellcheck source=/dev/null
+    source "$ROOT/scripts/ci-gate-lib.sh"; gate_read_runs example/repo "$SHA" "$WORK/pg.json"; rc=$?
+    if ((rc == 0)); then echo "0|$(jq -c . "$WORK/pg.json")"; else echo "$rc|$GATE_API_ERR"; fi ) 2>&1 )
+}
+RUNSEMPTY='{"total_count":0,"workflow_runs":[]}'
+pubreset; echo "200~~" > "$FAKEGH/inject.runs"; read_runs
+chk "a blank 200 body is an error (1, unusable response body), never an empty listing" "${LOUT%%|*}/$(grep -c 'unusable response body' <<<"$LOUT")" "1/1"
+for body in '{not json' '[]' '{"total_count":0,"workflow_runs":{}}' "$RUNSEMPTY $RUNSEMPTY" '"text"'; do
+  pubreset; echo "200~~$body" > "$FAKEGH/inject.runs"; read_runs
+  chk "a 200 body that is not exactly one runs document ($body): error 1, unusable response body" "${LOUT%%|*}/$(grep -c 'unusable response body' <<<"$LOUT")" "1/1"
+done
+pubreset; echo "200~~$RUNSEMPTY" > "$FAKEGH/inject.runs"; read_runs
+chk "a valid empty page still succeeds and yields []" "$LOUT" "0|[]"
+pubreset; snap 1 "$DONE"; echo "200~~" > "$FAKEGH/inject.checks"; publish
+chk "a blank check-runs page through the publisher is a real error (a failure status), never 'no checks reported'" "$(post_n 1 | cut -f1)/$RC/$(grep -c 'unusable response body' <<<"$PUBOUT")" "failure/1/1"
+pubreset; snap 1 "$DONE"; echo "200~~not json" > "$FAKEGH/inject.runs"; publish
+chk "a malformed runs page through the publisher is a failure, exit 1 (fail closed on a real error)" "$(post_n 1 | cut -f1)/$RC" "failure/1"
+
+echo "== an incomplete snapshot (total_count above the items returned) is unavailable, never a missing check =="
+pubreset; snap 1 "$DONE"; echo 1500 > "$FAKEGH/total.workflow_runs"; publish
+chk "runs: total_count 1500 but 4 returned (GitHub's 1000-result cap): pending with the unavailable reason, exit 75, no failure" "$(cut -f1,2 "$FAKEGH/posts.log" | tr '\t' '|')/$RC" "pending|$UNAVAIL_DESC/75"
+chk "runs: the warning says the snapshot is incomplete" "$(grep -c 'snapshot incomplete' <<<"$PUBOUT")" 1
+chk "runs: an incomplete runs listing stops before any check-runs read" "$(ncalls '/check-runs?')" 0
+pubreset; snap 1 "$DONE"; echo 1200 > "$FAKEGH/total.check_runs"; publish
+chk "check runs: total_count 1200 but fewer returned (the 1000 most recent check suites): pending, exit 75, no failure" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)/$RC" "pending/75"
+chk "check runs: the reason names total_count and what was returned" "$(grep -c 'snapshot incomplete.*total_count 1200 but only' <<<"$PUBOUT")" 1
+pubreset; snap 1 "$DONE"; echo 2 > "$FAKEGH/total.check_runs"; publish
+chk "a total_count BELOW the items returned is not incomplete: success as usual" "$RC/$(post_n 1 | cut -f1)" "0/success"
+pubreset; many 22; echo 100 > "$FAKEGH/total.check_runs"; publish CHECKS_PAGE_SIZE=25
+chk "incomplete over several pages (44 check runs returned of 100 reported): pending, never 'not yet reported'" "$(cut -f1,2 "$FAKEGH/posts.log" | tr '\t' '|')/$RC" "pending|$UNAVAIL_DESC/75"
+pubreset
+
+echo "== a status POST with an unknown outcome is rechecked before it is replayed =="
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/lands500"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "the POST landed but answered 500: the standing status is rechecked, found, and NOT replayed: one success POST, exit 0, no sleep" "$NPOSTS/$(post_n 1 | cut -f1)/$RC/$(sleeps)" "1/success/0/"
+chk "the recheck is one more status read (dedupe + recheck)" "$(wc -l < "$FAKEGH/status.reads")" 2
+pubreset; snap 1 "$DONE"; touch "$FAKEGH/lands500"; publish CI_GATE_BACKOFF_MAX_SECONDS=0
+chk "the recheck works with no back-off budget at all: success, exit 0, never replayed, no pending written" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/success/0"
+pubreset; snap 1 "$DONE"; echo '500~~{"message":"Server Error"}' > "$FAKEGH/inject.post"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "a 500 that did NOT land: the recheck says differs, the POST is replayed after 2 s and lands (one status)" "$(sleeps)/$NPOSTS/$(post_n 1 | cut -f1)/$RC/$(wc -l < "$FAKEGH/status.reads")" "2/1/success/0/2"
+pubreset; snap 1 "$DONE"; echo "403~Retry-After: 3~$RL" > "$FAKEGH/inject.post"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "an explicit rate-limit rejection (403) is retried and NOT rechecked (no extra status read)" "$(sleeps)/$NPOSTS/$(wc -l < "$FAKEGH/status.reads")" "3/1/1"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 2~$RL" > "$FAKEGH/inject.post"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "an explicit 429 is retried and NOT rechecked either" "$(sleeps)/$NPOSTS/$(wc -l < "$FAKEGH/status.reads")" "2/1/1"
+pubreset; snap 1 "$DONE"; echo '500~~{}' > "$FAKEGH/inject.always.post"; publish CI_GATE_BACKOFF_MAX_SECONDS=0
+chk "a 5xx POST that never lands, no budget: unavailable, pending attempted (also refused): exit 1, nothing posted, no failure" "$RC/$NPOSTS" "1/0"
+
+echo "== the pending write for an outage: its dedupe lookup spends none of the reserved budget =="
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.runs"; echo "429~Retry-After: 5~$RL" > "$FAKEGH/inject.always.status"; echo "429~Retry-After: 2~$RL" > "$FAKEGH/inject.post"; publish CI_GATE_BACKOFF_MAX_SECONDS=20
+chk "the dedupe lookup is rate-limited (Retry-After 5): ONE attempt, no sleep; then the pending POST (itself limited once, Retry-After 2) still has its full budget" "$(sleeps)/$(wc -l < "$FAKEGH/status.reads")/$NPOSTS/$(post_n 1 | cut -f1,2 | tr '\t' '|')/$RC" "2/1/1/pending|$UNAVAIL_DESC/75"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.runs"; printf '%s\tCI/gate\tpending\t%s\n' "$SHA" "$UNAVAIL_DESC" > "$FAKEGH/status.log"; publish CI_GATE_BACKOFF_MAX_SECONDS=20
+chk "the lookup at once finds the same pending: the write is skipped (no POST), still exit 75, one status read" "$NPOSTS/$RC/$(wc -l < "$FAKEGH/status.reads")/$(grep -c 'write skipped' <<<"$PUBOUT")" "0/75/1/1"
+pubreset
+
+echo "== published=true: the initial pending is not an evaluation write =="
+pubreset; snap 1 "$DONE"; { echo ''; echo '403~~{"message":"Resource not accessible by integration"}'; } > "$FAKEGH/inject.post"; echo '404~~{"message":"Not Found"}' > "$FAKEGH/inject.runs"; publish EVENT_NAME=pull_request
+chk "pull_request: the initial pending lands, then a real snapshot error whose failure write is refused: exit 1, one POST (the pending)" "$RC/$NPOSTS/$(post_n 1 | cut -f1)" "1/1/pending"
+chk "that run did NOT claim published=true, and did not claim unavailable (so the workflow fallback runs)" "$(has_published)/$(grep -c '^unavailable=true$' "$WORK/gho" || true)" "0/0"
+pubreset; snap 1 "$DONE"; publish EVENT_NAME=pull_request
+chk "pull_request, all green: published=true is written (by the verdict write)" "$(has_published)" 1
+pubreset; snap 1 "$DONE"; { echo ''; echo '403~~{"message":"Resource not accessible by integration"}'; echo '403~~{"message":"Resource not accessible by integration"}'; } > "$FAKEGH/inject.post"; publish EVENT_NAME=pull_request
+chk "pull_request: the initial pending lands, the verdict write and the failure write are both refused (real error): no published=true" "$RC/$(has_published)" "1/0"
+pubreset; snap 1 "$DONE"; echo '404~~{"message":"Not Found"}' > "$FAKEGH/inject.runs"; publish EVENT_NAME=pull_request
+chk "pull_request: the initial pending lands, a real snapshot error, the failure write lands: published=true" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)/$(has_published)" "pending,failure/1"
+
+echo "== workflow_run requested (a re-run starts): one deduplicated pending, no evaluation, never failure or success =="
+REQ_DESC='ci-gate: a required workflow is re-running; re-evaluating on completion'
+pubreset; snap 1 "$DONE"; publish EVENT_NAME=workflow_run WORKFLOW_RUN_ACTION=requested
+chk "requested: exactly one pending POST with the re-run description, exit 0" "$NPOSTS/$(post_n 1 | cut -f1,2 | tr '\t' '|')/$RC" "1/pending|$REQ_DESC/0"
+chk "requested: no run listing, no check-run listing, no jobs: only the status dedupe GET and the one POST" "$(ncalls 'actions/runs')/$(ncalls '/check-runs?')/$(ncalls '/jobs')/$(ncalls '/status?')/$(grep -c . "$FAKEGH/calls.log")" "0/0/0/1/2"
+chk "requested: the description is ASCII and at most 140 characters" "$(printf '%s' "$REQ_DESC" | LC_ALL=C grep -c '[^ -~]')/$([ ${#REQ_DESC} -le 140 ] && echo ok)" "0/ok"
+chk "requested: published=true is written (the pending is a status write of this evaluation)" "$(has_published)" 1
+pubreset; snap 1 "$DONE"; printf '%s\tCI/gate\tpending\t%s\n' "$SHA" "$REQ_DESC" > "$FAKEGH/status.log"; publish EVENT_NAME=workflow_run WORKFLOW_RUN_ACTION=requested
+chk "requested, the same pending already stands: deduplicated, no POST, exit 0" "$NPOSTS/$RC/$(grep -c 'write skipped' <<<"$PUBOUT")" "0/0/1"
+pubreset; snap 1 "$DONE"; printf '%s\tCI/gate\tsuccess\tall 3 required checks passed\n' "$SHA" > "$FAKEGH/status.log"; publish EVENT_NAME=workflow_run WORKFLOW_RUN_ACTION=requested
+chk "requested over a standing success: the success is replaced by the re-run pending (the gap this closes)" "$(post_n 1 | cut -f1)/$NPOSTS/$RC" "pending/1/0"
+pubreset; snap 1 "$DONE"; rm -f "$SUITE_DIR/profiles/ci-gate/example/repo.json"; publish EVENT_NAME=workflow_run WORKFLOW_RUN_ACTION=requested
+chk "requested with no profile: still only the pending (a missing profile is the completion's failure, never the start's)" "$NPOSTS/$(post_n 1 | cut -f1)/$RC" "1/pending/0"
+pubreset; snap 1 "$DONE"; echo '403~~{"message":"Resource not accessible by integration"}' > "$FAKEGH/inject.post"; publish EVENT_NAME=workflow_run WORKFLOW_RUN_ACTION=requested
+chk "requested, a real error on the write: exit 1, NOTHING posted, in particular no failure" "$RC/$NPOSTS/$(grep -c 'NOTHING WAS WRITTEN' <<<"$PUBOUT")" "1/0/1"
+chk "requested, a real error: published=true is not claimed" "$(has_published)" 0
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.post"; publish EVENT_NAME=workflow_run WORKFLOW_RUN_ACTION=requested
+chk "requested, the API is unavailable: the same no-failure handling (pending with the unavailable reason, exit 75, unavailable=true)" "$(post_n 1 | cut -f1,2 | tr '\t' '|')/$RC/$(grep -c '^unavailable=true$' "$WORK/gho")" "pending|$UNAVAIL_DESC/75/1"
+pubreset; snap 1 "$DONE"; publish EVENT_NAME=pull_request WORKFLOW_RUN_ACTION=requested
+chk "requested outside a workflow_run event is refused: exit 1, nothing written" "$RC/$NPOSTS" "1/0"
+pubreset; snap 1 "$DONE"; publish EVENT_NAME=workflow_run WORKFLOW_RUN_ACTION=completed
+chk "workflow_run completed evaluates as ever: success after the usual three run listings" "$(post_n 1 | cut -f1)/$CALLS" "success/3"
+pubreset
 echo "== description sanitiser: no codepoint above U+FFFF, at most 140 characters =="
 # shellcheck source=/dev/null
 san() { ( source "$SUITE_DIR/scripts/ci-gate-lib.sh"; gate_sanitize "$1" ); }
@@ -768,13 +903,14 @@ L_LIB=$(step_line 'Read the gate library'); L_REFUSE=$(step_line 'Refuse anythin
 ! grep -q 'Mark a started or re-run' "$WORKFLOW" && ! grep -q 're-run started' "$WORKFLOW" && ! grep -q 'EVENT_ACTION' "$WORKFLOW" \
   && ok "the early pending step for in_progress events is gone from the reusable" || bad "the reusable still has an early in_progress pending"
 ! grep -qE '^[^#]*in_progress' "$WORKFLOW" && ok "no code of the reusable mentions in_progress" || bad "the reusable still mentions in_progress"
-grep -qE "^        if: \\$\\{\\{ failure\\(\\) && steps\\.publish\\.outputs\\.published != 'true' && steps\\.publish\\.outputs\\.unavailable != 'true' && steps\\.read\\.outputs\\.unavailable != 'true' \\}\\}" "$WORKFLOW" \
+grep -qE "^        if: \\$\\{\\{ failure\\(\\) && steps\\.publish\\.outputs\\.published != 'true' && steps\\.publish\\.outputs\\.unavailable != 'true' && steps\\.read\\.outputs\\.unavailable != 'true' && steps\\.bootstrap\\.outputs\\.unavailable != 'true' \\}\\}" "$WORKFLOW" \
   && ok "the failure fallback runs only when nothing was published and the cause was not an unavailable API" || bad "the failure fallback condition is wrong"
 step_script "$WORKFLOW" "Read the gate library" > "$WORK/boot.sh"
 [ -s "$WORK/boot.sh" ] && ok "extracted the library bootstrap step" || bad "could not extract the library bootstrap step"
 runboot() { # [VAR=value ...] -> BRC; the suite lands in $WORK/bt/tmp/ci-gate-suite
   rm -rf "$WORK/bt"; mkdir -p "$WORK/bt/tmp"; : > "$WORK/bt/genv"; rm -f "$FAKEGH/boot.sleeps" "$FAKEGH/fetched"; : > "$FAKEGH/posts.log"; : > "$FAKEGH/calls.log"
-  env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" RUNNER_TEMP="$WORK/bt/tmp" GITHUB_ENV="$WORK/bt/genv" \
+  : > "$WORK/bt/gout"
+  env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" RUNNER_TEMP="$WORK/bt/tmp" GITHUB_ENV="$WORK/bt/genv" GITHUB_OUTPUT="$WORK/bt/gout" \
     WF_REPO=hyperpolymath/proven-cicd-and-workflows WF_SHA="$(printf 'c%.0s' $(seq 40))" "$@" bash "$WORK/boot.sh" > "$WORK/bt/out" 2>&1
   BRC=$?
 }
@@ -788,6 +924,14 @@ pubreset; echo 'scripts/ci-gate-lib.sh' > "$FAKEGH/contents.404"; runboot
 chk "bootstrap: a 404 is not retried; the job fails loudly; nothing is posted" "$BRC/$(cat "$FAKEGH/boot.sleeps" 2> /dev/null | wc -l)/$(grep -c 'NO STATUS WAS WRITTEN' "$WORK/bt/out")/$(grep -c . "$FAKEGH/posts.log")" "1/0/1/0"
 pubreset; echo '503~~{"message":"unavailable"}' > "$FAKEGH/inject.always.contents"; runboot
 chk "bootstrap: a 503 that persists: 5 attempts, waits 5,10,20,40 s, then red with no status (never a failure status)" "$BRC/$(paste -sd, "$FAKEGH/boot.sleeps")/$(grep -c . "$FAKEGH/posts.log")" "1/5,10,20,40/0"
+pubreset; echo '503~~{"message":"unavailable"}' > "$FAKEGH/inject.always.contents"; runboot
+chk "bootstrap: a persistent 503 flags unavailable=true (the fallback stays silent)" "$(grep -c '^unavailable=true$' "$WORK/bt/gout")" 1
+pubreset; echo '505~~{"message":"HTTP Version Not Supported"}' > "$FAKEGH/inject.always.contents"; runboot
+chk "bootstrap: every 5xx is transient (505 is retried 4 times, then flagged unavailable=true)" "$(paste -sd, "$FAKEGH/boot.sleeps")/$(grep -c '^unavailable=true$' "$WORK/bt/gout")" "5,10,20,40/1"
+pubreset; echo '404~~{"message":"Not Found"}' > "$FAKEGH/inject.always.contents"; runboot
+chk "bootstrap: a real error (404) is NOT flagged unavailable, so the fallback writes the failure" "$BRC/$(grep -c '^unavailable=true$' "$WORK/bt/gout")" "1/0"
+pubreset; { echo '503~~{"message":"unavailable"}'; echo '404~~{"message":"Not Found"}'; } > "$FAKEGH/inject.contents"; runboot
+chk "bootstrap: a 503 followed by a real 404 is a real error (not flagged unavailable)" "$BRC/$(grep -c '^unavailable=true$' "$WORK/bt/gout")" "1/0"
 pubreset; runboot WF_SHA=notasha
 chk "bootstrap: a malformed job.workflow_sha is refused before any request" "$BRC/$(grep -c . "$FAKEGH/calls.log")" "1/0"
 pubreset; runboot WF_REPO=a/..
@@ -825,6 +969,13 @@ chk "profile step, the profile does not exist (404): a real error, exit 1, no pe
 pubreset; echo '403~~{"message":"Resource not accessible by integration"}' > "$FAKEGH/inject.contents"; runread
 chk "profile step, a 403 that is a permissions problem: a real error, exit 1, no pending" "$RRC/$NPOSTS/$(grep -c '^unavailable=true$' "$WORK/rd/out")" "1/0/0"
 
+pubreset; runread WORKFLOW_RUN_ACTION=requested
+chk "profile step, a re-run start (requested): only the publisher is read, no profile and no other script; nothing posted" "$RRC/$(paste -sd, "$FAKEGH/fetched")/$NPOSTS" "0/scripts/ci-gate-publish.sh/0"
+pubreset; echo 'scripts/ci-gate-publish.sh' > "$FAKEGH/contents.404"; runread WORKFLOW_RUN_ACTION=requested
+chk "profile step, requested, the publisher cannot be read (404): a real error, exit 1 (the fallback writes no failure for requested)" "$RRC/$NPOSTS" "1/0"
+pubreset; echo "429~Retry-After: 600~{\"message\":\"API rate limit exceeded\"}" > "$FAKEGH/inject.always.contents"; runread WORKFLOW_RUN_ACTION=requested
+chk "profile step, requested, rate-limited: pending, never failure, unavailable=true so the later steps are skipped" "$RRC/$(cut -f1 "$FAKEGH/posts.log")/$(grep -c '^unavailable=true$' "$WORK/rd/out")" "0/pending/1"
+
 step_script "$WORKFLOW" "Publish a failure status" > "$WORK/fb.sh"
 [ -s "$WORK/fb.sh" ] && ok "extracted the failure fallback step" || bad "could not extract the failure fallback step"
 runfb() { # [VAR=value ...] -> FRC, NPOSTS
@@ -844,7 +995,18 @@ chk "fallback: an invalid context writes nothing" "$FRC/$NPOSTS" "0/0"
 pubreset; runfb HEAD_SHA=abc
 chk "fallback: an invalid head SHA writes nothing" "$FRC/$NPOSTS" "0/0"
 pubreset; runfb suite=/nonexistent
-chk "fallback: no library was read: exit 1, loud, nothing written (neither pending nor failure)" "$FRC/$NPOSTS/$(grep -c 'NO STATUS WAS WRITTEN' "$WORK/fb.out")" "1/0/1"
+chk "fallback: no library was read (a real error in the first step): an independent inline write, FAILURE, exit 0" "$FRC/$NPOSTS/$(cut -f1 "$FAKEGH/posts.log")/$(cut -f3 "$FAKEGH/posts.log")" "0/1/failure/$SHA"
+chk "fallback: the inline write carries the fixed ASCII description" "$(cut -f2 "$FAKEGH/posts.log")" "ci-gate could not produce a verdict (profile or input error); see the run"
+pubreset; runfb suite=/nonexistent REPO='a/..'
+chk "fallback: no library and a malformed repository coordinate: nothing is written" "$FRC/$NPOSTS" "0/0"
+pubreset; runfb suite=/nonexistent EVENT_NAME=schedule
+chk "fallback: no library on a sweep: nothing is written" "$FRC/$NPOSTS" "0/0"
+pubreset; echo '429~Retry-After: 600~{"message":"API rate limit exceeded"}' > "$FAKEGH/inject.always.post"; runfb suite=/nonexistent
+chk "fallback: no library and the inline write is refused: a warning, nothing posted, exit 0" "$FRC/$NPOSTS/$(grep -c '^::warning::could not publish the failure status either' "$WORK/fb.out")" "0/0/1"
+pubreset; runfb suite=/nonexistent WORKFLOW_RUN_ACTION=requested
+chk "fallback: a requested (re-run start) event never gets a failure, library or not" "$FRC/$NPOSTS" "0/0"
+pubreset; runfb WORKFLOW_RUN_ACTION=requested
+chk "fallback: a requested event with the library read gets no failure either" "$FRC/$NPOSTS" "0/0"
 pubreset; echo "429~Retry-After: 600~{\"message\":\"API rate limit exceeded\"}" > "$FAKEGH/inject.always.post"; runfb
 chk "fallback: the failure write cannot be made (rate-limited): a warning, nothing posted" "$FRC/$NPOSTS/$(grep -c '^::warning::could not publish the failure status' "$WORK/fb.out")" "0/0/1"
 pubreset
@@ -941,15 +1103,15 @@ chk "one SHA's API error: the sweep exits non-zero" "$RC" 1
 grep -qF "| \`$(sha_n 13 | cut -c1-12)\` | PR #2 | error |" "$WORK/gss" && ok "the table marks it as an error" || bad "the table does not mark the error"
 pubreset; set_pulls "1 $T1 12"; set_default 14
 for i in 12 14; do sweep_sha "$i" "$DONE"; done
-touch "$FAKEGH/failpulls"
+echo '404~~{"message":"Not Found"}' > "$FAKEGH/failpulls"
 sweep
-chk "the pull request listing fails: the default branch head is still evaluated" "$(last_for 14)" success
+chk "the pull request listing fails (a real error, not an outage): the default branch head is still evaluated" "$(last_for 14)" success
 chk "the pull request listing fails: exit non-zero and a loud error" "$RC/$(grep -c '^::error::ci-gate-sweep: could not list the open pull requests' <<<"$SOUT")" "1/1"
 pubreset; set_pulls "1 $T1 12"; set_default 14
 for i in 12 14; do sweep_sha "$i" "$DONE"; done
-touch "$FAKEGH/faildefault"
+echo '404~~{"message":"Not Found"}' > "$FAKEGH/faildefault"
 sweep
-chk "the default branch head is unreadable: the pull request is still evaluated" "$(last_for 12)" success
+chk "the default branch head is unreadable (a real error, not an outage): the pull request is still evaluated" "$(last_for 12)" success
 chk "the default branch head is unreadable: exit non-zero and a loud error" "$RC/$(grep -c '^::error::ci-gate-sweep: could not read the default branch head' <<<"$SOUT")" "1/1"
 pubreset; set_pulls; set_default 14; sweep_sha 14 "$DONE"
 sweep
@@ -983,6 +1145,43 @@ chk "the back-off bound is shared by the whole sweep: the default branch head wa
 chk "that second head got the API-unavailable pending, never a failure; the sweep is red" "$(grep -P "\t$(sha_n 12)$" "$FAKEGH/posts.log" | cut -f2)/$RC" "$UNAVAIL_DESC/1"
 pubreset
 
+nposts() { { cat "$FAKEGH/posts.log" 2> /dev/null || true; } | grep -c . || true; }
+echo "-- a discovery read that meets an outage stops the sweep at once; other discovery errors keep the partial discovery --"
+pubreset; set_pulls "1 $T1 12"; set_default 14
+for i in 12 14; do sweep_sha "$i" "$DONE"; done
+touch "$FAKEGH/failpulls"
+sweep
+chk "the pull request listing meets an outage (500): the sweep stops at once, red, and no head is evaluated (nothing posted)" "$RC/$(nposts)" "1/0"
+chk "outage at the listing: no workflow run is read and no publisher runs (the default branch head, already found, is not evaluated either)" "$(ncalls 'actions/runs')/$(ncalls 'check-runs')/$(ncalls 'statuses')" "0/0/0"
+chk "outage at the listing: the error names the failed step and the 1 discovered head not evaluated" "$(grep -c '^::error::ci-gate-sweep: the GitHub API was rate-limited or unavailable while listing the open pull requests .*1 head(s) already discovered were NOT evaluated' <<<"$SOUT")" 1
+grep -qF "| unavailable |" "$WORK/gss" && grep -qF 'listing the open pull requests' "$WORK/gss" && ok "outage at the listing: the step summary table names the step" || bad "the summary table does not name the discovery step"
+pubreset; set_pulls "1 $T1 12"; set_default 14
+for i in 12 14; do sweep_sha "$i" "$DONE"; done
+touch "$FAKEGH/faildefault"
+sweep
+chk "the repository read meets an outage: stops after that one request (no branch, no listing, no evaluation, nothing posted), red" "$RC/$(grep -c . "$FAKEGH/calls.log")/$(nposts)/$(grep -c 'while reading the repository' <<<"$SOUT")" "1/1/0/1"
+
+echo "-- a publisher that hit an outage stops the sweep, even if its pending write failed --"
+pubreset; set_pulls "1 2026-11-17T10:03:00Z 12" "2 2026-11-17T10:02:00Z 13"; set_default 14
+for i in 12 13 14; do sweep_sha "$i" "$DONE"; done
+echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.runs"
+sweep
+chk "outage, pending written (publisher exit 75): the sweep stops after the first head, red, and says the pending was written" "$RC/$(grep -c 'The pending status was written for that head' <<<"$SOUT")/$(grep -c 'FAILED' <<<"$SOUT")/$(ncalls "head_sha=$(sha_n 12)")" "1/1/0/0"
+grep -qF 'pending written, sweep stopped' "$WORK/gss" && ok "the table row says: pending written" || bad "the table row does not say pending written"
+pubreset; set_pulls "1 2026-11-17T10:03:00Z 12" "2 2026-11-17T10:02:00Z 13"; set_default 14
+for i in 12 13 14; do sweep_sha "$i" "$DONE"; done
+echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.runs"; echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.post"
+sweep
+chk "outage AND the pending write failed (publisher exit 1 with unavailable=true): the sweep still stops after that head, red" "$RC/$(ncalls "head_sha=$(sha_n 12)")/$(ncalls "head_sha=$(sha_n 13)")/$(nposts)" "1/0/0/0"
+chk "the pending write failed: the error says so, and that no failure was posted" "$(grep -c '^::error::ci-gate-sweep: .*stopped at head 1 and 2 further head(s) were NOT evaluated. The pending write for that head FAILED: no status was written there. No failure status was posted' <<<"$SOUT")" 1
+grep -qF 'the pending write FAILED' "$WORK/gss" && ok "the table row distinguishes: the pending write FAILED" || bad "the table row does not say the pending write failed"
+pubreset; set_pulls "1 2026-11-17T10:03:00Z 12" "2 2026-11-17T10:02:00Z 13"; set_default 14
+for i in 12 13 14; do sweep_sha "$i" "$DONE"; done
+echo '404~~{"message":"Not Found"}' > "$FAKEGH/by/$(sha_n 14)/fail.1"
+sweep
+chk "an ordinary (non-outage) head failure still continues with the other heads, and is red" "$(last_for 12)/$(last_for 13)/$(last_for 14)/$RC" "success/success/failure/1"
+pubreset
+
 echo "-- a sweep every 15 minutes must not re-post an unchanged status (1000-status cap), with a spaced context --"
 pubreset; set_pulls "1 $T1 12"; set_default 13
 sweep_sha 12 "$DONE"; sweep_sha 13 "$DONE"
@@ -991,7 +1190,7 @@ chk "first sweep, context 'CI / gate': two SHAs, two success POSTs" "$(grep -c .
 chk "first sweep: every status is under the context 'CI / gate'" "$(cut -f2 "$FAKEGH/status.log" | sort -u)" "CI / gate"
 : > "$FAKEGH/posts.log"
 sweep CONTEXT='CI / gate'
-chk "second sweep, nothing changed: no POST at all" "$(grep -c . "$FAKEGH/posts.log" || true)" 0
+chk "second sweep, nothing changed: no POST at all" "$(nposts)" 0
 chk "second sweep: both writes skipped and logged" "$(grep -c 'write skipped' <<<"$SOUT")" 2
 chk "second sweep: both SHAs still reported success, exit 0" "$(grep -c '| success | all 3 required checks passed |' "$WORK/gss")/$RC" "2/0"
 sweep_sha 12 "$DONE" "$TESTFAIL"; : > "$FAKEGH/posts.log"
@@ -1184,9 +1383,11 @@ chk "cancel-in-progress is true for workflow_run and pull_request, and only for 
 for e in schedule workflow_dispatch; do
   [[ $WCANCEL == *"'$e'"* ]] && bad "cancel-in-progress covers the sweep ($e)" || ok "the sweep ($e) is never cancelled by a newer event, and never cancels per-SHA evaluations (own group, no cancel)"
 done
+REQ_IF="github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || (github.event.workflow_run.name != 'CI gate' && (github.event.action != 'requested' || github.event.workflow_run.run_attempt > 1)))"
 for f in "$SELFWF" "$TEMPLATE"; do
   n=$(basename "$f")
-  chk "$n: workflow_run types are exactly [completed] (no in_progress start events)" "$(ym "$f" "$ON.workflow_run.types | join(\",\")")" completed
+  chk "$n: workflow_run types are exactly [completed, requested] (no in_progress start events; a re-run start is requested)" "$(ym "$f" "$ON.workflow_run.types | join(\",\")")" "completed,requested"
+  chk "$n: the gate job's if: lets a requested event through only for a re-run (run_attempt > 1) and keeps the gate's own name out" "$(ym "$f" '.jobs.gate.if')" "$REQ_IF"
   chk "$n: gate-pr passes the context and nothing else (no wait or poll input)" "$(ym "$f" '.jobs["gate-pr"].with | keys | join(",")')" context
   chk "$n: gate passes the context and no wait input" "$(ym "$f" '.jobs.gate.with | keys | join(",")' | sed 's/,timeout_minutes//')" context
   chk "$n: grants checks: read (the gate reads check runs)" "$(ym "$f" '.permissions.checks')" read
@@ -1194,6 +1395,8 @@ for f in "$SELFWF" "$TEMPLATE"; do
 done
 chk "the reusable's job asks for checks: read" "$(ym "$WORKFLOW" '.jobs.gate.permissions.checks')" read
 chk "the reusable's job asks for exactly statuses, actions, checks, contents, pull-requests" "$(ym "$WORKFLOW" '.jobs.gate.permissions | keys | sort | join(",")')" "actions,checks,contents,pull-requests,statuses"
+chk "the job env derives WORKFLOW_RUN_ACTION from the event action, for workflow_run only" "$(ym "$WORKFLOW" '.jobs.gate.env.WORKFLOW_RUN_ACTION')" "\${{ github.event_name == 'workflow_run' && github.event.action || '' }}"
+chk "the profile validation step is skipped for a requested event (it was not fetched)" "$(ym "$WORKFLOW" '.jobs.gate.steps[] | select(.name == "Validate the profile") | .if')" "\${{ steps.read.outputs.unavailable != 'true' && env.WORKFLOW_RUN_ACTION != 'requested' }}"
 for spec in wait_minutes:30 poll_seconds:20; do
   IFS=: read -r inp def <<< "$spec"
   d=$(ym "$WORKFLOW" "$ON.workflow_call.inputs.$inp.description")
@@ -1211,9 +1414,14 @@ for f in scripts/ci-gate-publish.sh scripts/ci-gate-sweep.sh; do
   [ "$(nc "$ROOT/$f" | grep -cE '(^|[^_a-z])gh ')" = 0 ] && ok "$f makes no gh call of its own: every request goes through gate_api" || bad "$f calls gh directly"
 done
 chk "the library has exactly one gh call, inside gate_api" "$(nc "$ROOT/scripts/ci-gate-lib.sh" | grep -cE '^[^#]*\bgh api -i')" 1
-chk "the reusable has exactly one gh call, the bootstrap fetch of the library itself (which cannot use the library it fetches)" "$(nc "$WORKFLOW" | grep -cE '(^|[^_a-z])gh api')" 1
-chk "no status endpoint is written to outside the library" "$(nc "$WORKFLOW" "$ROOT/scripts/ci-gate-publish.sh" "$ROOT/scripts/ci-gate-sweep.sh" | grep -c 'statuses/')" 0
-chk "no status description is built outside the library's one writer (gate_post sanitises it)" "$(nc "$WORKFLOW" "$ROOT/scripts/ci-gate-publish.sh" "$ROOT/scripts/ci-gate-sweep.sh" | grep -c -- '-f description')" 0
+chk "the reusable has exactly two gh calls: the bootstrap fetch of the library itself (which cannot use the library it fetches) and the library-less failure write of the fallback step" "$(nc "$WORKFLOW" | grep -cE '(^|[^_a-z])gh api')" 2
+chk "the library-less failure write is in the fallback step, and the bootstrap fetch in the bootstrap step" "$(step_script "$WORKFLOW" 'Publish a failure status' | grep -cE '(^|[^_a-z])gh api -X POST')/$(step_script "$WORKFLOW" 'Read the gate library' | grep -cE '(^|[^_a-z])gh api')" "1/1"
+chk "no status endpoint is written to outside the library, except that one fallback write" "$(nc "$ROOT/scripts/ci-gate-publish.sh" "$ROOT/scripts/ci-gate-sweep.sh" | grep -c 'statuses/')/$(nc "$WORKFLOW" | grep -c 'statuses/')/$(step_script "$WORKFLOW" 'Publish a failure status' | grep -c 'statuses/')" "0/1/1"
+chk "no status description is built outside the library's one writer, except the fallback's fixed one" "$(nc "$ROOT/scripts/ci-gate-publish.sh" "$ROOT/scripts/ci-gate-sweep.sh" | grep -c -- '-f description')/$(nc "$WORKFLOW" | grep -c -- '-f description')/$(step_script "$WORKFLOW" 'Publish a failure status' | grep -c -- '-f description=\"\$desc\"')" "0/1/1"
+FBDESC=$(step_script "$WORKFLOW" 'Publish a failure status' | sed -n "s/^ *desc='\(.*\)'$/\1/p")
+chk "the fallback's fixed description is plain ASCII and at most 140 characters" "$(printf '%s' "$FBDESC" | LC_ALL=C grep -c '[^ -~]')/$([ -n "$FBDESC" ] && [ ${#FBDESC} -le 140 ] && echo ok)" "0/ok"
+chk "the fallback writes the failure inline only when the library file is absent, the library path (gate_post) otherwise" "$(step_script "$WORKFLOW" 'Publish a failure status' | grep -c 'gate_post "\$REPO"')/$(step_script "$WORKFLOW" 'Publish a failure status' | grep -c '^else')" "1/1"
+chk "the bootstrap step has an id (bootstrap) and flags unavailable=true only for a transient cause" "$(ym "$WORKFLOW" '.jobs.gate.steps[0].id')/$(step_script "$WORKFLOW" 'Read the gate library' | grep -c 'if ((transient)); then echo "unavailable=true"')" "bootstrap/1"
 chk "the library has one description writer, after gate_sanitize" "$(nc "$ROOT/scripts/ci-gate-lib.sh" | grep -c -- '-f description=')" 1
 grep -q 'fetch profiles/ci-gate/join-checks.jq' "$WORKFLOW" && ok "the reusable fetches the join" || bad "the reusable does not fetch join-checks.jq"
 
@@ -1224,7 +1432,7 @@ tpl_code() { grep -vE '^[[:space:]]*#' "$1"; }
 pr_start_ok() {
   local code=$1 file=$2
   "$code" "$file" | grep -qE '^  pull_request:' || return 1
-  "$code" "$file" | grep -qE "^    if: github.event_name != 'pull_request' && \(github.event_name != 'workflow_run' \|\| github.event.workflow_run.name != 'CI gate'\)" || return 1
+  "$code" "$file" | grep -qE "^    if: github.event_name != 'pull_request' && \(github.event_name != 'workflow_run' \|\| \(github.event.workflow_run.name != 'CI gate' && \(github.event.action != 'requested' \|\| github.event.workflow_run.run_attempt > 1\)\)\)$" || return 1
   "$code" "$file" | grep -qE "^    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository$" || return 1
   "$code" "$file" | grep -qE '^  gate-pr:' || return 1
   grep -q 'permanent\|The pull_request start' "$file" || return 1
@@ -1235,14 +1443,14 @@ tpl_code "$FX/bad-template.yml" | grep -q 'pull_request' && ok "control: the tem
 tpl_code "$TEMPLATE" | grep -qE '^[[:space:]]*concurrency:' && bad "template has a concurrency block" || ok "template has no concurrency block"
 tpl_code "$FX/bad-template.yml" | grep -qE '^[[:space:]]*concurrency:' && ok "control: the concurrency check sees a planted block" || bad "control: no concurrency block in bad-template.yml"
 tpl_code "$TEMPLATE" | grep -qE '^  workflow_run:' && ok "template triggers on workflow_run" || bad "template does not trigger on workflow_run"
-tpl_code "$TEMPLATE" | grep -qE '^    types: \[completed\]$' \
-  && ok "template triggers on workflow_run type completed only" || bad "template types are not exactly [completed]"
+tpl_code "$TEMPLATE" | grep -qE '^    types: \[completed, requested\]$' \
+  && ok "template triggers on workflow_run types completed and requested" || bad "template types are not exactly [completed, requested]"
 tpl_code "$TEMPLATE" | grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\.github/workflows/ci-gate\.yml@__CICD_SUITE_SHA__' \
   && ok "template calls the reusable at the __CICD_SUITE_SHA__ placeholder" || bad "template does not call the reusable at the placeholder"
 tpl_code "$TEMPLATE" | grep -qE '^  schedule:' && tpl_code "$TEMPLATE" | grep -qE '^    - cron: ' && ok "template has the schedule trigger" || bad "template has no schedule trigger"
 tpl_code "$TEMPLATE" | grep -qE '^  workflow_dispatch:' && ok "template has the workflow_dispatch trigger" || bad "template has no workflow_dispatch trigger"
 tpl_code "$TEMPLATE" | grep -qE '^  pull-requests: read' && ok "template grants pull-requests: read" || bad "template does not grant pull-requests: read"
-tpl_code "$TEMPLATE" | grep -qE "^    if: github.event_name != 'pull_request' && \(github.event_name != 'workflow_run' \|\| github.event.workflow_run.name != 'CI gate'\)" && ok "template excludes the gate's own workflow_run events and pull_request from the main job" || bad "template main job if: is wrong"
+tpl_code "$TEMPLATE" | grep -qE "^    if: github.event_name != 'pull_request' && \(github.event_name != 'workflow_run' \|\| \(github.event.workflow_run.name != 'CI gate' && \(github.event.action != 'requested' \|\| github.event.workflow_run.run_attempt > 1\)\)\)$" && ok "template excludes the gate's own workflow_run events and pull_request from the main job" || bad "template main job if: is wrong"
 tpl_code "$TEMPLATE" | grep -qE '^  gate:' && ok "template job id is gate" || bad "template job id is not gate"
 tpl_code "$TEMPLATE" | grep -qE 'context: *"CI/gate"' && ok "template publishes CI/gate" || bad "template does not publish CI/gate"
 
@@ -1257,8 +1465,8 @@ self_code | grep -qE 'context: *"CI / gate"' && ok "it publishes the context the
 self_code | grep -qE '^  gate:' && ok "its job id is gate" || bad "its job id is not gate"
 pr_start_ok self_code "$SELF" && ok "the suite's caller: pull_request appears only as the gate-pr job" || bad "the suite's caller: the gate-pr shape is wrong"
 self_code | grep -qE '^[[:space:]]*concurrency:' && bad "the suite's caller has a concurrency block" || ok "the suite's caller has no concurrency block"
-self_code | grep -qE '^    types: \[completed\]$' && self_code | grep -qE '^  schedule:' && self_code | grep -qE '^  workflow_dispatch:' \
-  && ok "it has workflow_run (completed only), schedule and workflow_dispatch" || bad "its triggers are not the caller shape"
+self_code | grep -qE '^    types: \[completed, requested\]$' && self_code | grep -qE '^  schedule:' && self_code | grep -qE '^  workflow_dispatch:' \
+  && ok "it has workflow_run (completed and requested), schedule and workflow_dispatch" || bad "its triggers are not the caller shape"
 self_code | grep -qE '^  pull-requests: read' && self_code | grep -qE '^  statuses: write' && self_code | grep -qE '^  actions: read' && self_code | grep -qE '^  checks: read' && self_code | grep -qE '^  contents: read' \
   && ok "it grants statuses: write, actions: read, checks: read, contents: read, pull-requests: read" || bad "its permissions are not the caller shape"
 ! grep -qE '^[[:space:]]*secrets:' "$SELF" && ok "the suite's caller has no secrets: line" || bad "the suite's caller has a secrets: line"
