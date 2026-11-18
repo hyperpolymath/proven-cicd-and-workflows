@@ -250,6 +250,8 @@ if [[ " $* " == *" -X POST "* ]]; then
   state=''; desc=''; psha=''; ctx=''
   for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; context=*) ctx=${a#context=} ;; repos/*/statuses/*) psha=${a##*/} ;; esac; done
   [[ ! -f $D/failpost ]] || { echo "gh: HTTP 500 (post)" >&2; exit 1; }
+  # the real statuses API refuses a description holding a 4-byte UTF-8 character (above U+FFFF)
+  if printf '%s' "$desc" | LC_ALL=C grep -qP '[\xF0-\xF7]'; then echo "gh: HTTP 422 Description doesn't accept 4-byte Unicode" >&2; exit 1; fi
   # a newer evaluator's write that lands just before this one (deterministic pause control)
   if [[ -f $D/prepost ]]; then
     cat "$D/prepost" >> "$D/posts.log"
@@ -563,6 +565,58 @@ grep -q 'EVENT_ACTION' <<<"$EARLY" && grep -q 'in_progress' <<<"$EARLY" && grep 
   && ok "the early step posts pending 're-run started' for an in_progress action" || bad "the early step lacks the in_progress pending"
 ! grep -qE '\$suite|fetch |scripts/' <<<"$EARLY" && ok "the early step reads no suite file" || bad "the early step touches the suite"
 ! grep -q '\${{' <(awk '/^        run: \|/{f=1;next} f' <<<"$EARLY") && ok "the early step has no \${{ }} inside its run: script" || bad "the early step interpolates into run:"
+
+echo "== a status description never carries a 4-byte UTF-8 character (the statuses API rejects it) =="
+# GitHub's statuses API answers HTTP 422 "Description doesn't accept 4-byte Unicode" for any codepoint
+# above U+FFFF, and consumer job and workflow names carry emoji. Both write sites strip them BEFORE the
+# cut to 140 characters: clip() in the publisher (post(), so die() too) and the early-pending step.
+# The expressions are extracted from the code under test, never retyped here.
+RED=$'\xf0\x9f\x94\xb4'; YEL=$'\xf0\x9f\x9f\xa1'
+four_byte() { printf '%s' "$1" | LC_ALL=C grep -qP '[\xF0-\xF7]'; }   # any UTF-8 lead byte >= 0xF0
+CLIP_DEF=$(grep -m1 '^clip()' "$PUBLISH")
+[ -n "$CLIP_DEF" ] && ok "found clip() in scripts/ci-gate-publish.sh" || bad "clip() not found"
+clip_of() { bash -c "$CLIP_DEF"$'\n''clip "$1"' _ "$1"; }
+EARLY_EXPR=$(grep -m1 'desc=\$(jq' <<<"$EARLY")
+[ -n "$EARLY_EXPR" ] && ok "found the early-pending description expression in the workflow" || bad "early-pending expression not found"
+early_of() { RUN_NAME="$1" bash -c "$EARLY_EXPR"$'\n''printf %s "$desc"'; }
+OLD_EXPR='"re-run started: " + $n | if length > 140 then .[0:139] + "…" else . end'   # the expression before the fix
+NAME_RG="${RED} GATE: Invisible Character Detection / ${YEL} CHECK: Groove Protocol Compliance"
+NEAR=$(printf 'a%.0s' $(seq 1 137))${RED}${YEL}${RED}tail   # emoji straddling the 140 boundary (clip)
+NEAR2=$(printf 'a%.0s' $(seq 1 121))${RED}${YEL}${RED}tail  # the same for the early step, whose fixed prefix is 16 characters
+LONG=$(printf 'n%.0s' $(seq 1 120))${RED}$(printf 'm%.0s' $(seq 1 40))   # 160 characters, emoji inside the first 140
+for pair in "clip():$(clip_of "$NAME_RG")" "early:$(early_of "$NAME_RG")"; do
+  w=${pair%%:*}; v=${pair#*:}
+  four_byte "$v" && bad "$w: a name with 🔴 and 🟡 still has a 4-byte character: $v" || ok "$w: a name with 🔴 and 🟡 comes out with no 4-byte character"
+  [ "$(dlen "$v")" -le 140 ] && ok "$w: that description is at most 140 characters" || bad "$w: that description is $(dlen "$v") characters"
+  case "$v" in *GATE:*Invisible*CHECK:*Groove*) ok "$w: the BMP text of the name is kept" ;; *) bad "$w: the text was damaged: $v" ;; esac
+done
+for nm in "$NEAR" "$NEAR2" "$LONG"; do
+  for w in clip early; do
+    if [ $w = clip ]; then v=$(clip_of "$nm"); else v=$(early_of "$nm"); fi
+    four_byte "$v" && bad "$w: a long name (${#nm} chars) with emoji near the boundary still has a 4-byte character" || ok "$w: a long name (${#nm} chars) with emoji near the boundary has no 4-byte character"
+    [ "$(dlen "$v")" -le 140 ] && ok "$w: the long name's description is at most 140 characters ($(dlen "$v"))" || bad "$w: the long name's description is $(dlen "$v") characters"
+    # cut with an ellipsis whenever the text left after stripping is over 140 (not clip with NEAR2: 125 left)
+    [ "$w$nm" = "clip$NEAR2" ] || { case "$v" in *…) ok "$w: the long name is cut with an ellipsis" ;; *) bad "$w: the long name has no ellipsis" ;; esac; }
+  done
+done
+# negative control: the expression from before the fix keeps the emoji, so the detector above can fail
+OLDV=$(jq -rn --arg n "$NAME_RG" "$OLD_EXPR")
+four_byte "$OLDV" && ok "negative control: the old expression keeps the emoji (the 4-byte detector fires)" || bad "negative control: the old expression dropped the emoji, so the tests above prove nothing"
+# the two write sites use the same character class
+[ "$(grep -c 'gsub("\[\\\\x{10000}-\\\\x{10FFFF}\]"; "")' <<<"$CLIP_DEF"$'\n'"$EARLY_EXPR")" = 2 ] && ok "both write sites strip the same range U+10000 to U+10FFFF" || bad "the two sites do not share the same strip expression"
+# end to end: the real publisher with a fake gh that rejects a 4-byte description like the real API
+pubreset; reset
+jq -n --arg a "${RED} GATE: Invisible Character Detection" --arg b "${YEL} CHECK: Groove Protocol Compliance" \
+  '[{id:7001,name:$a,status:"completed",conclusion:"failure",run:{id:11,name:"CI build",status:"completed"}},{id:7002,name:$b,status:"completed",conclusion:"success",run:{id:11,name:"CI build",status:"completed"}}]' > "$FAKEGH/jobs.json"
+jq -n --arg a "${RED} GATE: Invisible Character Detection" --arg b "${YEL} CHECK: Groove Protocol Compliance" \
+  '{checks:([{job:$a,workflow:".github/workflows/ci-build.yml"},{job:$b,workflow:".github/workflows/ci-build.yml"}] | sort_by([.workflow,.job])),repository:"example/repo",schema_version:2}' > "$SUITE_DIR/profiles/ci-gate/example/repo.json"
+snap 1 "$DONE"; publish
+chk "emoji job names: the publisher posts exactly once (the fake API refuses 4-byte text)" "$NPOSTS" 1
+chk "emoji job names: the verdict is the real failure, not an API-error failure" "$(post_n 1 | cut -f1)/$(post_n 1 | cut -f2 | grep -c 'could not publish')" "failure/0"
+four_byte "$(post_n 1 | cut -f2)" && bad "emoji job names: the posted description has a 4-byte character" || ok "emoji job names: the posted description has no 4-byte character"
+case "$(post_n 1 | cut -f2)" in 'failed: ci-build.yml: GATE: Invisible Character Detection'*) ok "emoji job names: the description still names the failing check" ;; *) bad "emoji job names: description is '$(post_n 1 | cut -f2)'" ;; esac
+cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
+pubreset
 
 echo "== sweep: schedule and workflow_dispatch re-evaluate every open pull request head and the default branch head =="
 cp "$ROOT/scripts/ci-gate-sweep.sh" "$SUITE_DIR/scripts/"

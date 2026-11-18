@@ -56,7 +56,11 @@ mkdir -p "$WORK" || exit 1
 PROFILE="$SUITE/profiles/ci-gate/$REPO.json"
 published=0
 
-clip() { jq -rn --arg d "$1" 'if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }  # by characters, whatever the locale
+# The statuses API rejects a description with a 4-byte UTF-8 character (a codepoint above U+FFFF, eg an
+# emoji in a job or workflow name): HTTP 422, and the gate would go red for the wrong reason. clip() is the
+# one chokepoint every description passes through (post(), so die() too): strip those codepoints FIRST,
+# then cut to 140 characters (by characters, whatever the locale).
+clip() { jq -rn --arg d "$1" '($d | gsub("[\\x{10000}-\\x{10FFFF}]"; "")) as $d | if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }
 
 current_matches() { # <state> <clipped description> -> prints "same" only if the combined status holds exactly this for $CONTEXT
   local r
