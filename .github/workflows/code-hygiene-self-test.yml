@@ -194,8 +194,9 @@
         },
         {
           # The interim CI/gate: the pure verdict (a required check that never
-          # reported is never a pass: pending, then a failure past the timeout), the profile validator, the
-          # shipped profiles, and static guards on the reusable and its caller.
+          # reports is never a pass: it stays pending, and fails once the
+          # timeout has passed), the profile validator, the shipped profiles,
+          # and static guards on the reusable and its caller.
           run: "bash tests/ci-gate.sh",
         },
         {
