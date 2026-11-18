@@ -131,8 +131,8 @@ jobs:
             [[ "$EVENT_ACTION" == in_progress ]] || { echo "event action '$EVENT_ACTION': no early pending"; exit 0; }
             # The run name is untrusted and may hold an emoji; the statuses API rejects a 4-byte UTF-8 character
             # (above U+FFFF) in a description, so strip those FIRST, then cut to 140 characters. Same
-            # expression as clip() in the publisher (this step runs before any suite file can be read).
-            desc=$(jq -rn --arg n "$RUN_NAME" '"re-run started: " + $n | gsub("[\\x{10000}-\\x{10FFFF}]"; "") | if length > 140 then .[0:139] + "…" else . end')
+            # expression as BMP_ONLY in the publisher (tests/ci-gate.sh asserts they match; this step runs before any suite file can be read).
+            desc=$(jq -rn --arg n "$RUN_NAME" '"re-run started: " + $n | explode | map(select(. <= 65535)) | implode | if length > 140 then .[0:139] + "…" else . end')
           fi
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
             -f state=pending -f context="$CONTEXT" -f description="$desc" \

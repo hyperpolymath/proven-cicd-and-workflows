@@ -573,9 +573,12 @@ echo "== a status description never carries a 4-byte UTF-8 character (the status
 # The expressions are extracted from the code under test, never retyped here.
 RED=$'\xf0\x9f\x94\xb4'; YEL=$'\xf0\x9f\x9f\xa1'
 four_byte() { printf '%s' "$1" | LC_ALL=C grep -qP '[\xF0-\xF7]'; }   # any UTF-8 lead byte >= 0xF0
+BMP_DEF=$(grep -m1 '^BMP_ONLY=' "$PUBLISH")
+BMP=$(sed -n "s/^BMP_ONLY='\(.*\)' *#.*$/\1/p;s/^BMP_ONLY='\(.*\)'$/\1/p" <<<"$BMP_DEF" | head -1)
+[ -n "$BMP" ] && ok "found BMP_ONLY in scripts/ci-gate-publish.sh" || bad "BMP_ONLY not found"
 CLIP_DEF=$(grep -m1 '^clip()' "$PUBLISH")
 [ -n "$CLIP_DEF" ] && ok "found clip() in scripts/ci-gate-publish.sh" || bad "clip() not found"
-clip_of() { bash -c "$CLIP_DEF"$'\n''clip "$1"' _ "$1"; }
+clip_of() { bash -c "$BMP_DEF"$'\n'"$CLIP_DEF"$'\n''clip "$1"' _ "$1"; }
 EARLY_EXPR=$(grep -m1 'desc=\$(jq' <<<"$EARLY")
 [ -n "$EARLY_EXPR" ] && ok "found the early-pending description expression in the workflow" || bad "early-pending expression not found"
 early_of() { RUN_NAME="$1" bash -c "$EARLY_EXPR"$'\n''printf %s "$desc"'; }
@@ -602,8 +605,9 @@ done
 # negative control: the expression from before the fix keeps the emoji, so the detector above can fail
 OLDV=$(jq -rn --arg n "$NAME_RG" "$OLD_EXPR")
 four_byte "$OLDV" && ok "negative control: the old expression keeps the emoji (the 4-byte detector fires)" || bad "negative control: the old expression dropped the emoji, so the tests above prove nothing"
-# the two write sites use the same character class
-[ "$(grep -c 'gsub("\[\\\\x{10000}-\\\\x{10FFFF}\]"; "")' <<<"$CLIP_DEF"$'\n'"$EARLY_EXPR")" = 2 ] && ok "both write sites strip the same range U+10000 to U+10FFFF" || bad "the two sites do not share the same strip expression"
+# the workflow's inline copy carries the publisher's BMP_ONLY text exactly, and neither site keeps the old regex
+[ -n "$BMP" ] && case $EARLY_EXPR in *"$BMP"*) ok "the early-pending step carries the publisher's BMP_ONLY expression exactly" ;; *) bad "the early-pending expression differs from the publisher's BMP_ONLY" ;; esac
+grep -q 'BMP_ONLY' <<<"$CLIP_DEF" && ! grep -rq 'x{10000}' "$PUBLISH" "$WORKFLOW" && ok "clip() uses BMP_ONLY and no gsub range survives in either site" || bad "clip() does not use BMP_ONLY, or a gsub range survives"
 # end to end: the real publisher with a fake gh that rejects a 4-byte description like the real API
 pubreset; reset
 jq -n --arg a "${RED} GATE: Invisible Character Detection" --arg b "${YEL} CHECK: Groove Protocol Compliance" \

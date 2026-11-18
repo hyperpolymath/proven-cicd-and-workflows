@@ -60,7 +60,8 @@ published=0
 # emoji in a job or workflow name): HTTP 422, and the gate would go red for the wrong reason. clip() is the
 # one chokepoint every description passes through (post(), so die() too): strip those codepoints FIRST,
 # then cut to 140 characters (by characters, whatever the locale).
-clip() { jq -rn --arg d "$1" '($d | gsub("[\\x{10000}-\\x{10FFFF}]"; "")) as $d | if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }
+BMP_ONLY='explode | map(select(. <= 65535)) | implode'   # regex-free: the same on every supported jq (1.6 to 1.8.1)
+clip() { jq -rn --arg d "$1" "\$d | $BMP_ONLY | if length > 140 then .[0:139] + \"…\" else . end"; }
 
 current_matches() { # <state> <clipped description> -> prints "same" only if the combined status holds exactly this for $CONTEXT
   local r
