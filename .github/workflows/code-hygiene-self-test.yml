@@ -35,6 +35,7 @@
         "scripts/proven-coverage-collect.sh",
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
+        "scripts/ci-gate-lib.sh",
         "scripts/ci-gate-publish.sh",
         "scripts/ci-gate-sweep.sh",
         "scripts/ci-gate-tamper-guard.sh",
@@ -88,6 +89,7 @@
         "scripts/proven-coverage-collect.sh",
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
+        "scripts/ci-gate-lib.sh",
         "scripts/ci-gate-publish.sh",
         "scripts/ci-gate-sweep.sh",
         "scripts/ci-gate-tamper-guard.sh",
@@ -192,7 +194,7 @@
         },
         {
           # The interim CI/gate: the pure verdict (a required check that never
-          # reported is a failure, never a pass), the profile validator, the
+          # reported is never a pass: pending, then a failure past the timeout), the profile validator, the
           # shipped profiles, and static guards on the reusable and its caller.
           run: "bash tests/ci-gate.sh",
         },
