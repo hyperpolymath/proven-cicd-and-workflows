@@ -1,0 +1,10 @@
+# Negative control for the static check: an expression inside a run script.
+name: bad
+on: workflow_call
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Injectable
+        run: |
+          echo "${{ github.event.workflow_run.head_branch }}"

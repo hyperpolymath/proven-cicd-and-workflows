@@ -1,0 +1,207 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath) <j.d.a.jewell@open.ac.uk>
+#
+# ci-gate.yml — the interim `CI/gate`, as a reusable workflow. See docs/CI-GATE.adoc.
+#
+# It publishes ONE commit status (context = `inputs.context`, default `CI/gate`) on the head
+# commit of the workflow run that triggered it. The verdict is a pure script
+# (scripts/ci-gate-verdict.sh) over the required-check list for the calling repository
+# (profiles/ci-gate/<owner>/<repo>.json) and the Actions jobs (latest attempt) of that commit's workflow runs.
+#
+# WHY A COMMIT STATUS: a job inside a reusable workflow gets the check-run name
+# `<caller job> / <called job>`, which always contains " / " and so can never equal `CI/gate`.
+#
+# WHY workflow_run: GitHub runs a workflow_run workflow from the DEFAULT branch, so a pull
+# request cannot edit the caller, its pin, or its list. Each started or completed workflow re-evaluates
+# the head commit; there is no polling.
+#
+# SAFETY — this workflow never checks out, builds or executes code from the consumer
+# repository or the pull request (the pwn-request hazard of workflow_run). It reads only
+# metadata through the API, and it fetches its own profile and scripts from THIS repository
+# at the commit it was called at (`job.workflow_sha`), never from the consumer. Every
+# `${{ }}` value reaches a script through `env:`, never inline into `run:`. It uses no
+# actions, so there is nothing to pin: `gh` and `jq` ship on the runner image.
+#
+# SWEEP: on `schedule` and `workflow_dispatch` there is no triggering run, so the job instead lists the
+# open pull requests and the default branch head of `github.repository` and runs the same guarded
+# publisher on each distinct head SHA (scripts/ci-gate-sweep.sh), with no early pending. That bounds
+# nothing by itself: a sweep is one more last-writer-wins evaluator (docs/CI-GATE.adoc, "Residual limit").
+#
+# FAIL CLOSED: a missing or invalid profile, an empty `job.workflow_sha`, any API error, or
+# any event other than workflow_run, schedule or workflow_dispatch is a failure, never a pass or a pending.
+#
+# The caller must grant: statuses: write, actions: read, contents: read, pull-requests: read
+# (the last one is read only by the sweep, to list open pull requests).
+# No `secrets:` — the reusable consumes none.
+
+name: CI gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: The commit-status context to publish (the one swappable name)
+        type: string
+        required: false
+        default: CI/gate
+      timeout_minutes:
+        description: How long a missing or running required check may keep the gate pending
+        type: number
+        required: false
+        default: 180
+      wait_minutes:
+        description: pull_request only. Maximum 50 minutes (reserves 10 minutes of the job timeout). How long to keep polling while a required check has not reported or a run is still active, before failing. Ignored on every other event.
+        type: number
+        required: false
+        default: 30
+      poll_seconds:
+        description: pull_request only. Seconds between polls.
+        type: number
+        required: false
+        default: 20
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: CI gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      statuses: write
+      actions: read
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+      REPO: ${{ github.repository }}
+      CONTEXT: ${{ inputs.context }}
+      TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+      WAIT_MINUTES: ${{ inputs.wait_minutes }}
+      POLL_SECONDS: ${{ inputs.poll_seconds }}
+      GATE_NAME: ${{ github.workflow }}
+      SERVER_URL: ${{ github.server_url }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Refuse anything but a workflow_run, schedule or workflow_dispatch event
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            workflow_run | pull_request | schedule | workflow_dispatch) ;;
+            *) echo "::error::ci-gate runs only on workflow_run, pull_request, schedule and workflow_dispatch (got '$EVENT_NAME'); NO VERDICT WAS PRODUCED"; exit 1 ;;
+          esac
+          if [[ "$EVENT_NAME" == workflow_run || "$EVENT_NAME" == pull_request ]]; then
+            [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+              || { echo "::error::workflow_run head sha is not a 40-hex commit; NO VERDICT WAS PRODUCED"; exit 1; }
+          fi
+          [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${REPO#*/}" != . && "${REPO#*/}" != .. ]] \
+            || { echo "::error::repository name is not an owner/name coordinate"; exit 1; }
+          # Context: 1 to 128 characters, alphanumeric first, then [A-Za-z0-9._/-] with single interior
+          # spaces (no leading, trailing or repeated space, no tab or newline). The regex alone would
+          # allow 255 characters (each repeat may be a space plus a character), so the length is
+          # checked as well. The failure step below repeats this guard byte for byte.
+          ctx_re='^[A-Za-z0-9]([A-Za-z0-9._/-]| [A-Za-z0-9._/-]){0,127}$'
+          [[ ${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re ]] \
+            || { echo "::error::context input is empty or has unexpected characters"; exit 1; }
+          [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::timeout_minutes must be a positive integer"; exit 1; }
+          [[ "$WAIT_MINUTES" =~ ^[0-9]+$ && "$POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::wait_minutes must be a non-negative and poll_seconds a positive integer"; exit 1; }
+          # Reserve ten minutes of the 60-minute job for setup and final publication.
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            [[ ${#WAIT_MINUTES} -le 2 ]] && ((10#$WAIT_MINUTES <= 50)) \
+              || { echo "::error::wait_minutes must be at most 50 to fit the job timeout"; exit 1; }
+          fi
+      - name: Mark a started or re-run workflow pending
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+        # First step after input validation: it needs only gh, the repository, the head SHA and
+        # the context, and runs before any suite file is fetched. A run that starts (or is
+        # re-run) must stop the previous verdict, a possible success, from standing at once.
+        # The verdict step later overwrites it; the later write is always a fresh evaluation.
+        run: |
+          set -uo pipefail
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            # the pull_request run then waits, so the context stands pending meanwhile.
+            desc="waiting for the required checks to report"
+          else
+            [[ "$EVENT_ACTION" == in_progress ]] || { echo "event action '$EVENT_ACTION': no early pending"; exit 0; }
+            desc=$(jq -rn --arg n "$RUN_NAME" '"re-run started: " + $n | if length > 140 then .[0:139] + "…" else . end')
+          fi
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=pending -f context="$CONTEXT" -f description="$desc" \
+            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+            || { echo "::error::could not publish the re-run pending status; NO VERDICT WAS PRODUCED"; exit 1; }
+          echo "$CONTEXT = pending: $desc"
+      - name: Read the profile and the verdict scripts from this suite at its own commit
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+        # job.workflow_repository / job.workflow_sha name the reusable workflow file's own
+        # repository and commit, so the profile selected by github.repository is read at
+        # the SHA the caller pinned. Empty means the runner cannot say: fail, do not guess.
+        run: |
+          set -euo pipefail
+          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${WF_REPO#*/}" != . && "${WF_REPO#*/}" != .. ]] \
+            || { echo "::error::job.workflow_repository is empty or malformed ('$WF_REPO'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
+          [[ "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::job.workflow_sha is empty or not a 40-hex commit ('$WF_SHA'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
+          suite="$RUNNER_TEMP/ci-gate-suite"
+          rm -rf "$suite"; mkdir -p "$suite/scripts" "$suite/profiles/ci-gate"
+          fetch() { # <path in the suite> -> same path under $suite; refuses an empty file
+            gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WF_REPO/contents/$1?ref=$WF_SHA" > "$suite/$1" \
+              || { echo "::error::could not read $1 from $WF_REPO@$WF_SHA"; return 1; }
+            [[ -s "$suite/$1" ]] || { echo "::error::$1 at $WF_REPO@$WF_SHA is empty"; return 1; }
+          }
+          fetch scripts/ci-gate-verdict.sh
+          fetch scripts/validate-ci-gate-profile.sh
+          fetch scripts/ci-gate-publish.sh
+          fetch scripts/ci-gate-sweep.sh
+          fetch profiles/ci-gate/validate.jq
+          fetch profiles/ci-gate/select-runs.jq
+          mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
+          fetch "profiles/ci-gate/$REPO.json" \
+            || { echo "::error::no CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
+          echo "suite=$suite" >> "$GITHUB_ENV"
+          echo "Profile for $REPO read from $WF_REPO@$WF_SHA"
+      - name: Validate the profile
+        run: bash "$suite/scripts/validate-ci-gate-profile.sh" "$suite/profiles/ci-gate/$REPO.json" "$REPO" "$CONTEXT"
+      - name: Evaluate the commit and publish the status
+        id: publish
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+        # All of the reading, the settle guard and the publishing is scripts/ci-gate-publish.sh
+        # (fetched from the suite above), so a stub `gh` can test it offline. On schedule and
+        # workflow_dispatch scripts/ci-gate-sweep.sh runs that same publisher once per open pull
+        # request head and the default branch head. The workflow only hands them values through env.
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=0 bash "$suite/scripts/ci-gate-publish.sh"
+          elif [[ "$EVENT_NAME" == pull_request ]]; then
+            # pull_request path: one evaluation, so wait (bounded) for the required checks to report.
+            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=$((WAIT_MINUTES * 60)) \
+              bash "$suite/scripts/ci-gate-publish.sh"
+          else
+            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-sweep" bash "$suite/scripts/ci-gate-sweep.sh"
+          fi
+      - name: Publish a failure status when no verdict could be produced
+        if: ${{ failure() && steps.publish.outputs.published != 'true' }}
+        run: |
+          set -uo pipefail
+          ctx_re='^[A-Za-z0-9]([A-Za-z0-9._/-]| [A-Za-z0-9._/-]){0,127}$'
+          [[ ( $EVENT_NAME == workflow_run || $EVENT_NAME == pull_request ) && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && ${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re ]] || exit 0
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=failure -f context="$CONTEXT" \
+            -f description="ci-gate could not produce a verdict (profile or API error); see the run" \
+            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+            || echo "::warning::could not publish the failure status either"
