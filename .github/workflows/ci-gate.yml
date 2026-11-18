@@ -123,8 +123,11 @@ jobs:
           url="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
           publish() { # <state> <description>
             local state=$1
-            local d=$2
-            (( ${#d} > 140 )) && d="${d:0:139}…"
+            # The statuses API rejects a description with a 4-byte UTF-8 character (above U+FFFF, eg an emoji
+            # in a check or workflow name, which "not green: $bad" carries): HTTP 422, and the gate would go red
+            # for the wrong reason. This is the one write site for a verdict: strip those FIRST, then cut to 140.
+            local d
+            d=$(jq -rn --arg d "$2" '$d | explode | map(select(. <= 65535)) | implode | if length > 140 then .[0:139] + "…" else . end')
             gh api -X POST "repos/$REPO/statuses/$SHA" \
               -f state="$state" -f context="$CONTEXT" -f description="$d" -f target_url="$url" > /dev/null
             echo "published=true" >> "$GITHUB_OUTPUT"

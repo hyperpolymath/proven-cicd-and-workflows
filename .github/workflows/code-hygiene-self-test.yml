@@ -35,6 +35,7 @@
         "scripts/proven-coverage-collect.sh",
         "scripts/coverdata-to-lcov.exs",
         ".github/workflows/proven-lock-gate.yml",
+        ".github/workflows/ci-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
         # lock-transitive-closure.sh reads the literal cicd-suite SHA pins in
@@ -79,6 +80,7 @@
         "scripts/proven-coverage-collect.sh",
         "scripts/coverdata-to-lcov.exs",
         ".github/workflows/proven-lock-gate.yml",
+        ".github/workflows/ci-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
         # lock-transitive-closure.sh reads the literal cicd-suite SHA pins in
@@ -171,6 +173,11 @@
           # codes (never 1), and real runs on tiny Rust, Mix and JS fixtures
           # where the toolchain is present (a missing one is named SKIP).
           run: "bash tests/proven-coverage-collect.sh",
+        },
+        {
+          # The reusable CI/gate strips 4-byte UTF-8 (emoji in check names) from every status
+          # description before the statuses API sees it; run against a fake gh that refuses them.
+          run: "bash tests/ci-gate.sh",
         },
       ],
     },
