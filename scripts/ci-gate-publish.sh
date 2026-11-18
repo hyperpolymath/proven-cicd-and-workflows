@@ -11,14 +11,24 @@
 #   SUITE            directory holding scripts/, profiles/ fetched from the suite at one commit
 #   EVENT_NAME       `pull_request` writes ONE pending first ("waiting for the required checks to
 #                    report", skipped when that exact status already stands); anything else does not
+#   WORKFLOW_RUN_ACTION  the workflow_run event action (`completed`, `requested` or `in_progress`).
+#                    `requested` or `in_progress` (with EVENT_NAME=workflow_run) is a RE-RUN starting (the
+#                    caller lets only run_attempt > 1 through; which of the two GitHub sends for a re-run is
+#                    unconfirmed, so both are handled alike): nothing is read or evaluated; the one write is
+#                    a deduplicated `pending` ("a required workflow is re-running"), never a failure or a
+#                    success, and the publisher exits 0 (75 if the API is unavailable). The second start
+#                    event of one attempt finds that pending standing: no write, only the dedupe read
 #   WORK             scratch directory (default: a fresh mktemp -d)
 #   SERVER_URL RUN_ID WF_REPO WF_SHA                    for target_url and the step summary
 #   CI_GATE_NOW      test hook: epoch seconds for the verdict instead of `date +%s`
 #   CI_GATE_BACKOFF_MAX_SECONDS  total back-off bound for rate limits (default 300; 0 = never wait)
 #   CI_GATE_CLOCK CI_GATE_SLEEP CI_GATE_JITTER           test hooks (scripts/ci-gate-lib.sh)
-#   GITHUB_STEP_SUMMARY, GITHUB_OUTPUT                  optional; `published=true` is written once a
-#                    status was written (or found already standing), `unavailable=true` when the
-#                    GitHub API could not be used
+#   GITHUB_STEP_SUMMARY, GITHUB_OUTPUT                  optional; `published=true` is written only when the
+#                    evaluation, or its error handler, wrote a status (the initial pull_request pending is
+#                    not such a write), or a re-run start event wrote its re-run pending;
+#                    `unavailable=true` when the GitHub API could not be used; with it, `pending=rejected`
+#                    or `pending=unconfirmed` when the final pending write failed (GitHub rejected it with a
+#                    real error, or its outcome is unknown and it may have landed)
 #
 # Reads: TWO per evaluation however many workflows the commit has: the workflow runs of the head SHA
 # (actions/runs?head_sha=) and the latest check runs of the commit (commits/<sha>/check-runs), joined
@@ -68,6 +78,7 @@ export GATE_WAITED_FILE
 source "$SUITE/scripts/ci-gate-lib.sh" || exit 1
 PROFILE="$SUITE/profiles/ci-gate/$REPO.json"
 TARGET_URL="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
+RERUN_DESC='ci-gate: a required workflow is re-running; re-evaluating on completion'
 
 finish_output() { [[ -z ${GITHUB_OUTPUT:-} ]] || echo "published=true" >> "$GITHUB_OUTPUT"; }
 
@@ -102,7 +113,14 @@ unavailable() { # <what failed> — the API is rate-limited or down: pending, ne
     echo "$CONTEXT = pending: $GATE_UNAVAILABLE_DESC"
     exit 75
   fi
-  echo "::error::ci-gate: could not write the pending status either ($GATE_API_ERR); NO STATUS WAS WRITTEN and NO FAILURE WAS POSTED (the API was unavailable, not the checks)"
+  # rc 1: GitHub rejected the write (a real error). Anything else (75) leaves the outcome unknown: it may have landed.
+  if ((rc == 1)); then
+    [[ -z ${GITHUB_OUTPUT:-} ]] || echo "pending=rejected" >> "$GITHUB_OUTPUT"
+    echo "::error::ci-gate: could not write the pending status either ($GATE_API_ERR); GitHub rejected it, NO STATUS WAS WRITTEN and NO FAILURE WAS POSTED (the API was unavailable, not the checks)"
+  else
+    [[ -z ${GITHUB_OUTPUT:-} ]] || echo "pending=unconfirmed" >> "$GITHUB_OUTPUT"
+    echo "::error::ci-gate: pending not confirmed ($GATE_API_ERR): the write's outcome is unknown and it may have landed; NO FAILURE WAS POSTED (the API was unavailable, not the checks)"
+  fi
   exit 1
 }
 
@@ -126,6 +144,21 @@ fresh_fingerprint() { # re-list the runs (one request) -> $FP, or the gate_read_
   FP=$(fingerprint "$WORK/fresh-runs.json") || { GATE_API_ERR='workflow runs are malformed'; return 1; }
 }
 
+# A re-run starting (workflow_run `requested` or `in_progress`; GitHub is not confirmed to send either for
+# a re-run, so both take this path): no read, no evaluation, no verdict. The one write is a deduplicated
+# `pending`; never a failure and never a success. The second start event of an attempt finds the pending
+# standing and writes nothing. A real error here writes nothing (the next `completed` evaluation
+# decides); an unavailable API gets the same pending-only handling as ever.
+if [[ ${WORKFLOW_RUN_ACTION:-} == requested || ${WORKFLOW_RUN_ACTION:-} == in_progress ]]; then
+  [[ $EVENT_NAME == workflow_run ]] || { echo "::error::ci-gate-publish: a requested or in_progress action needs EVENT_NAME=workflow_run; NOTHING WAS WRITTEN"; exit 1; }
+  post pending "$RERUN_DESC"; rc=$?
+  case $rc in
+    0) finish_output; write_summary pending "$RERUN_DESC" 0; echo "$CONTEXT = pending: $RERUN_DESC"; exit 0 ;;
+    75) unavailable 'could not write the re-run pending' ;;
+    *) echo "::error::ci-gate: could not write the re-run pending ($GATE_API_ERR); NOTHING WAS WRITTEN and no verdict was produced"; exit 1 ;;
+  esac
+fi
+
 [[ -f $PROFILE ]] || die "no profile for $REPO"
 bash "$SUITE/scripts/validate-ci-gate-profile.sh" "$PROFILE" "$REPO" "$CONTEXT" > /dev/null 2>&1 \
   || die 'profile invalid for this repository'
@@ -135,7 +168,6 @@ bash "$SUITE/scripts/validate-ci-gate-profile.sh" "$PROFILE" "$REPO" "$CONTEXT" 
 if [[ $EVENT_NAME == pull_request ]]; then
   post pending 'waiting for the required checks to report'; rc=$?
   api_stop "$rc" 'could not write the pending status'
-  finish_output
 fi
 
 state='' description='' rc=1 settled=0 round=0 FP=''
@@ -176,10 +208,19 @@ while ((round < MAX_ROUNDS)); do
     # An unverified success must not stand; a pending or failure already written is the safe side.
     if [[ $state == success ]]; then api_stop "$rc" 'could not verify the published success'; fi
     echo "::warning::ci-gate: could not verify the write ($GATE_API_ERR); the $state status stands"
+    # The API is unavailable whatever was posted: say so (a sweep stops on it). No recovery write.
+    [[ -z ${GITHUB_OUTPUT:-} ]] || echo "unavailable=true" >> "$GITHUB_OUTPUT"
     settled=1; break
   fi
   api_stop "$rc" 'could not re-read the workflow runs after publishing'
   if [[ $fp_before == "$FP" ]]; then settled=1; break; fi
+  # A pull_request run may have no default-branch evaluator to clear a stale success (a bootstrap pull
+  # request): do not leave the success standing while the next round evaluates.
+  if [[ $EVENT_NAME == pull_request && $state == success ]]; then
+    post pending 'runs still changing'; rc=$?
+    api_stop "$rc" 'could not publish the status'
+    finish_output
+  fi
   echo "round $round: the workflow runs changed while publishing; evaluating again"
 done
 

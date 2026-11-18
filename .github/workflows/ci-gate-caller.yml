@@ -11,6 +11,9 @@
 #
 # The job id MUST stay `gate` and the workflow name MUST stay `CI gate`: the reusable drops runs of
 # that name from the evaluation, and the `if:` below keeps the gate from triggering itself.
+# The `types` are `completed`, `requested` and `in_progress`; the `if:` admits a start event only for a
+# re-run (`run_attempt > 1`). Which start event GitHub sends for a re-run is unconfirmed, hence both
+# (docs/CI-GATE.adoc, "Re-runs").
 # There is deliberately NO `concurrency:` block here: the reusable's job carries the per-commit group
 # (repository, context, head SHA; cancel-in-progress) so that every consumer gets it with the pin, and
 # its sweep group is separate. The pull_request job at the end is permanent
@@ -28,7 +31,7 @@ on:
   pull_request:
   workflow_run:
     workflows: ["Bounded secret scanner controls", "Central Estate CI/CD Audit", "Proven lock gate", "Secret Scanner", "Supplemental secret checks"]
-    types: [completed]
+    types: [completed, requested, in_progress]
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch: {}
@@ -42,7 +45,7 @@ permissions:
 
 jobs:
   gate:
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate')
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || (github.event.workflow_run.name != 'CI gate' && (github.event.action == 'completed' || ((github.event.action == 'requested' || github.event.action == 'in_progress') && github.event.workflow_run.run_attempt > 1))))
     uses: ./.github/workflows/ci-gate.yml
     with:
       context: "CI / gate"

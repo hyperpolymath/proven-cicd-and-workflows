@@ -21,7 +21,11 @@
 #
 # WHY workflow_run: GitHub runs a workflow_run workflow from the DEFAULT branch, so a pull
 # request cannot edit the caller, its pin, or its list. Each COMPLETED workflow re-evaluates the head
-# commit; there is no polling and no wait. The pull_request start (gate-pr) evaluates once and exits.
+# commit; there is no polling and no wait. A RE-RUN is announced by a start event, `requested`
+# or `in_progress` (GitHub is documented not to emit `requested` for a re-run, and which start event it does
+# send is unconfirmed, so the caller subscribes to both and filters first attempts out at its job `if:`):
+# either one writes one deduplicated pending and evaluates nothing. The pull_request start (gate-pr)
+# evaluates once and exits.
 #
 # SAFETY — this workflow never checks out, builds or executes code from the consumer
 # repository or the pull request (the pwn-request hazard of workflow_run). It reads only
@@ -100,6 +104,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       EVENT_NAME: ${{ github.event_name }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+      # `requested` or `in_progress` (a re-run starting) or `completed`; empty for every other event
+      WORKFLOW_RUN_ACTION: ${{ github.event_name == 'workflow_run' && github.event.action || '' }}
       REPO: ${{ github.repository }}
       CONTEXT: ${{ inputs.context }}
       TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
@@ -108,15 +114,18 @@ jobs:
       RUN_ID: ${{ github.run_id }}
     steps:
       - name: Read the gate library from this suite at its own commit
+        id: bootstrap
         env:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
         # job.workflow_repository / job.workflow_sha name the reusable workflow file's own
         # repository and commit. Empty means the runner cannot say: fail, do not guess.
         # This one request cannot go through the library it is fetching, so it carries its own small
-        # bounded retry for a rate limit or a server error. If it still fails, no status is written at
-        # all (the job is red): nothing can be published without the library, and this gate never
-        # posts a failure for an unavailable API.
+        # bounded retry for a rate limit or a server error. If it still fails, no status is written here and the
+        # job is red: nothing can be published through the library without it. When the cause was an
+        # unavailable API the step reports `unavailable=true` and the fallback step stays silent (this gate
+        # never posts a failure for an unavailable API); for any other cause the fallback step writes the
+        # failure with its own small inline request.
         run: |
           set -euo pipefail
           [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${WF_REPO#*/}" != . && "${WF_REPO#*/}" != .. ]] \
@@ -126,21 +135,26 @@ jobs:
           suite="$RUNNER_TEMP/ci-gate-suite"
           rm -rf "$suite"; mkdir -p "$suite/scripts" "$suite/profiles/ci-gate"
           err="$RUNNER_TEMP/ci-gate-lib.err"
-          delay=5; got=0
+          delay=5; got=0; transient=0
           for attempt in 1 2 3 4 5; do
             # gh writes the JSON body of an error response to stdout too, so success is the exit status, not a non-empty file
             if gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WF_REPO/contents/scripts/ci-gate-lib.sh?ref=$WF_SHA" > "$suite/scripts/ci-gate-lib.sh" 2> "$err"; then
               got=1; break
             fi
-            if ((attempt < 5)) && grep -qiE 'rate limit|HTTP (429|500|502|503|504)|timeout|connection|EOF' "$err"; then
-              echo "scripts/ci-gate-lib.sh: transient API error (attempt $attempt); retrying in ${delay}s"
-              sleep "$delay"; delay=$((delay * 2)); continue
+            transient=0
+            if grep -qiE 'rate limit|HTTP (429|5[0-9][0-9])|timeout|connection|EOF' "$err"; then
+              transient=1
+              if ((attempt < 5)); then
+                echo "scripts/ci-gate-lib.sh: transient API error (attempt $attempt); retrying in ${delay}s"
+                sleep "$delay"; delay=$((delay * 2)); continue
+              fi
             fi
             break
           done
           if ((got != 1)) || [[ ! -s "$suite/scripts/ci-gate-lib.sh" ]]; then
             cat "$err" >&2
             echo "::error::could not read scripts/ci-gate-lib.sh from $WF_REPO@$WF_SHA; NO STATUS WAS WRITTEN"
+            if ((transient)); then echo "unavailable=true" >> "$GITHUB_OUTPUT"; fi
             exit 1
           fi
           echo "suite=$suite" >> "$GITHUB_ENV"
@@ -196,6 +210,12 @@ jobs:
               *) echo "::error::could not read $1 from $WF_REPO@$WF_SHA ($GATE_API_ERR)"; return 1 ;;
             esac
           }
+          if [[ "${WORKFLOW_RUN_ACTION:-}" == requested || "${WORKFLOW_RUN_ACTION:-}" == in_progress ]]; then
+            # a re-run starting: the publisher only writes one pending, so it is the only file needed
+            fetch scripts/ci-gate-publish.sh || exit 1
+            echo "re-run start: only scripts/ci-gate-publish.sh was read"
+            exit 0
+          fi
           fetch scripts/ci-gate-verdict.sh || exit 1
           fetch scripts/validate-ci-gate-profile.sh || exit 1
           fetch scripts/ci-gate-publish.sh || exit 1
@@ -208,7 +228,7 @@ jobs:
             || { echo "::error::no readable CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
           echo "Profile for $REPO read from $WF_REPO@$WF_SHA"
       - name: Validate the profile
-        if: ${{ steps.read.outputs.unavailable != 'true' }}
+        if: ${{ steps.read.outputs.unavailable != 'true' && env.WORKFLOW_RUN_ACTION != 'requested' && env.WORKFLOW_RUN_ACTION != 'in_progress' }}
         run: bash "$suite/scripts/validate-ci-gate-profile.sh" "$suite/profiles/ci-gate/$REPO.json" "$REPO" "$CONTEXT"
       - name: Evaluate the commit and publish the status
         id: publish
@@ -238,18 +258,29 @@ jobs:
           fi
           exit "$rc"
       - name: Publish a failure status when no verdict could be produced
-        if: ${{ failure() && steps.publish.outputs.published != 'true' && steps.publish.outputs.unavailable != 'true' && steps.read.outputs.unavailable != 'true' }}
+        if: ${{ failure() && steps.publish.outputs.published != 'true' && steps.publish.outputs.unavailable != 'true' && steps.read.outputs.unavailable != 'true' && steps.bootstrap.outputs.unavailable != 'true' }}
         # Only for a real fail-closed cause (a missing or invalid profile, an input error, a real API
-        # error): never for an unavailable API, which the steps above publish as pending.
+        # error): never for an unavailable API, which the steps above publish as pending, and never for a
+        # `requested` or `in_progress` event (a re-run starting writes only a pending; the completion decides).
+        # When the library was not read (a real error in the first step: `suite` is unset) the failure is
+        # written by one small independent request with a fixed ASCII description, so a standing success
+        # cannot survive a real failure.
         run: |
           set -uo pipefail
           ctx_re='^[A-Za-z0-9]([A-Za-z0-9._/-]| [A-Za-z0-9._/-]){0,127}$'
           [[ ( $EVENT_NAME == workflow_run || $EVENT_NAME == pull_request ) && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && ${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re ]] || exit 0
-          [[ -f "${suite:-/nonexistent}/scripts/ci-gate-lib.sh" ]] \
-            || { echo "::error::the gate library was not read; NO STATUS WAS WRITTEN"; exit 1; }
-          # shellcheck source=/dev/null
-          source "$suite/scripts/ci-gate-lib.sh"
-          gate_post "$REPO" "$HEAD_SHA" "$CONTEXT" failure \
-            'ci-gate could not produce a verdict (profile or input error); see the run' \
-            "$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
-            || echo "::warning::could not publish the failure status either ($GATE_API_ERR)"
+          [[ "${WORKFLOW_RUN_ACTION:-}" != requested && "${WORKFLOW_RUN_ACTION:-}" != in_progress ]] || exit 0
+          desc='ci-gate could not produce a verdict (profile or input error); see the run'
+          if [[ -f "${suite:-/nonexistent}/scripts/ci-gate-lib.sh" ]]; then
+            # shellcheck source=/dev/null
+            source "$suite/scripts/ci-gate-lib.sh"
+            gate_post "$REPO" "$HEAD_SHA" "$CONTEXT" failure "$desc" \
+              "$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+              || echo "::warning::could not publish the failure status either ($GATE_API_ERR)"
+          else
+            # The library was not read, so gate_post is not available: one independent write.
+            [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${REPO#*/}" != . && "${REPO#*/}" != .. ]] || exit 0
+            gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=failure -f context="$CONTEXT" \
+              -f description="$desc" -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+              || echo "::warning::could not publish the failure status either (the gate library was not read)"
+          fi
