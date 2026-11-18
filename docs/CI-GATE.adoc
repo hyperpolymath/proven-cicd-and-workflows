@@ -33,7 +33,9 @@ Only GitHub Actions jobs are read. Third-party checks (SonarCloud, CodeRabbit, G
 . Else (nothing is active): an entry with no kept run or no job is a *failure* (`never reported: <workflow file>:<job>`), a required name whose job never completed is a failure, and otherwise the verdict is *success*.
 . A malformed or wrong-repository profile, an empty list, a list naming the gate's own context, a missing `job.workflow_sha`, any API error, malformed input, or any event other than `workflow_run`, `schedule` and `workflow_dispatch` is a failure, never pending and never success.
 
-The status description is at most 140 characters (truncated with an ellipsis); the step summary
+The status description is at most 140 characters (truncated with an ellipsis) and never holds a 4-byte
+UTF-8 character (any codepoint above U+FFFF, such as an emoji in a workflow or check name): GitHub rejects
+those with "Description doesn't accept 4-byte Unicode", so they are stripped before truncation. The step summary
 carries the full table. `scripts/ci-gate-verdict.sh` exits 0 for success, 3 for pending and 1
 for failure and for every error.
 

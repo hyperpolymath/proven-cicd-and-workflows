@@ -396,6 +396,53 @@ pubreset; snap 1 "$DONE"; publish HEAD_SHA=abc
 chk "a head SHA that is not 40 hex: exit 1, no POST" "$RC/$NPOSTS" "1/0"
 pubreset
 
+echo "== status descriptions: no 4-byte UTF-8 (GitHub rejects it), at most 140 characters =="
+# The expression is read out of the shipped files, never retyped, so this cannot drift from the code:
+# the publisher's BMP_ONLY and clip() (every publisher/sweep/die status goes through post() -> clip()),
+# and the reusable workflow's early-pending line (it runs before any suite file exists, so it carries its own copy).
+PUBSH="$ROOT/scripts/ci-gate-publish.sh"
+BMP=$(sed -n "s/^BMP_ONLY='\(.*\)'\$/\1/p" "$PUBSH")
+[ -n "$BMP" ] && ok "the publisher defines BMP_ONLY" || bad "no BMP_ONLY line in the publisher"
+EARLYLINE=$(grep -m1 'desc=\$(jq -rn --arg n "\$RUN_NAME"' "$WORKFLOW")
+[ -n "$EARLYLINE" ] && ok "the workflow has its early-pending description line" || bad "no early-pending description line in the workflow"
+case $EARLYLINE in *"$BMP"*) ok "the workflow's early pending carries the publisher's exact expression" ;; *) bad "the workflow's expression differs from BMP_ONLY" ;; esac
+eval "$(grep '^BMP_ONLY=' "$PUBSH")"; eval "$(grep '^clip()' "$PUBSH")"
+early() { RUN_NAME=$1 bash -c "$EARLYLINE"'; printf %s "$desc"'; }
+has4() { printf '%s' "$1" | LC_ALL=C grep -qP '[\xF0-\xF7]'; }   # a 4-byte UTF-8 lead byte
+EMO='🔴 GATE: Invisible Character Detection'; EMO2='🟡 CHECK: Groove Protocol Compliance'
+LONG="$(printf 'x%.0s' $(seq 1 125))🔴🟡🔴🟡🔴🟡🔴🟡🔴🟡tail"
+OLD='"re-run started: " + $n | if length > 140 then .[0:139] + "…" else . end'
+JQVERS=("$(command -v jq)")
+if [ -n "${CI_GATE_JQ_DIR:-}" ]; then for f in "$CI_GATE_JQ_DIR"/jq-*; do [ -x "$f" ] && JQVERS+=("$f"); done
+else echo "  note: CI_GATE_JQ_DIR unset; the expression is exercised on the system jq only ($(jq --version))"; fi
+for J in "${JQVERS[@]}"; do
+  JD=$(mktemp -d "$WORK/jq.XXXXXX"); ln -s "$(readlink -f "$J")" "$JD/jq"; V=$("$JD/jq" --version)
+  PATH_SAVED=$PATH; PATH="$JD:$PATH"
+  for n in "$EMO" "$EMO2"; do
+    d=$(early "$n"); { ! has4 "$d" && [ "$(dlen "$d")" -le 140 ]; } && ok "$V: early pending for '$n' is clean ($d)" || bad "$V: early pending '$d' has 4-byte or is over 140"
+    c=$(clip "run $n"); { ! has4 "$c" && [ "$c" = "$(printf "run %s" "$n" | sed "s/🔴//;s/🟡//")" ]; } && ok "$V: clip() strips and keeps the BMP text" || bad "$V: clip() gave '$c'"
+  done
+  d=$(early "$LONG"); n=$(dlen "$d"); { ! has4 "$d" && [ "$n" -le 140 ]; } && ok "$V: long emoji-bearing name: early pending $n chars, no 4-byte" || bad "$V: long early pending $n chars or 4-byte"
+  c=$(clip "$LONG$LONG"); n=$(dlen "$c"); { ! has4 "$c" && [ "$n" -le 140 ]; } && ok "$V: long emoji-bearing name: clip() $n chars, no 4-byte" || bad "$V: long clip() $n chars or 4-byte"
+  b=$(printf 'é中✓…ok' | jq -rR "$BMP"); [ "$b" = 'é中✓…ok' ] && ok "$V: BMP characters (accents, CJK, ellipsis) survive" || bad "$V: BMP text altered: $b"
+  o=$(jq -rn --arg n "$EMO" "$OLD"); has4 "$o" && ok "$V: negative control: the OLD expression keeps the 4-byte emoji (the test can see the bug)" || bad "$V: negative control failed, old expression output has no 4-byte"
+  PATH=$PATH_SAVED
+done
+
+echo "-- an emoji-named failing required check, end to end through the publisher and the fake gh --"
+EJ='🔴 Test 🟡'
+cp "$SUITE_DIR/profiles/ci-gate/example/repo.json" "$WORK/repo.json.keep"
+jq --arg e "$EJ" '(.checks[] | select(.job == "Test").job) = $e' "$WORK/repo.json.keep" > "$SUITE_DIR/profiles/ci-gate/example/repo.json"
+pubreset; snap 1 "$DONE"
+jq --arg e "$EJ" 'map(if .name == "Test" then .name = $e | .conclusion = "failure" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"
+publish
+chk "emoji-named failing check: a failure POST, exit 1" "$(post_n 1 | cut -f1)/$RC" "failure/1"
+pd=$(post_n 1 | cut -f2)
+case $pd in *"Test"*"failure"*) ok "the posted description still names the check ($pd)" ;; *) bad "posted description lost the check name: '$pd'" ;; esac
+! has4 "$pd" && [ "$(dlen "$pd")" -le 140 ] && ok "the posted description has no 4-byte character and is at most 140 characters" || bad "posted description is unclean: '$pd'"
+cp "$WORK/repo.json.keep" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
+pubreset
+
 echo "== pull_request wait loop: WAIT_SECONDS, POLL_SECONDS =="
 NOQ='map(select(.name != "CI quality"))'   # CI quality produces the required jobs Lint and Test
 cat > "$FAKEGH/bin/clock" <<'CLOCK'

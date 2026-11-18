@@ -61,7 +61,12 @@ published=0
 declare -A completed_keys=() completed_jobs=()
 poll_cost=10
 
-clip() { jq -rn --arg d "$1" 'if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }  # by characters, whatever the locale
+# GitHub rejects a status description holding any 4-byte UTF-8 character (a codepoint above U+FFFF,
+# e.g. the emoji in a workflow name): "Description doesn't accept 4-byte Unicode". post() is the one
+# place every description passes through, so clip() drops those codepoints BEFORE it truncates.
+# Regex-free so it behaves the same on every supported jq (1.6 to 1.8.1); tests/ci-gate.sh runs it.
+BMP_ONLY='explode | map(select(. <= 65535)) | implode'
+clip() { jq -rn --arg d "$1" "\$d | $BMP_ONLY | if length > 140 then .[0:139] + \"…\" else . end"; }  # by characters, whatever the locale
 
 current_matches() { # <state> <clipped description> -> prints "same" only if the combined status holds exactly this for $CONTEXT
   local r
