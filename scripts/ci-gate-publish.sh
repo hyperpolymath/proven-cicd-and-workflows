@@ -27,8 +27,9 @@
 #                    evaluation, or its error handler, wrote a status (the initial pull_request pending is
 #                    not such a write), or a re-run start event wrote its re-run pending;
 #                    `unavailable=true` when the GitHub API could not be used; with it, `pending=rejected`
-#                    or `pending=unconfirmed` when the final pending write failed (GitHub rejected it with a
-#                    real error, or its outcome is unknown and it may have landed)
+#                    or `pending=unconfirmed` or `pending=local-error` when the final pending write failed
+#                    (GitHub rejected it with a real error; or its outcome is unknown, on any attempt, so it
+#                    may have landed; or a local error meant no write was attempted)
 #
 # Reads: TWO per evaluation however many workflows the commit has: the workflow runs of the head SHA
 # (actions/runs?head_sha=) and the latest check runs of the commit (commits/<sha>/check-runs), joined
@@ -113,8 +114,13 @@ unavailable() { # <what failed> — the API is rate-limited or down: pending, ne
     echo "$CONTEXT = pending: $GATE_UNAVAILABLE_DESC"
     exit 75
   fi
-  # rc 1: GitHub rejected the write (a real error). Anything else (75) leaves the outcome unknown: it may have landed.
-  if ((rc == 1)); then
+  # What is known of the write: a LOCAL error (no request was made) is neither rejected nor unconfirmed; rc 1 with
+  # no earlier unknown-outcome attempt is GitHub rejecting it; anything else (75, or any error after an attempt
+  # whose outcome was unknown: the first write may have landed) is unconfirmed.
+  if ((rc == 1 && GATE_POST_LOCAL == 1)); then
+    [[ -z ${GITHUB_OUTPUT:-} ]] || echo "pending=local-error" >> "$GITHUB_OUTPUT"
+    echo "::error::ci-gate: could not write the pending status either ($GATE_API_ERR); a local error, NO WRITE WAS ATTEMPTED and NO FAILURE WAS POSTED (the API was unavailable, not the checks)"
+  elif ((rc == 1 && GATE_API_UNKNOWN == 0)); then
     [[ -z ${GITHUB_OUTPUT:-} ]] || echo "pending=rejected" >> "$GITHUB_OUTPUT"
     echo "::error::ci-gate: could not write the pending status either ($GATE_API_ERR); GitHub rejected it, NO STATUS WAS WRITTEN and NO FAILURE WAS POSTED (the API was unavailable, not the checks)"
   else

@@ -1239,9 +1239,31 @@ chk "a persistently cut-off GET outlasts the budget: unavailable (pending, exit 
 pubreset; snap 1 "$DONE"; echo '200~~{not json' > "$FAKEGH/inject.runs"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
 chk "a COMPLETE but malformed 2xx body stays a real error: no retry (no sleep), a failure status, exit 1" "$(sleeps)/$RC/$(post_n 1 | cut -f1)" "/1/failure"
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/landscut"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
-chk "a status POST that landed but whose 2xx body was cut off: the standing status is rechecked, found, NOT replayed (one POST, no sleep, exit 0)" "$NPOSTS/$(post_n 1 | cut -f1)/$RC/$(sleeps)/$(wc -l < "$FAKEGH/status.reads")" "1/success/0//2"
+chk "a status POST whose 2xx headers arrived but whose body was cut off was acknowledged: success, one POST, no sleep, exit 0, and NO recheck (the dedupe read is the only status read)" "$NPOSTS/$(post_n 1 | cut -f1)/$RC/$(sleeps)/$(wc -l < "$FAKEGH/status.reads")" "1/success/0//1"
+chk "a cut-off 201 is treated as landed with zero further calls: exactly one POST call in all" "$(ncalls 'POST')" 1
 pubreset; snap 1 "$DONE"; echo '201!~~{"id":' > "$FAKEGH/inject.post"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
-chk "a status POST cut off that did NOT land: the recheck says differs and the POST is replayed after 2 s (one status)" "$NPOSTS/$(post_n 1 | cut -f1)/$RC/$(sleeps)/$(wc -l < "$FAKEGH/status.reads")" "1/success/0/2/2"
+chk "a 201 cut off (nothing logged by the fake): still acknowledged, never replayed, no sleep, one POST call, no recheck" "$(ncalls 'POST')/$RC/$(sleeps)/$(wc -l < "$FAKEGH/status.reads")" "1/0//1"
+echo "-- a recheck that cannot tell is not a licence to replay --"
+pubreset; snap 1 "$DONE"; echo '500~~{"message":"Server Error"}' > "$FAKEGH/inject.post"; echo '500~~{"message":"Server Error"}' > "$FAKEGH/inject.always.status"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "a 500 POST whose recheck read also fails: NOT replayed (the success POST is made once), the outcome is unknown (75): only the unavailable pending is written, exit 75" "$(ncalls 'POST')/$NPOSTS/$(post_n 1 | cut -f1)/$RC" "2/1/pending/75"
+chk "that unknown outcome is said so in the log (recheck could not tell, not replayed)" "$(grep -c 'recheck could not tell whether the write landed, so it is not replayed' <<<"$PUBOUT")" 1
+pubreset; snap 1 "$DONE"; echo '500~~{"message":"Server Error"}' > "$FAKEGH/inject.post"; echo '200~~not json' > "$FAKEGH/inject.always.status"; publish CI_GATE_BACKOFF_MAX_SECONDS=300
+chk "a 500 POST whose recheck read is malformed (200 'not json'): not replayed either, exit 75" "$(ncalls 'POST')/$RC" "2/75"
+echo "-- the outcome of a write stays unknown across its retries; a local error is neither rejected nor unconfirmed --"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.runs"; printf '%s\n' '500~~{"message":"Server Error"}' '403~~{"message":"Resource not accessible by integration"}' > "$FAKEGH/inject.post"; publish CI_GATE_BACKOFF_MAX_SECONDS=60
+chk "an unknown POST (500, recheck: not landed) then a real 403: pending=unconfirmed, never rejected; exit 1, nothing posted" "$(grep -c '^pending=unconfirmed$' "$WORK/gho")/$(grep -c '^pending=rejected$' "$WORK/gho")/$RC/$NPOSTS" "1/0/1/0"
+chk "that error log says not confirmed, not 'GitHub rejected it'" "$(grep -c 'pending not confirmed' <<<"$PUBOUT")/$(grep -c 'GitHub rejected it' <<<"$PUBOUT")" "1/0"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.runs"; echo '403~~{"message":"Resource not accessible by integration"}' > "$FAKEGH/inject.post"; publish CI_GATE_BACKOFF_MAX_SECONDS=60
+chk "control: a lone real 403 on the pending write is still pending=rejected" "$(grep -c '^pending=rejected$' "$WORK/gho")/$(grep -c '^pending=unconfirmed$' "$WORK/gho")/$RC" "1/0/1"
+mkdir -p "$WORK/badmk"; printf '#!/bin/sh\nexit 1\n' > "$WORK/badmk/mktemp"; chmod +x "$WORK/badmk/mktemp"
+pubreset; snap 1 "$DONE"; echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.runs"; publish PATH="$WORK/badmk:$FAKEGH/bin:$PATH" CI_GATE_BACKOFF_MAX_SECONDS=60
+chk "mktemp fails on the pending write: pending=local-error (neither rejected nor unconfirmed), no POST was made, exit 1" "$(grep -c '^pending=local-error$' "$WORK/gho")/$(grep -c '^pending=\(rejected\|unconfirmed\)$' "$WORK/gho")/$(ncalls 'POST')/$RC" "1/0/0/1"
+chk "that error log says no write was attempted" "$(grep -c 'NO WRITE WAS ATTEMPTED' <<<"$PUBOUT")" 1
+pubreset; set_pulls "1 2026-11-17T10:03:00Z 13"; set_default 12
+sweep_sha 12 "$DONE"; sweep_sha 13 "$DONE"
+echo "429~Retry-After: 600~$RL" > "$FAKEGH/inject.always.runs"; printf '%s\n' '500~~{"message":"Server Error"}' '403~~{"message":"Resource not accessible by integration"}' > "$FAKEGH/inject.post"
+sweep CI_GATE_BACKOFF_MAX_SECONDS=60
+chk "sweep: an unknown pending write followed by a 403 is worded NOT CONFIRMED, never REJECTED" "$(grep -c 'NOT CONFIRMED' <<<"$SOUT")/$(grep -c 'REJECTED' <<<"$SOUT")/$RC" "1/0/1"
 
 echo "== x-ratelimit-reset is an epoch timestamp: ten digits are not truncated =="
 pubreset; snap 1 "$DONE"; echo "403~x-ratelimit-remaining: 0|x-ratelimit-reset: 1800000040~$RL" > "$FAKEGH/inject.runs"; CLOCK0=1800000000 publish CI_GATE_BACKOFF_MAX_SECONDS=300
