@@ -19,8 +19,11 @@
 #           gate_paginate also returns 75 for an INCOMPLETE snapshot (total_count above the items collected).
 #     Back-off: Retry-After (seconds or an HTTP-date), else x-ratelimit-reset (only when x-ratelimit-remaining
 #     is 0), else 60 s doubling for a secondary rate limit with budget left, else exponential with jitter.
-#     Every 5xx is transient. The total time
-#     slept is bounded by CI_GATE_BACKOFF_MAX_SECONDS (default 300; 0 = never wait). The bound is
+#     Every 5xx is transient, and so is a 2xx whose body was cut off (gh printed 2xx headers but exited
+#     non-zero): a GET is retried within the budget, and a write is an UNKNOWN outcome (recheck first).
+#     A complete but malformed 2xx body is not transient: it is a real error for the caller.
+#     x-ratelimit-reset is an epoch timestamp (ten digits), parsed on its own with room for 12 digits.
+#     The total time slept is bounded by CI_GATE_BACKOFF_MAX_SECONDS (default 300; 0 = never wait). The bound is
 #     kept in GATE_WAITED (or the file GATE_WAITED_FILE, so a sweep's publishers share one bound).
 #     A wait that is already known to overrun the bound is not slept: the call gives up at once.
 #
@@ -33,6 +36,7 @@ GATE_WAITED=${GATE_WAITED:-0}
 if [[ -z ${GATE_WAITED_FILE:-} ]]; then GATE_WAITED_FILE="${TMPDIR:-/tmp}/ci-gate-waited.$$"; rm -f "$GATE_WAITED_FILE"; fi
 GATE_API_RECHECK=()   # set by gate_post only: a command that says whether an unknown-outcome write already landed
 GATE_API_PAGES_MAX=50
+GATE_SNAPSHOT_CAP=1000   # GitHub lists at most 1000 workflow runs per head_sha and the 1000 most recent check suites
 GATE_UNAVAILABLE_DESC='ci-gate: GitHub API rate-limited or unavailable; re-evaluating later'
 
 gate_now() { "${CI_GATE_CLOCK:-date}" +%s; }
@@ -73,22 +77,45 @@ gate__hdr() { # <header file> <name> -> the value of the first such header, case
     { i = index($0, ":"); if (i > 0 && tolower(substr($0, 1, i - 1)) == n) { v = substr($0, i + 1); gsub(/^[ \t]+|[ \t\r]+$/, "", v); print v; exit } }' "$1"
 }
 
-# gate__dec <digits> -> the decimal value of a string of digits: leading zeros stripped (so 000010 is
-# ten, never octal) and bounded to 9 digits (999999999), so a hostile header cannot overflow arithmetic.
+# gate__dec <digits> [max digits, default 9] -> the decimal value of a string of digits: leading zeros
+# stripped (so 000010 is ten, never octal) and saturated at the largest value of max digits (999999999
+# by default), so a hostile header cannot overflow arithmetic. A saturated value is far beyond any
+# back-off budget, which is the safe reading of an absurd number. An epoch timestamp (x-ratelimit-reset)
+# is ten digits today, so it is parsed with a larger max (12) and never truncated.
 gate__dec() {
-  local v=$1
+  local v=$1 max=${2:-9}
   while [[ $v == 0?* ]]; do v=${v#0}; done
-  ((${#v} > 9)) && v=999999999
+  if ((${#v} > max)); then v=$(printf "%${max}s" "" | tr " " 9); fi
   echo $((10#${v:-0}))
 }
 # gate__date_delay <HTTP-date> -> seconds from now until that date (the HTTP-date form of Retry-After);
-# fails for anything that is not an IMF-fixdate such as `Wed, 21 Oct 2015 07:28:00 GMT`.
+# fails for anything that is not one of the three forms RFC 9110 section 5.6.7 has recipients accept,
+# all read in the C locale:
+#   IMF-fixdate  `Sun, 06 Nov 1994 08:49:37 GMT`
+#   RFC 850      `Sunday, 06-Nov-94 08:49:37 GMT` (two-digit year: a year that would be more than 50
+#                years ahead of now is read as the most recent past year with those last two digits)
+#   asctime      `Sun Nov  6 08:49:37 1994` (the day is space-padded)
 gate__date_delay() {
-  local d=$1 t
-  [[ $d =~ ^[A-Za-z]{3},\ [0-9]{2}\ [A-Za-z]{3}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] || return 1
-  t=$(date -u -d "$d" +%s 2> /dev/null) || return 1
+  local d=$1 t now cy y dd mon yy tm
+  now=$(gate_now) && [[ $now =~ ^[0-9]+$ ]] || return 1
+  if [[ $d =~ ^[A-Za-z]{3},\ [0-9]{2}\ [A-Za-z]{3}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]]; then
+    t=$(LC_ALL=C date -u -d "$d" +%s 2> /dev/null) || return 1
+  elif [[ $d =~ ^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\ ([0-9]{2})-([A-Za-z]{3})-([0-9]{2})\ ([0-9]{2}:[0-9]{2}:[0-9]{2})\ GMT$ ]]; then
+    dd=${BASH_REMATCH[2]}; mon=${BASH_REMATCH[3]}; yy=${BASH_REMATCH[4]}; tm=${BASH_REMATCH[5]}
+    cy=$(LC_ALL=C date -u -d "@$now" +%Y 2> /dev/null) && [[ $cy =~ ^[0-9]{4}$ ]] || return 1
+    y=$((cy / 100 * 100 + 10#$yy))
+    t=$(LC_ALL=C date -u -d "$dd $mon $y $tm GMT" +%s 2> /dev/null) || return 1
+    if [[ $t =~ ^-?[0-9]+$ ]] && ((t > now + 1577880000)); then   # more than 50 years ahead: the past century
+      t=$(LC_ALL=C date -u -d "$dd $mon $((y - 100)) $tm GMT" +%s 2> /dev/null) || return 1
+    fi
+  elif [[ $d =~ ^[A-Za-z]{3}\ ([A-Za-z]{3})\ ([\ 0-9][0-9])\ ([0-9]{2}:[0-9]{2}:[0-9]{2})\ ([0-9]{4})$ ]]; then
+    mon=${BASH_REMATCH[1]}; dd=${BASH_REMATCH[2]# }; tm=${BASH_REMATCH[3]}; y=${BASH_REMATCH[4]}
+    t=$(LC_ALL=C date -u -d "$dd $mon $y $tm GMT" +%s 2> /dev/null) || return 1
+  else
+    return 1
+  fi
   [[ $t =~ ^-?[0-9]+$ ]] || return 1
-  echo $((t - $(gate_now)))
+  echo $((t - now))
 }
 
 gate_api() { # <METHOD> <endpoint> <outfile> [gh api args...]
@@ -115,6 +142,7 @@ gate_api() { # <METHOD> <endpoint> <outfile> [gh api args...]
     case $status in
       429) kind=limit ;;
       403) if grep -qi 'rate limit' <<< "$text" || [[ $left == 0 ]]; then kind=limit; fi ;;
+      2[0-9][0-9]) kind=transient ;;   # 2xx headers but a non-zero exit: the body was cut off (unknown outcome of a write)
       5[0-9][0-9]) kind=transient ;;
       '') if ((rc == 4)); then kind=error; else kind=transient; fi ;;   # gh exit 4: no credentials, a real error
     esac
@@ -144,7 +172,7 @@ gate_api() { # <METHOD> <endpoint> <outfile> [gh api args...]
     elif [[ -n $ra ]] && delay=$(gate__date_delay "$ra"); then
       :
     elif [[ $kind == limit && $left == 0 && $reset =~ ^[0-9]+$ ]]; then
-      delay=$(($(gate__dec "$reset") - $(gate_now) + 1))
+      delay=$(($(gate__dec "$reset" 12) - $(gate_now) + 1))
     elif [[ $kind == limit && $left != 0 ]]; then
       delay=$((60 << (attempt > 4 ? 4 : attempt)))
     else
@@ -178,9 +206,15 @@ gate_api() { # <METHOD> <endpoint> <outfile> [gh api args...]
 # (GitHub caps `actions/runs?head_sha=` at 1000 results and the commit check-runs listing at the 1000
 # most recent check suites) the snapshot is INCOMPLETE and the result is 75 (unavailable, so pending),
 # never a verdict: omitted data is never read as a missing check.
+# SNAPSHOT listings (the optional 4th argument `runs` or `checks`, set by gate_read_runs and gate_read_checks)
+# are held to more: every page must report a numeric `total_count` (a missing or non-numeric one is an unusable
+# body, error 1, never read as 0), and because GitHub does not document whether `total_count` counts what lies
+# beyond its caps, the snapshot is also INCOMPLETE (75) when it holds 1000 or more workflow runs, or its check
+# runs span 1000 or more distinct `check_suite.id` values (the listing covers only the 1000 most recent check
+# suites). Both rules are in addition to the total_count comparison, not instead of it.
 # Returns gate_api's codes.
 gate_paginate() {
-  local ep=$1 items=$2 out=$3 page=1 sep='?' key='' mode=any total=0 t seen
+  local ep=$1 items=$2 out=$3 snap=${4:-} page=1 sep='?' key='' mode=any total=0 t seen suites
   [[ $ep == *\?* ]] && sep='&'
   if [[ $items == '.[]' ]]; then mode=array
   elif [[ $items =~ ^\.([A-Za-z_]+)\[\]$ ]]; then mode=object; key=${BASH_REMATCH[1]}; fi
@@ -192,6 +226,10 @@ gate_paginate() {
       "$out.page" > /dev/null 2>&1 \
       || ! jq -c "$items" "$out.page" >> "$out.items" 2> /dev/null; then
       GATE_API_ERR="unusable response body from GET ${ep%%\?*}"
+      return 1
+    fi
+    if [[ -n $snap ]] && ! jq -e 'type == "object" and (.total_count | type) == "number"' "$out.page" > /dev/null 2>&1; then
+      GATE_API_ERR="unusable response body from GET ${ep%%\?*}: no numeric total_count"
       return 1
     fi
     t=$(jq -r 'if type == "object" and (.total_count | type) == "number" then .total_count else 0 end' "$out.page" 2> /dev/null) || t=0
@@ -209,6 +247,18 @@ gate_paginate() {
     GATE_API_ERR="snapshot incomplete: GET ${ep%%\?*} reports total_count $total but only $seen items were returned (GitHub caps this listing); omitted data is not a missing check"
     return 75
   fi
+  if [[ $snap == runs ]] && ((seen >= GATE_SNAPSHOT_CAP)); then
+    GATE_API_ERR="snapshot incomplete: GET ${ep%%\?*} returned $seen workflow runs, at or over the cap of $GATE_SNAPSHOT_CAP at which GitHub truncates this listing (its total_count semantics beyond the cap are undocumented); omitted data is not a missing check"
+    return 75
+  fi
+  if [[ $snap == checks ]]; then
+    suites=$(jq -s '[.[] | .check_suite.id? // empty] | unique | length' "$out.items" 2> /dev/null) || suites=0
+    [[ $suites =~ ^[0-9]+$ ]] || suites=0
+    if ((suites >= GATE_SNAPSHOT_CAP)); then
+      GATE_API_ERR="snapshot incomplete: GET ${ep%%\?*} spans $suites distinct check suites, at or over the cap of $GATE_SNAPSHOT_CAP most recent suites GitHub lists (its total_count semantics beyond the cap are undocumented); omitted data is not a missing check"
+      return 75
+    fi
+  fi
   jq -s '.' "$out.items" > "$out" || { GATE_API_ERR="unusable items from GET ${ep%%\?*}"; return 1; }
   rm -f "$out.items" "$out.page" "$out.page.hdr" "$out.page.err" "$out.page.raw"
 }
@@ -216,11 +266,11 @@ gate_paginate() {
 # The two reads of one evaluation, however many workflows the commit has.
 gate_read_runs() { # <repo> <sha> <outfile> — every workflow run of the head SHA (all pages)
   local repo=$1 sha=$2 out=$3
-  gate_paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" '.workflow_runs[]' "$out"
+  gate_paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" '.workflow_runs[]' "$out" runs
 }
 gate_read_checks() { # <repo> <sha> <outfile> — every latest check run of the commit (all pages)
   local repo=$1 sha=$2 out=$3
-  gate_paginate "repos/$repo/commits/$sha/check-runs?filter=latest&per_page=100" '.check_runs[]' "$out"
+  gate_paginate "repos/$repo/commits/$sha/check-runs?filter=latest&per_page=100" '.check_runs[]' "$out" checks
 }
 # gate_read_snapshot <repo> <sha> <dir> <join.jq>
 #   -> <dir>/workflow-runs.json, <dir>/check-runs.json and <dir>/jobs.json (the check runs joined to

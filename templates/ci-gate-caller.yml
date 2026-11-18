@@ -25,14 +25,18 @@
 # The sweep reads open pull requests, so the caller must grant `pull-requests: read`; the gate reads check
 # runs, so it must also grant `checks: read`.
 #
-# It fires when a workflow run COMPLETES, and when a workflow run is REQUESTED. The `in_progress` start
-# events were removed (they multiplied one push into one evaluation per workflow and exhausted the API
-# quota). A `requested` event is let through by the job `if:` below only for a re-run
-# (`run_attempt > 1`); a first attempt starts no job and costs no runner and no API call.
-# A re-run therefore writes one deduplicated `pending` at its start (nothing is evaluated), and the
-# completion of the re-run then decides (last-writer-wins; see docs/CI-GATE.adoc, "Residual limit").
-# Callers pinned before this change must also grant `checks: read` (the gate now reads check runs), drop
-# `in_progress` from `types` and add `requested` with the `if:` below.
+# It fires when a workflow run COMPLETES, and when a workflow run STARTS (`requested` or `in_progress`).
+# Which start event GitHub sends for a RE-RUN is UNCONFIRMED (GitHub documents `requested` as not emitted
+# for a re-run, so `in_progress` is expected to do the work and `requested` is a harmless extra), which
+# is why both are subscribed. The start events of FIRST attempts must not cost an evaluation each (that
+# once exhausted the API quota), so the job `if:` below lets a start event through only for a re-run
+# (`run_attempt > 1`): first attempts start no job and cost no runner and no API call. (A skipped
+# job still creates a workflow run record; only the runner and the API calls are saved.)
+# A re-run therefore writes one deduplicated `pending` at its start (nothing is evaluated; the second
+# start event of the same attempt only reads the standing status), and the completion of the re-run
+# then decides (last-writer-wins; see docs/CI-GATE.adoc, "Re-runs" and "Residual limit").
+# Callers pinned before this change must also grant `checks: read` (the gate now reads check runs), and
+# set `types` to `[completed, requested, in_progress]` with the `if:` below.
 #
 # The required-check list is NOT in this repository: it lives in
 # proven-cicd-and-workflows/profiles/ci-gate/<owner>/<repo>.json at the pinned
@@ -61,7 +65,7 @@ on:
   pull_request:
   workflow_run:
     workflows: ["**", "!CI gate"]
-    types: [completed, requested]
+    types: [completed, requested, in_progress]
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch: {}
@@ -75,7 +79,7 @@ permissions:
 
 jobs:
   gate:
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || (github.event.workflow_run.name != 'CI gate' && (github.event.action != 'requested' || github.event.workflow_run.run_attempt > 1)))
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || (github.event.workflow_run.name != 'CI gate' && (github.event.action == 'completed' || ((github.event.action == 'requested' || github.event.action == 'in_progress') && github.event.workflow_run.run_attempt > 1))))
     uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@__CICD_SUITE_SHA__ # cicd-suite ci-gate
     with:
       context: "CI/gate"

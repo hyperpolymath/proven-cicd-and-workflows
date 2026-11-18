@@ -24,9 +24,11 @@
 #  3. Runs the publisher for each SHA (no pending write first: only a pull_request start writes one).
 #     A failure on one SHA does not stop the others. The exception is an unavailable API (the
 #     publisher exits 75 after writing pending, or reports unavailable=true in its own GITHUB_OUTPUT file
-#     even though its pending write failed and it exited 1): the remaining SHAs are then NOT evaluated, a
-#     loud ::error:: names how many and whether the pending was written or its write failed, and the sweep
-#     ends red. No failure status is ever posted for it. The same stop applies to a discovery read (the
+#     even though its pending write failed and it exited 1, or its post-write check was unavailable): the
+#     remaining SHAs are then NOT evaluated, a loud ::error:: names how many and what is known of the pending
+#     write (written; rejected by GitHub; NOT CONFIRMED, it may have landed, unless the publisher established
+#     that GitHub rejected it; or the posted status stands), and the sweep ends red. The table headline counts
+#     the heads ATTEMPTED, not the planned total. No failure status is ever posted for it. The same stop applies to a discovery read (the
 #     repository, the default branch, the pull request listing) that meets an outage: it ends the sweep
 #     at once, before any further API call or publisher run, naming the step and the heads not evaluated.
 #     Other discovery errors keep the partial discovery.
@@ -135,7 +137,7 @@ fi
 echo "ci-gate-sweep: $REPO: evaluating $(grep -c . "$WORK/todo.tsv" || true) of $total distinct head SHAs"
 
 # 3. one publisher run per SHA; a failure never stops the others
-n=0; unavail_at=0; pend_ok=1
+n=0; unavail_at=0; pend_ok=written; pub_state=
 while IFS=$'\t' read -r _ sha src; do
   n=$((n + 1))
   dir="$WORK/sha-$n"; mkdir -p "$dir"
@@ -154,9 +156,13 @@ while IFS=$'\t' read -r _ sha src; do
     # the API was unavailable. rc 75: the publisher wrote pending (never failure). rc 1 with the flag: it could
     # not even write that pending. Either way going on would only meet the outage again for every other head,
     # so stop, keep the sweep red, and say loudly how many heads this sweep did not evaluate.
-    state=unavailable
-    if (( rc == 75 )); then pend_ok=1; desc='GitHub API rate-limited or unavailable; pending written, sweep stopped'
-    else pend_ok=0; desc='GitHub API rate-limited or unavailable; the pending write FAILED (no status written), sweep stopped'; fi
+    pub_state=$state; state=unavailable
+    # What is known of the pending write: written (rc 75), rejected by GitHub (publisher said so), verification
+    # unavailable after a status was posted (that status stands), or not confirmed (it may have landed).
+    if (( rc == 75 )); then pend_ok=written; desc='GitHub API rate-limited or unavailable; pending written, sweep stopped'
+    elif grep -qx 'pending=rejected' "$dir/gh-output"; then pend_ok=rejected; desc='GitHub API rate-limited or unavailable; GitHub rejected the pending write (no status written), sweep stopped'
+    elif grep -qx 'pending=unconfirmed' "$dir/gh-output"; then pend_ok=unconfirmed; desc='GitHub API rate-limited or unavailable; pending not confirmed (it may have landed), sweep stopped'
+    else pend_ok=verify; desc="GitHub API rate-limited or unavailable; the posted ${pub_state:-status} stands (post-write check unavailable), sweep stopped"; fi
     errors=$((errors + 1)); unavail_at=$n
     printf '%s\t%s\t%s\t%s\n' "$sha" "$src" "$state" "$desc" >> "$rows"
     break
@@ -172,12 +178,18 @@ while IFS=$'\t' read -r _ sha src; do
 done < "$WORK/todo.tsv"
 if (( unavail_at > 0 )); then
   left=$(( $(grep -c . "$WORK/todo.tsv" || true) - unavail_at ))
-  echo "::error::ci-gate-sweep: the GitHub API was rate-limited or unavailable; the sweep stopped at head $unavail_at and $left further head(s) were NOT evaluated. $( ((pend_ok)) && echo 'The pending status was written for that head.' || echo 'The pending write for that head FAILED: no status was written there.') No failure status was posted for this."
+  case $pend_ok in
+    written) pend_note='The pending status was written for that head.' ;;
+    rejected) pend_note='The pending write for that head was REJECTED by GitHub: no status was written there.' ;;
+    unconfirmed) pend_note='The pending write for that head is NOT CONFIRMED (its outcome is unknown and it may have landed).' ;;
+    *) pend_note="The status already posted for that head stands (${pub_state:-unknown}); the post-write check could not be made." ;;
+  esac
+  echo "::error::ci-gate-sweep: the GitHub API was rate-limited or unavailable; the sweep stopped at head $unavail_at and $left further head(s) were NOT evaluated. $pend_note No failure status was posted for this."
   printf '%s\t%s\tskipped\t%s further head(s) not evaluated (API unavailable)\n' '-' 'API unavailable' "$left" >> "$rows"
 fi
 
 # 4. the table, and the exit code
-write_table "$(grep -c . "$WORK/todo.tsv" || true) of $total distinct head SHAs evaluated (cap $MAX). Profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`."
+write_table "$n of $total distinct head SHAs attempted (cap $MAX). Profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`."
 if (( errors > 0 )); then
   echo "::error::ci-gate-sweep: $errors head(s) ended in failure or error; see the table in the step summary"
   exit 1

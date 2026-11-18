@@ -21,8 +21,11 @@
 #
 # WHY workflow_run: GitHub runs a workflow_run workflow from the DEFAULT branch, so a pull
 # request cannot edit the caller, its pin, or its list. Each COMPLETED workflow re-evaluates the head
-# commit; there is no polling and no wait. A RE-RUN also fires `requested` (the caller
-# filters first attempts out at its job `if:`): that writes one deduplicated pending and evaluates nothing. The pull_request start (gate-pr) evaluates once and exits.
+# commit; there is no polling and no wait. A RE-RUN is announced by a start event, `requested`
+# or `in_progress` (GitHub is documented not to emit `requested` for a re-run, and which start event it does
+# send is unconfirmed, so the caller subscribes to both and filters first attempts out at its job `if:`):
+# either one writes one deduplicated pending and evaluates nothing. The pull_request start (gate-pr)
+# evaluates once and exits.
 #
 # SAFETY — this workflow never checks out, builds or executes code from the consumer
 # repository or the pull request (the pwn-request hazard of workflow_run). It reads only
@@ -101,7 +104,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       EVENT_NAME: ${{ github.event_name }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
-      # `requested` (a re-run starting) or `completed`; empty for every other event
+      # `requested` or `in_progress` (a re-run starting) or `completed`; empty for every other event
       WORKFLOW_RUN_ACTION: ${{ github.event_name == 'workflow_run' && github.event.action || '' }}
       REPO: ${{ github.repository }}
       CONTEXT: ${{ inputs.context }}
@@ -207,7 +210,7 @@ jobs:
               *) echo "::error::could not read $1 from $WF_REPO@$WF_SHA ($GATE_API_ERR)"; return 1 ;;
             esac
           }
-          if [[ "${WORKFLOW_RUN_ACTION:-}" == requested ]]; then
+          if [[ "${WORKFLOW_RUN_ACTION:-}" == requested || "${WORKFLOW_RUN_ACTION:-}" == in_progress ]]; then
             # a re-run starting: the publisher only writes one pending, so it is the only file needed
             fetch scripts/ci-gate-publish.sh || exit 1
             echo "re-run start: only scripts/ci-gate-publish.sh was read"
@@ -225,7 +228,7 @@ jobs:
             || { echo "::error::no readable CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
           echo "Profile for $REPO read from $WF_REPO@$WF_SHA"
       - name: Validate the profile
-        if: ${{ steps.read.outputs.unavailable != 'true' && env.WORKFLOW_RUN_ACTION != 'requested' }}
+        if: ${{ steps.read.outputs.unavailable != 'true' && env.WORKFLOW_RUN_ACTION != 'requested' && env.WORKFLOW_RUN_ACTION != 'in_progress' }}
         run: bash "$suite/scripts/validate-ci-gate-profile.sh" "$suite/profiles/ci-gate/$REPO.json" "$REPO" "$CONTEXT"
       - name: Evaluate the commit and publish the status
         id: publish
@@ -258,7 +261,7 @@ jobs:
         if: ${{ failure() && steps.publish.outputs.published != 'true' && steps.publish.outputs.unavailable != 'true' && steps.read.outputs.unavailable != 'true' && steps.bootstrap.outputs.unavailable != 'true' }}
         # Only for a real fail-closed cause (a missing or invalid profile, an input error, a real API
         # error): never for an unavailable API, which the steps above publish as pending, and never for a
-        # `requested` event (a re-run starting writes only a pending; the completion decides).
+        # `requested` or `in_progress` event (a re-run starting writes only a pending; the completion decides).
         # When the library was not read (a real error in the first step: `suite` is unset) the failure is
         # written by one small independent request with a fixed ASCII description, so a standing success
         # cannot survive a real failure.
@@ -266,7 +269,7 @@ jobs:
           set -uo pipefail
           ctx_re='^[A-Za-z0-9]([A-Za-z0-9._/-]| [A-Za-z0-9._/-]){0,127}$'
           [[ ( $EVENT_NAME == workflow_run || $EVENT_NAME == pull_request ) && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && ${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re ]] || exit 0
-          [[ "${WORKFLOW_RUN_ACTION:-}" != requested ]] || exit 0
+          [[ "${WORKFLOW_RUN_ACTION:-}" != requested && "${WORKFLOW_RUN_ACTION:-}" != in_progress ]] || exit 0
           desc='ci-gate could not produce a verdict (profile or input error); see the run'
           if [[ -f "${suite:-/nonexistent}/scripts/ci-gate-lib.sh" ]]; then
             # shellcheck source=/dev/null
