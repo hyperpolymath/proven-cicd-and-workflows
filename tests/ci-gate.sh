@@ -250,6 +250,8 @@ if [[ " $* " == *" -X POST "* ]]; then
   state=''; desc=''; psha=''; ctx=''
   for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; context=*) ctx=${a#context=} ;; repos/*/statuses/*) psha=${a##*/} ;; esac; done
   [[ ! -f $D/failpost ]] || { echo "gh: HTTP 500 (post)" >&2; exit 1; }
+  # GitHub refuses a status description with any 4-byte UTF-8 character; so does this fake.
+  if printf '%s' "$desc" | LC_ALL=C grep -q $'[\xF0-\xF4]'; then echo "gh: Validation failed: Description doesn't accept 4-byte Unicode (Validation Failed)" >&2; exit 1; fi
   # a newer evaluator's write that lands just before this one (deterministic pause control)
   if [[ -f $D/prepost ]]; then
     cat "$D/prepost" >> "$D/posts.log"
@@ -377,6 +379,21 @@ publish
 chk "stale failure not written when the runs moved; re-evaluated: failure on settled data" "$(post_n 1 | cut -f1)" failure
 chk "failure verdict: exit 1" "$RC" 1
 chk "failure verdict: names the job" "$(post_n 1 | cut -f2 | grep -c 'Test (failure)')" 1
+echo "-- a required job name with a 4-byte character (GitHub refuses those in a status description) --"
+cp "$SUITE_DIR/profiles/ci-gate/example/repo.json" "$WORK/repo.profile.bak"
+jq -c '.checks |= map(if .job == "Test" then .job = "🔴 Test" else . end)' "$WORK/repo.profile.bak" > "$SUITE_DIR/profiles/ci-gate/example/repo.json"
+pubreset; snap 1 "$DONE"
+jq 'map(if .name == "Test" then .name = "🔴 Test" | .conclusion = "failure" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"
+publish
+chk "emoji job failing: the failure verdict is published, not refused" "$(post_n 1 | cut -f1)/$NPOSTS" "failure/1"
+chk "emoji job failing: exit 1 (the verdict), not a publish error" "$RC/$(grep -c 'could not publish' <<<"$PUBOUT")" "1/0"
+chk "emoji job failing: the description still names the job" "$(post_n 1 | cut -f2 | grep -c 'Test (failure)')" 1
+chk "emoji job failing: no 4-byte character reaches the description" "$(post_n 1 | cut -f2 | LC_ALL=C grep -c $'[\xF0-\xF4]')" 0
+pubreset; snap 1 "map(if .id == 12 then .status = \"in_progress\" else . end)"
+jq 'map(if .name == "Test" then .name = "🔴 Test" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"
+publish
+chk "emoji job pending: the pending verdict is published, not refused" "$(post_n 1 | cut -f1)/$(grep -c 'could not publish' <<<"$PUBOUT")" "pending/0"
+cp "$WORK/repo.profile.bak" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
 echo "-- errors fail closed --"
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.1"; publish
 chk "gh error on the first runs fetch: a failure POST" "$(post_n 1 | cut -f1)" failure

@@ -61,7 +61,10 @@ published=0
 declare -A completed_keys=() completed_jobs=()
 poll_cost=10
 
-clip() { jq -rn --arg d "$1" 'if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }  # by characters, whatever the locale
+# GitHub's statuses API refuses a description that holds any 4-byte UTF-8 character ("Description
+# doesn't accept 4-byte Unicode"), and required job names can carry one (e.g. "🔴 GATE: ..."), so
+# every code point above U+FFFF is dropped before the 140-character clip. Every POST goes through here.
+clip() { jq -rn --arg d "$1" '($d | explode | map(select(. < 65536)) | implode | sub("^ +"; "") | gsub("  +"; " ")) as $s | if ($s | length) > 140 then $s[0:139] + "…" else $s end'; }  # by characters, whatever the locale
 
 current_matches() { # <state> <clipped description> -> prints "same" only if the combined status holds exactly this for $CONTEXT
   local r
