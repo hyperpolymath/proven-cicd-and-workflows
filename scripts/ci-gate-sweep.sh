@@ -161,6 +161,7 @@ while IFS=$'\t' read -r _ sha src; do
     # unavailable after a status was posted (that status stands), or not confirmed (it may have landed).
     if (( rc == 75 )); then pend_ok=written; desc='GitHub API rate-limited or unavailable; pending written, sweep stopped'
     elif grep -qx 'pending=rejected' "$dir/gh-output"; then pend_ok=rejected; desc='GitHub API rate-limited or unavailable; GitHub rejected the pending write (no status written), sweep stopped'
+    elif grep -qx 'pending=local-error' "$dir/gh-output"; then pend_ok=local; desc='GitHub API rate-limited or unavailable; no pending write was attempted (local error), sweep stopped'
     elif grep -qx 'pending=unconfirmed' "$dir/gh-output"; then pend_ok=unconfirmed; desc='GitHub API rate-limited or unavailable; pending not confirmed (it may have landed), sweep stopped'
     else pend_ok=verify; desc="GitHub API rate-limited or unavailable; the posted ${pub_state:-status} stands (post-write check unavailable), sweep stopped"; fi
     errors=$((errors + 1)); unavail_at=$n
@@ -181,6 +182,7 @@ if (( unavail_at > 0 )); then
   case $pend_ok in
     written) pend_note='The pending status was written for that head.' ;;
     rejected) pend_note='The pending write for that head was REJECTED by GitHub: no status was written there.' ;;
+    local) pend_note='No pending write was attempted for that head (a local error): no status was written there.' ;;
     unconfirmed) pend_note='The pending write for that head is NOT CONFIRMED (its outcome is unknown and it may have landed).' ;;
     *) pend_note="The status already posted for that head stands (${pub_state:-unknown}); the post-write check could not be made." ;;
   esac

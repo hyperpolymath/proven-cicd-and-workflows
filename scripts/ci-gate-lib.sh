@@ -30,11 +30,14 @@
 # Test hooks: CI_GATE_SLEEP (the sleep command), CI_GATE_CLOCK (a command that prints epoch
 # seconds when called with +%s, default `date`), CI_GATE_JITTER=0 (no jitter).
 
+# shellcheck disable=SC2034  # GATE_API_UNKNOWN and GATE_POST_LOCAL are read by the scripts that source this library
 GATE_API_ERR=''
 GATE_WAITED=${GATE_WAITED:-0}
 # The back-off budget lives in a file so that command substitutions (which run in subshells) share it.
 if [[ -z ${GATE_WAITED_FILE:-} ]]; then GATE_WAITED_FILE="${TMPDIR:-/tmp}/ci-gate-waited.$$"; rm -f "$GATE_WAITED_FILE"; fi
-GATE_API_RECHECK=()   # set by gate_post only: a command that says whether an unknown-outcome write already landed
+GATE_API_RECHECK=()   # set by gate_post only: a command that says whether an unknown-outcome write already landed (exit 0 landed, 1 not landed, 2 cannot tell)
+GATE_API_UNKNOWN=0    # sticky for one gate_post: some attempt of the write had an UNKNOWN outcome, so it may have landed
+GATE_POST_LOCAL=0     # set by gate_post: it failed on a LOCAL error (no temporary file, unusable description) before any request
 GATE_API_PAGES_MAX=50
 GATE_SNAPSHOT_CAP=1000   # GitHub lists at most 1000 workflow runs per head_sha and the 1000 most recent check suites
 GATE_UNAVAILABLE_DESC='ci-gate: GitHub API rate-limited or unavailable; re-evaluating later'
@@ -121,7 +124,7 @@ gate__date_delay() {
 gate_api() { # <METHOD> <endpoint> <outfile> [gh api args...]
   local method=$1 ep=$2 out=$3
   shift 3
-  local max=${CI_GATE_BACKOFF_MAX_SECONDS:-300} attempt=0 rc status kind text ra reset left delay budget known
+  local max=${CI_GATE_BACKOFF_MAX_SECONDS:-300} attempt=0 rc rr err0 status kind text ra reset left delay budget known
   [[ $max =~ ^[0-9]+$ ]] || max=300
   [[ ${GATE_API_NOWAIT:-} == 1 ]] && max=0   # a no-wait lookup: one attempt, never a back-off
   while :; do
@@ -132,6 +135,13 @@ gate_api() { # <METHOD> <endpoint> <outfile> [gh api args...]
     awk -v h="$out.hdr" -v b="$out" 'BEGIN { inh = 1; printf "" > h; printf "" > b }
       { sub(/\r$/, ""); if (inh) { if ($0 == "") { inh = 0; next } print > h } else print > b }' "$out.raw"
     status=$(sed -n '1s/^HTTP[^ ]* \([0-9][0-9]*\).*/\1/p' "$out.hdr")
+    # A WRITE whose 2xx headers arrived was acknowledged by GitHub, whatever happened to the body after
+    # that: it landed, so it is neither rechecked nor replayed. (A cut-off GET is retried, below.)
+    if ((rc != 0)) && [[ $status =~ ^2 && $method != GET ]]; then
+      GATE_API_ERR="HTTP $status on $method ${ep%%\?*}: the body was cut off after 2xx headers; GitHub acknowledged the write, not replayed"
+      rm -f "$out.raw"
+      return 0
+    fi
     if ((rc == 0)) && [[ $status =~ ^2 ]]; then
       rm -f "$out.raw"
       return 0
@@ -155,11 +165,24 @@ gate_api() { # <METHOD> <endpoint> <outfile> [gh api args...]
     # A 5xx or no answer leaves the OUTCOME of a write unknown. A caller may name a recheck
     # (GATE_API_RECHECK, a command and its arguments): if it says the write is already in place, the
     # request is done and is not replayed. An explicit rate-limit rejection (429, 403) is a known
-    # non-write and is never rechecked.
-    if [[ $kind == transient && ${#GATE_API_RECHECK[@]} -gt 0 ]] && "${GATE_API_RECHECK[@]}"; then
-      GATE_API_ERR="$GATE_API_ERR; a recheck found the write already in place, not replayed"
-      rm -f "$out.raw"
-      return 0
+    # non-write and is never rechecked. A write that ends unknown sets GATE_API_UNKNOWN for good (a later
+    # error of the same write must not be read as the first write having been rejected). A recheck that
+    # cannot tell (exit 2: its own read failed or came back malformed) is not a licence to replay: the
+    # outcome stays unknown and the call returns 75.
+    if [[ $kind == transient && $method != GET ]]; then GATE_API_UNKNOWN=1; fi
+    if [[ $kind == transient && ${#GATE_API_RECHECK[@]} -gt 0 ]]; then
+      err0=$GATE_API_ERR
+      "${GATE_API_RECHECK[@]}"; rr=$?
+      GATE_API_ERR=$err0   # the recheck is itself a gate_api call and rewrote it
+      if ((rr == 0)); then
+        GATE_API_ERR="$GATE_API_ERR; a recheck found the write already in place, not replayed"
+        rm -f "$out.raw"
+        return 0
+      elif ((rr == 2)); then
+        GATE_API_ERR="$GATE_API_ERR; the recheck could not tell whether the write landed, so it is not replayed (outcome unknown)"
+        rm -f "$out.raw"
+        return 75
+      fi
     fi
     # How long to wait. Retry-After (seconds or an HTTP-date) always wins. A primary rate limit
     # (x-ratelimit-remaining 0) waits until x-ratelimit-reset. A secondary limit (429 or a 403 that says
@@ -300,25 +323,30 @@ gate_fetch() {
 
 # gate_status_matches <repo> <sha> <context> <state> <description-already-sanitised>
 # Prints "same" only if the combined status of the commit already holds exactly this for the context.
-# A failed or malformed read prints "differs": a write is never skipped on doubt.
+# Prints "differs" for a valid read that holds no such status, and "unknown" when the read itself failed
+# or came back malformed. The dedupe treats unknown like differs (a write is never skipped on doubt); the
+# recheck of an unknown-outcome write must NOT (see gate__landed).
 gate_status_matches() {
   local repo=$1 sha=$2 ctx=$3 state=$4 desc=$5 f r
-  f=$(mktemp) || { echo differs; return 0; }
+  f=$(mktemp) || { echo unknown; return 0; }
   if gate_paginate "repos/$repo/commits/$sha/status?per_page=100" '.statuses[]' "$f"; then
     r=$(jq -r --arg c "$ctx" --arg s "$state" --arg d "$desc" \
-      'if type == "array" and any(.[]; type == "object" and .context == $c and .state == $s and (.description // "") == $d) then "same" else "differs" end' "$f" 2> /dev/null) || r=differs
+      'if type == "array" then (if any(.[]; type == "object" and .context == $c and .state == $s and (.description // "") == $d) then "same" else "differs" end) else "unknown" end' "$f" 2> /dev/null) || r=unknown
   else
-    r=differs
+    r=unknown
   fi
   rm -f "$f" "$f".*
   echo "$r"
 }
 
-# gate__landed <gate_status_matches args> — 0 when the standing status already is the one asked for.
+# gate__landed <gate_status_matches args> — 0 when the standing status already is the one asked for, 1
+# when a valid read says it is not, 2 when the read failed or was malformed (cannot tell: no replay).
 # One attempt, no back-off. It runs with the recheck hook cleared so that it cannot recurse into itself.
 gate__landed() {
   local -a GATE_API_RECHECK=()
-  [[ $(GATE_API_NOWAIT=1 gate_status_matches "$@") == same ]]
+  local r
+  r=$(GATE_API_NOWAIT=1 gate_status_matches "$@")
+  case $r in same) return 0 ;; differs) return 1 ;; *) return 2 ;; esac
 }
 
 # gate_post <repo> <sha> <context> <state> <description> <target_url>
@@ -330,7 +358,8 @@ gate__landed() {
 # GATE_POST_DEDUPE_NOWAIT=1 makes the first (dedupe) lookup a single attempt with no back-off.
 gate_post() {
   local repo=$1 sha=$2 ctx=$3 state=$4 target=$6 desc f rc same
-  desc=$(gate_sanitize "$5") || { GATE_API_ERR='description could not be sanitised'; return 1; }
+  GATE_API_UNKNOWN=0; GATE_POST_LOCAL=0
+  desc=$(gate_sanitize "$5") || { GATE_API_ERR='description could not be sanitised'; GATE_POST_LOCAL=1; return 1; }
   if [[ ${GATE_POST_DEDUPE_NOWAIT:-} == 1 ]]; then
     same=$(GATE_API_NOWAIT=1 gate_status_matches "$repo" "$sha" "$ctx" "$state" "$desc")
   else
@@ -340,7 +369,7 @@ gate_post() {
     echo "ci-gate: status already $state with this description on $sha; write skipped (1000-status cap)"
     return 0
   fi
-  f=$(mktemp) || { GATE_API_ERR='no temporary file'; return 1; }
+  f=$(mktemp) || { GATE_API_ERR='no temporary file'; GATE_POST_LOCAL=1; return 1; }
   GATE_API_RECHECK=(gate__landed "$repo" "$sha" "$ctx" "$state" "$desc")
   gate_api POST "repos/$repo/statuses/$sha" "$f" -f state="$state" -f context="$ctx" -f description="$desc" -f target_url="$target"; rc=$?
   GATE_API_RECHECK=()
