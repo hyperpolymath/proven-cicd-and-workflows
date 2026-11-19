@@ -398,6 +398,10 @@ detect_manifest 'dotted key, spaces around dot'      select '[dependencies]
 creusot-std . workspace = true'
 detect_manifest 'quoted dotted key'                  select '[dependencies]
 "creusot-std".workspace = true'
+detect_manifest 'quoted dotted suffix'               select '[dependencies]
+creusot-std."version" = "0.14"'
+detect_manifest 'literal quoted dotted suffix'       select "[dependencies]
+creusot-std.'version' = \"0.14\""
 detect_manifest 'dev-dependencies, dotted'           select '[dev-dependencies]
 creusot-std.workspace = true'
 detect_manifest 'build-dependencies, dotted'         select '[build-dependencies]
@@ -465,6 +469,20 @@ creusot-std.workspace = true'
 detect_manifest 'comment mentioning a triple quote does not open a string' select '# x = """
 [dependencies]
 creusot-std.workspace = true'
+detect_manifest 'trailing comment cannot open a multiline string' select '[package.metadata]
+x = "value" # example = """
+[dependencies]
+creusot-std.workspace = true'
+detect_manifest 'ordinary literal string cannot open a multiline string' select "[package.metadata]
+x = 'example = \"\"\"'
+[dependencies]
+creusot-std.workspace = true"
+detect_manifest 'escaped delimiter inside a multiline basic string' none '[package.metadata]
+x = """
+\"""
+[dependencies]
+creusot-std.workspace = true
+"""'
 printf '["package"]\nname = "fx"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ncreusot-std.workspace = true\n' > "$FIX/Cargo.toml"; commit
 run_phase detect
 [[ "$RC" -eq 0 && "$(cat "$WORK/facts/crates")" = "." ]] && ok "selects: quoted [\"package\"] header" || { bad "quoted package header not selected"; cat "$OUT"; }
@@ -489,6 +507,11 @@ run_phase prove PATH="$STAND_IN:$PATH"
   && grep -q 'stub: selected package fx-member' "$OUT" && grep -q 'false contract refused' "$OUT" && grep -q 'true contract proved' "$OUT" \
   && ok "prove reaches the planted controls and proves the member (stub cargo-creusot)" \
   || { bad "dotted-key workspace did not reach the controls (exit $RC)"; cat "$OUT"; }
+sed -i 's/creusot-std.workspace/creusot-std."workspace"/' "$FIX/member/Cargo.toml"; commit
+run_phase prove PATH="$STAND_IN:$PATH"
+[[ "$RC" -eq 0 ]] && grep -qx $'member\tfx-member' "$WORK/facts/proof-plan" \
+  && ok "quoted dotted dependency key is included in the proof plan" \
+  || { bad "quoted dotted dependency missing from proof plan (exit $RC)"; cat "$OUT"; }
 rm -rf "$FIX"; mv "$WORK/pre-detect-forms" "$FIX"
 
 echo "== prove: an oracle that can only say yes makes the verdict VOID =="

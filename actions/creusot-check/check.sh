@@ -149,22 +149,37 @@ manifest_facts() {
       sub(/^[^"]*"/, "", v); sub(/".*$/, "", v)
       return v
     }
+    # Scan strings before interpreting headers/keys. Comments and ordinary
+    # strings cannot open multiline values; only multiline state crosses lines.
+    function scan_strings(line,   i, c, three, q) {
+      q = ""
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1); three = substr(line, i, 3)
+        if (ml != "") {
+          if (ml == "\"\"\"" && c == "\\") { i++; continue }
+          if (three == ml) { ml = ""; i += 2 }
+        } else if (q != "") {
+          if (q == "\"" && c == "\\") i++
+          else if (c == q) q = ""
+        } else if (c == "#") break
+        else if (three == "\"\"\"" || three == "\x27\x27\x27") { ml = three; i += 2 }
+        else if (c == "\"" || c == "\x27") q = c
+      }
+    }
     BEGIN {
       dep  = "(dependencies|dev[-_]dependencies|build[-_]dependencies)"
       tgt  = "(target\\.[^\\[\\]]+\\.)?"
       name = "[\"\x27]?(creusot-std|creusot-contracts)[\"\x27]?"
-      key  = "^[ \t]*" name "([ \t]*\\.[ \t]*[A-Za-z_-]+)?[ \t]*="
+      key  = "^[ \t]*" name "([ \t]*\\.[ \t]*([A-Za-z_-]+|\"[^\"]+\"|\x27[^\x27]+\x27))?[ \t]*="
       pkg = 0; sel = 0; ver = ""; kind = "other"; ml = ""
     }
     # CRLF manifests; then skip the body of multiline strings, whose lines are
     # content (never headers or keys).
     {
       sub(/\r$/, "")
-      if (ml != "") { if (index($0, ml)) ml = ""; next }
-      if ($0 !~ /^[ \t]*#/ && match($0, /=[ \t]*("""|\x27\x27\x27)/)) {
-        d = substr($0, RSTART + RLENGTH - 3, 3)
-        if (!index(substr($0, RSTART + RLENGTH), d)) ml = d
-      }
+      in_multiline = (ml != "")
+      scan_strings($0)
+      if (in_multiline) next
     }
     /^[ \t]*#/ || /^[ \t]*$/ { next }
     /^[ \t]*\[\[/ { kind = "other"; next }
