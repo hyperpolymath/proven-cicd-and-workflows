@@ -73,6 +73,6 @@ jobs:
           t=templates/advisory-autofix-caller.yml
           grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\.github/workflows/advisory-autofix\.yml@__CICD_SUITE_SHA__' "$t" \
             || { echo "$t does not call advisory-autofix.yml at __CICD_SUITE_SHA__"; exit 1; }
-          [ "$(grep -cE '^\s+[A-Z_]+: \$\{\{ secrets\.' "$t")" -eq 1 ] && grep -q 'AUTOFIX_TOKEN: \${{ secrets.AUTOFIX_TOKEN }}' "$t" \
+          [ "$(grep -cE '^\s+[A-Z_]+: [$][{][{] secrets[.]' "$t")" -eq 1 ] && grep -q 'AUTOFIX_TOKEN: [$][{][{] secrets[.]AUTOFIX_TOKEN [}][}]' "$t" \
             || { echo "$t must pass exactly AUTOFIX_TOKEN"; exit 1; }
           ! grep -qE 'secrets: inherit' "$t" || { echo "$t must not inherit every secret"; exit 1; }
