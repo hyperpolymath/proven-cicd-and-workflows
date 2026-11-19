@@ -250,6 +250,11 @@ if [[ " $* " == *" -X POST "* ]]; then
   state=''; desc=''; psha=''; ctx=''
   for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; context=*) ctx=${a#context=} ;; repos/*/statuses/*) psha=${a##*/} ;; esac; done
   [[ ! -f $D/failpost ]] || { echo "gh: HTTP 500 (post)" >&2; exit 1; }
+  # GitHub's statuses API refuses a description with a character outside the BMP (an emoji is one):
+  # HTTP 422, "Description doesn't accept 4-byte Unicode".
+  if [[ $(printf '%s' "$desc" | jq -Rr '[explode[] | select(. > 65535)] | length') != 0 ]]; then
+    echo "gh: Validation failed: Description doesn't accept 4-byte Unicode (HTTP 422)" >&2; exit 1
+  fi
   # a newer evaluator's write that lands just before this one (deterministic pause control)
   if [[ -f $D/prepost ]]; then
     cat "$D/prepost" >> "$D/posts.log"
@@ -583,6 +588,24 @@ grep -q 'EVENT_ACTION' <<<"$EARLY" && grep -q 'in_progress' <<<"$EARLY" && grep 
   && ok "the early step posts pending 're-run started' for an in_progress action" || bad "the early step lacks the in_progress pending"
 ! grep -qE '\$suite|fetch |scripts/' <<<"$EARLY" && ok "the early step reads no suite file" || bad "the early step touches the suite"
 ! grep -q '\${{' <(awk '/^        run: \|/{f=1;next} f' <<<"$EARLY") && ok "the early step has no \${{ }} inside its run: script" || bad "the early step interpolates into run:"
+
+echo "-- a description never carries a character outside the BMP (GitHub answers 422 to one) --"
+pubreset; reset
+jq -n '[{id:7001,name:"🔴 GATE: Invisible Character Detection",status:"completed",conclusion:"failure",run:{id:11,name:"🔴 GATE: Invisible Character Detection",status:"completed"}}]' > "$FAKEGH/jobs.json"
+jq -n '{checks:[{job:"🔴 GATE: Invisible Character Detection",workflow:".github/workflows/ci-build.yml"}],repository:"example/repo",schema_version:2}' > "$SUITE_DIR/profiles/ci-gate/example/repo.json"
+snap 1 "$DONE"; publish
+chk "a failing job with an emoji in its name: the status is published, not refused" "$RC/$(post_n 1 | cut -f1)" "1/failure"
+chk "the published description names the check and carries no 4-byte character" "$(post_n 1 | cut -f2 | jq -Rr '[explode[] | select(. > 65535)] | length')/$(post_n 1 | cut -f2 | grep -c 'GATE: Invisible Character Detection')" "0/1"
+chk "no 'NO VERDICT WAS PRODUCED' for it" "$(grep -c 'NO VERDICT WAS PRODUCED' <<<"$PUBOUT")" 0
+cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
+pubreset
+echo "-- the early pending step does the same with the run's name --"
+awk '/^        run: \|/{f=1;next} f' <<<"$EARLY" | sed 's/^          //' > "$WORK/early.sh"
+EARLYOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" EVENT_NAME=workflow_run EVENT_ACTION=in_progress RUN_NAME='🔴 GATE: Invisible Character Detection' \
+  REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate SERVER_URL=https://github.com RUN_ID=1 bash "$WORK/early.sh" 2>&1); ERC=$?
+chk "an emoji in the run name: the early pending is published" "$ERC/$(sed -n 1p "$FAKEGH/posts.log" | cut -f1)" "0/pending"
+chk "its description keeps the readable part and has no 4-byte character" "$(sed -n 1p "$FAKEGH/posts.log" | cut -f2 | jq -Rr '[explode[] | select(. > 65535)] | length')/$(sed -n 1p "$FAKEGH/posts.log" | cut -f2 | grep -c 'GATE: Invisible Character Detection')" "0/1"
+pubreset
 
 echo "== sweep: schedule and workflow_dispatch re-evaluate every open pull request head and the default branch head =="
 cp "$ROOT/scripts/ci-gate-sweep.sh" "$SUITE_DIR/scripts/"
