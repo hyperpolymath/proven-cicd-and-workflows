@@ -61,6 +61,7 @@ while IFS=$'\t' read -r a5 sq kind generator tool escalation source || [[ -n $a5
             generator) [[ $h_action == fix ]] || bad "$a5: Hypatia action is $h_action, the table says a generator" ;;
             static) [[ $h_action == fix ]] || bad "$a5: Hypatia action is $h_action, the table says a static fix" ;;
             referral) [[ $h_action == report && $h_fix == nil ]] || bad "$a5: Hypatia must refer (action report, no fix), got $h_action" ;;
+            *) bad "$a5: kind '$kind' has no Hypatia comparison" ;;   # the kind was validated above; fail closed
         esac
         [[ $kind == referral || $h_fix == "$want_fix" ]] || bad "$a5: Hypatia's fix text differs from the table's generator"
         [[ $h_esc == "$escalation" ]] || bad "$a5: Hypatia escalation is $h_esc, the table says $escalation"
