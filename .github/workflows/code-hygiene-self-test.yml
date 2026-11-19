@@ -168,7 +168,7 @@
         {
           # The rerun policy table agrees with the A5/SQ map and the cap of one
           # rerun per job, and the controls show the test can fail.
-          run: "bash tests/retry-policy.sh && bash tests/retry-policy-controls.sh && bash tests/retry-hypatia-controls.sh",
+          run: "bash tests/retry-policy.sh && bash tests/retry-policy-controls.sh && bash tests/retry-hypatia-controls.sh && bash tests/generated-policy.sh && bash tests/generated-policy-controls.sh",
         },
         {
           # Toolchain pins live in one file, and stamped templates agree with it.
@@ -253,7 +253,7 @@
           env: {
             HYPATIA_PRAXIS_AT: "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'head' || 'pin' }}",
           },
-          run: "HYPATIA_PRAXIS=hypatia-registry/hypatia_rules_praxis.deed SQUABBLER_RULES=squabbler-rules/crates/squabble-core/data/first-line-rules.tsv bash tests/registry-sq-map.sh && bash tests/retry-hypatia.sh hypatia-registry/lib/rules/ci_failure_triage.ex",
+          run: "HYPATIA_PRAXIS=hypatia-registry/hypatia_rules_praxis.deed SQUABBLER_RULES=squabbler-rules/crates/squabble-core/data/first-line-rules.tsv bash tests/registry-sq-map.sh && bash tests/retry-hypatia.sh hypatia-registry/lib/rules/ci_failure_triage.ex && HYPATIA_RULES=hypatia-registry/lib/rules/ci_failure_triage.ex bash tests/generated-policy.sh",
         },
       ],
     },
