@@ -75,7 +75,8 @@ understand becomes an issue, not a guessed bump.
 
 == Self-tests
 
-`tests/advisory-autofix.sh` (run by Language Gates Self-Test):
+`tests/advisory-autofix.sh` (run by the Advisory Autofix Self-Test workflow,
+`.github/workflows/advisory-autofix-self-test.yml`):
 
 [cols="1,4"]
 |===

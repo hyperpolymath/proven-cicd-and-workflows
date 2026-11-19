@@ -65,17 +65,30 @@ if [ -z "${AUTOFIX_TOKEN:-}" ] && [ "${DRY_RUN:-}" != 1 ]; then
   exit 1
 fi
 export GH_TOKEN="${AUTOFIX_TOKEN:-dry}"
-base_oid="$(gh_ api "repos/$GH_REPO/git/ref/heads/$BASE_BRANCH" --jq .object.sha 2>/dev/null || echo DRY)"
+# The lockfiles were produced from THIS checkout. Publish them on exactly this
+# commit, and refuse if the default branch has moved since the audit: putting
+# older lockfiles on a newer base would silently revert whatever changed.
+# (expectedHeadOid below guards the bot branch, not this.)
+base_oid="$(git rev-parse HEAD)"
+if [ "${DRY_RUN:-}" != 1 ]; then
+  current="$(gh api "repos/$GH_REPO/git/ref/heads/$BASE_BRANCH" --jq .object.sha)"
+  if [ "$current" != "$base_oid" ]; then
+    echo "::error::$BASE_BRANCH moved from the audited $base_oid to $current during the run; the lockfiles are NOT published. Rerun the workflow." >&2
+    exit 1
+  fi
+fi
 
-# Idempotence: if the bot branch already holds exactly these lockfiles, stop.
+# Idempotence: if the bot branch already holds exactly these lockfiles, skip the
+# branch and commit, but still make sure the PR exists.
 same=1
 while IFS= read -r p; do
   [ "${DRY_RUN:-}" = 1 ] && { same=0; break; }
   have="$(gh api "repos/$GH_REPO/contents/${p#./}?ref=$BRANCH" --jq .content 2>/dev/null | tr -d '\n' || true)"
   [ -n "$have" ] && [ "$have" = "$(base64 -w0 "$p")" ] || { same=0; break; }
 done < <(jq -r '.changed[]' "$REPORT")
-if [ "$same" = 1 ]; then say "branch $BRANCH already carries these lockfiles; nothing to do"; exit 0; fi
+if [ "$same" = 1 ]; then say "branch $BRANCH already carries these lockfiles; skipping the branch and commit, checking the PR"; fi
 
+if [ "$same" != 1 ]; then
 # (Re)point the bot's own branch at the base, then add ONE signed commit.
 if gh_ api "repos/$GH_REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
   gh_ api -X PATCH "repos/$GH_REPO/git/refs/heads/$BRANCH" -f sha="$base_oid" -F force=true >/dev/null
@@ -91,6 +104,7 @@ vars="$(jq -n --arg repo "$GH_REPO" --arg br "$BRANCH" --arg oid "$base_oid" --a
   --arg b "$summary" --argjson add "$additions" \
   '{input:{branch:{repositoryNameWithOwner:$repo,branchName:$br},message:{headline:$h,body:$b},expectedHeadOid:$oid,fileChanges:{additions:$add}}}')"
 gh_ api graphql --input - <<<"$(jq -n --argjson v "$vars" '{query:"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",variables:$v}')" >/dev/null
+fi
 
 # Which proof lanes does this repo declare? Listed so the owner can see what
 # must be green; the PR cannot enforce them (branch protection does).

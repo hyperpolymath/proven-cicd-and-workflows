@@ -62,48 +62,72 @@ mapfile -t dirs < <(bash "$here/advisory-autofix-discover.sh" .)
 echo "advisory-autofix: ${#dirs[@]} Cargo workspace(s): ${dirs[*]:-none}" >&2
 workspaces='[]'; changed='[]'; broke=0
 
+ROUNDS="${ADVISORY_AUTOFIX_ROUNDS:-4}"
+
 for dir in "${dirs[@]}"; do
   if [ ! -f "$dir/Cargo.toml" ]; then
     echo "::error::$dir/Cargo.lock has no Cargo.toml beside it; its advisories were NOT audited" >&2
     broke=1; continue
   fi
   before="$(sha256sum "$dir/Cargo.lock" | cut -d' ' -f1)"
-  bumped='[]'; issues='[]'
-  set +e; plan_in="$(audit "$dir")"; rc=$?; set -e
-  if [ "$rc" -eq 2 ]; then
-    echo "::error::cargo-deny could not audit $dir (not an advisory finding); NO CHECK WAS PERFORMED there" >&2
-    printf '%s\n' "$plan_in" | tail -n 5 >&2
-    broke=1; continue
-  fi
-  if [ "$rc" -eq 1 ]; then
-    plan="$(bash "$here/advisory-autofix-plan.sh" <<<"$plan_in")"
-    while IFS=$'\t' read -r action id crate ver target reason; do
-      [ -n "$action" ] || continue
-      if [ "$action" = bump ]; then
-        echo "advisory-autofix: $dir: cargo update -p $crate@$ver --precise $target ($id)" >&2
-        if err="$(cargo update --manifest-path "$dir/Cargo.toml" -p "$crate@$ver" --precise "$target" 2>&1)"; then
-          bumped="$(jq -c --arg id "$id" --arg c "$crate" --arg f "$ver" --arg t "$target" '. + [{id:$id,crate:$c,from:$f,to:$t}]' <<<"$bumped")"
-        else
-          issues="$(jq -c --arg id "$id" --arg c "$crate" --arg v "$ver" --arg r "cargo update --precise $target failed: $(tail -n 3 <<<"$err" | tr '\n' ' ')" '. + [{id:$id,crate:$c,version:$v,reason:$r}]' <<<"$issues")"
-        fi
+  bumped='[]'; failed_specs=" "; failed_msgs='{}'
+  clean=false; plan=""; unaudited=0
+  # Plan, bump, re-audit, up to ROUNDS times. Several advisories on one crate
+  # are cured by ONE update to the highest patched version among them (a
+  # second `cargo update -p crate@<old>` would no longer match the lockfile).
+  # A later round sees whatever the bump left failing, including a new
+  # advisory at the new version.
+  for ((round = 1; round <= ROUNDS; round++)); do
+    set +e; audit_out="$(audit "$dir")"; rc=$?; set -e
+    if [ "$rc" -eq 2 ]; then
+      echo "::error::cargo-deny could not audit $dir (not an advisory finding); NO CHECK WAS PERFORMED there" >&2
+      printf '%s\n' "$audit_out" | tail -n 5 >&2
+      unaudited=1; break
+    fi
+    if [ "$rc" -eq 0 ]; then clean=true; plan=""; break; fi
+    plan="$(bash "$here/advisory-autofix-plan.sh" <<<"$audit_out")"
+    # one target per crate@locked: the highest, among rows not already failed
+    mapfile -t specs < <(awk -F'\t' '$1=="bump"{print $3"@"$4}' <<<"$plan" | sort -u)
+    did=0
+    for spec in "${specs[@]}"; do
+      [ -n "$spec" ] || continue
+      case "$failed_specs" in *" $spec "*) continue ;; esac
+      crate="${spec%@*}"; ver="${spec#*@}"
+      target="$(awk -F'\t' -v c="$crate" -v v="$ver" '$1=="bump" && $3==c && $4==v {print $5}' <<<"$plan" | sort -V | tail -n1)"
+      ids="$(awk -F'\t' -v c="$crate" -v v="$ver" '$1=="bump" && $3==c && $4==v {print $2}' <<<"$plan" | sort -u | tr '\n' ' ')"
+      echo "advisory-autofix: $dir: cargo update -p $crate@$ver --precise $target ($ids)" >&2
+      if err="$(cargo update --manifest-path "$dir/Cargo.toml" -p "$crate@$ver" --precise "$target" 2>&1)"; then
+        did=1
+        bumped="$(jq -c --arg id "${ids% }" --arg c "$crate" --arg f "$ver" --arg t "$target" '. + [{id:$id,crate:$c,from:$f,to:$t}]' <<<"$bumped")"
       else
-        issues="$(jq -c --arg id "$id" --arg c "$crate" --arg v "$ver" --arg r "$reason" '. + [{id:$id,crate:$c,version:$v,reason:$r}]' <<<"$issues")"
+        printf '%s\n' "$err" >&2
+        failed_specs+="$spec "
+        failed_msgs="$(jq -c --arg k "$spec" --arg r "cargo update --precise $target failed: $(tail -n 3 <<<"$err" | tr '\n' ' ')" '. + {($k):$r}' <<<"$failed_msgs")"
       fi
-    done <<<"$plan"
+    done
+    [ "$did" -eq 1 ] || break   # nothing more can be bumped: what remains is final
+  done
+  if [ "$unaudited" -eq 1 ]; then broke=1; continue; fi
+  if [ "$clean" != true ]; then
+    # Final state: one more audit, so the report describes the lockfile as left.
+    set +e; audit_out="$(audit "$dir")"; rc=$?; set -e
+    if [ "$rc" -eq 2 ]; then
+      echo "::error::re-audit of $dir could not run; NO CHECK WAS PERFORMED after the bump" >&2; broke=1; continue
+    elif [ "$rc" -eq 0 ]; then clean=true; plan=""
+    else plan="$(bash "$here/advisory-autofix-plan.sh" <<<"$audit_out")"; fi
   fi
-  # Re-audit. Whatever still fails and is not already an issue is one now.
-  set +e; after_in="$(audit "$dir")"; arc=$?; set -e
-  clean=true
-  if [ "$arc" -eq 2 ]; then
-    echo "::error::re-audit of $dir could not run; NO CHECK WAS PERFORMED after the bump" >&2; broke=1; clean=false
-  elif [ "$arc" -eq 1 ]; then
-    clean=false
-    while IFS=$'\t' read -r _a id crate ver _t reason; do
-      [ -n "$id" ] || continue
-      jq -e --arg id "$id" --arg c "$crate" 'map(select(.id==$id and .crate==$c)) | length > 0' <<<"$issues" >/dev/null && continue
-      issues="$(jq -c --arg id "$id" --arg c "$crate" --arg v "$ver" --arg r "still failing after the bump: $reason" '. + [{id:$id,crate:$c,version:$v,reason:$r}]' <<<"$issues")"
-    done < <(bash "$here/advisory-autofix-plan.sh" <<<"$after_in")
-  fi
+  # Issues are exactly what still fails now, each with an accurate reason.
+  issues='[]'
+  while IFS=$'\t' read -r action id crate ver _t reason; do
+    [ -n "$id" ] || continue
+    msg="$reason"
+    spec="$crate@$ver"
+    if [ "$action" = bump ]; then
+      msg="$(jq -r --arg k "$spec" '.[$k] // empty' <<<"$failed_msgs")"
+      [ -n "$msg" ] || msg="still failing after $ROUNDS planning round(s): a patched version exists but the bump did not cure it"
+    fi
+    issues="$(jq -c --arg id "$id" --arg c "$crate" --arg v "$ver" --arg r "$msg" '. + [{id:$id,crate:$c,version:$v,reason:$r}]' <<<"$issues")"
+  done <<<"$plan"
   after="$(sha256sum "$dir/Cargo.lock" | cut -d' ' -f1)"
   [ "$before" = "$after" ] || changed="$(jq -c --arg p "$dir/Cargo.lock" '. + [$p]' <<<"$changed")"
   workspaces="$(jq -c --arg d "$dir" --argjson b "$bumped" --argjson i "$issues" --argjson c "$clean" '. + [{dir:$d,bumped:$b,issues:$i,clean_after:$c}]' <<<"$workspaces")"

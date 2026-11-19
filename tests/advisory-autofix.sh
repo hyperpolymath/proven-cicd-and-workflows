@@ -14,6 +14,8 @@
 #   M  multi      a root workspace AND a nested fuzz/ workspace are both
 #                 found and both bumped; a vendored Cargo.lock is not touched;
 #                 an untracked Cargo.lock is not even discovered.
+#   A  two advisories on ONE crate (different patched versions) are cured by one
+#                 consistent bump, with no false issue.
 #   G  dependabot  the generated dependabot.yml has a cargo entry for every workspace
 #                 (root + fuzz/), security-only (limit 0, no semver-patch ignore).
 #   L  live       when cargo-deny is installed, the REAL audit finds the
@@ -57,7 +59,9 @@ controls() {
   unit "$s"
 
   r="$(new_repo "p-$tag" .)"; rc=0; run_fix "$r" "$s" || rc=$?
-  if [ "$rc" -eq 2 ] && grep -q 'could not\|failed' "$r/fix.log" && grep -qi 'network\|index\|resolve' "$r/fix.log"; then
+  # A failed `cargo update` is an issue in the report (exit 0), not exit 2. If it
+  # failed for want of the registry, this is the environment, not a script defect.
+  if [ "$rc" -eq 0 ] && jq -r '.workspaces[0].issues[]?.reason' "$r/report.json" 2>/dev/null | grep -i 'cargo update --precise .* failed' | grep -qi 'network\|index\|resolve\|download\|spurious\|timed out'; then
     echo "advisory-autofix: cargo update could not reach the registry; control P could not run" >&2; exit 2
   fi
   if [ "$rc" -eq 0 ] && [ "$(locked "$r")" = 1.6.1 ] \
@@ -81,6 +85,12 @@ controls() {
      && jq -e '(.workspaces|map(.dir)|sort)==[".","fuzz"]' "$r/report.json" >/dev/null; then
     ok "M multi: root + fuzz/ bumped; vendored and untracked lockfiles untouched"
   else bad "M multi: root=$(locked "$r") fuzz=$(locked "$r/fuzz") vendor=$(locked "$r/vendor/dep") dirs=$(jq -c '[.workspaces[].dir]' "$r/report.json" 2>/dev/null)"; fi
+
+  r="$(new_repo "a-$tag" .)"; rc=0; run_fix "$r" "$s" STANDIN_TWO=1 || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(locked "$r")" = 1.7.0 ] \
+     && jq -e '.workspaces[0] | (.issues|length)==0 and .clean_after==true and (.bumped|length)>=1' "$r/report.json" >/dev/null; then
+    ok "A two advisories on one crate: one consistent bump to 1.7.0, no false issue"
+  else bad "A two advisories: locked=$(locked "$r") rc=$rc report=$(jq -c . "$r/report.json" 2>/dev/null | head -c 400)"; fi
 
   # G dependabot: one cargo entry per discovered workspace (root and fuzz/, not vendor/)
   r="$(new_repo "g-$tag" . fuzz vendor/dep)"
@@ -126,7 +136,8 @@ mutate highest   advisory-autofix-plan.sh     's/lt "\$lower" "\$best"/lt "\$bes
 mutate rootonly  advisory-autofix-discover.sh "s#git ls-files -z -- 'Cargo.lock' '\*\*/Cargo.lock'#git ls-files -z -- 'Cargo.lock'#"
 mutate vendored  advisory-autofix-discover.sh 's#\*/vendor/\*|##'
 mutate onedir advisory-autofix-dependabot.sh 's/^for d in .*; do$/for d in "${dirs[0]}"; do/'
-mutate noreaudit advisory-autofix-fix.sh      's/if \[ "\$arc" -eq 2 \]; then/if false; then/; s/elif \[ "\$arc" -eq 1 \]; then/elif false; then/'
+mutate onebump   advisory-autofix-fix.sh      's/:-4}"/:-1}"/; s/sort -V | tail -n1)"$/sort -V | head -n1)"/'
+mutate claimclean advisory-autofix-fix.sh     's/^  clean=false; plan=""; unaudited=0/  clean=true; plan=""; unaudited=0/'
 
 echo "== L live cargo-deny =="
 if command -v cargo-deny >/dev/null 2>&1; then

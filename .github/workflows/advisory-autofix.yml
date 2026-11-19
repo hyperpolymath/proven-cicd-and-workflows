@@ -9,7 +9,8 @@
 # (echidna#507). Dependabot security updates cover advisories that have a GHSA
 # alias, for the manifests its config lists; RustSec-only advisories and
 # unlisted workspaces (echidna's fuzz/ has its own Cargo.lock) are the gap.
-# This workflow closes it the same way for every Cargo workspace:
+# This workflow closes it the same way for every Cargo workspace that has a
+# tracked Cargo.lock (one without a lockfile is not covered):
 #   1. every tracked, non-vendored Cargo.lock is a workspace (discovered, never
 #      listed, so a new nested workspace is covered the day it lands);
 #   2. each is audited with cargo-deny's advisories check — the tool rust-ci.yml
@@ -18,7 +19,7 @@
 #      --precise <lowest patched version>`, then audit again;
 #   4. the bumped lockfiles go into ONE signed PR (GitHub signs the commit made
 #      through the createCommitOnBranch API);
-#   5. an advisory with no patched version, or one that cannot be bumped
+#   5. an advisory with no compatible patched version, or one that cannot be bumped
 #      without a manifest change, opens or updates ONE issue instead of a PR.
 #
 # NEVER AUTO-MERGE. The PR is opened and left. The owner merges, and only when
