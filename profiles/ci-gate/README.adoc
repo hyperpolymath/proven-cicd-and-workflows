@@ -30,6 +30,7 @@ triggers, `if:` conditions and `continue-on-error`.
 |`hyperpolymath/mathesis` |`2100dfa171a73c821de843fee5f044849f12ff3f` (PR 96) |`261e6dc2e9b683abb48278d518d463def773fcb6`
 |`hyperpolymath/rsr-template-repo` |`b7ad304a4433f318e478c48d09704d5f753653d8` (PR 431) |`0044ad92f9e6ef258b89f3e9b5ee7b748a4db2d2` (103 runs, two pages read)
 |`hyperpolymath/proven-cicd-and-workflows` |`eaf59c629a80efd30c59e44b09374ecbef55615a` (PR 139) |`9eb0bbf9bd80b7964ce5b9957e75821b3cd4a55b`
+|`hyperpolymath/tsunami-breaker` (read 2026-11-19, authenticated API, workflow runs) |`705dfeeb2425522847276d7771c0c40284636e4e` (PR 13) |`957ea0e4720719652c3cc4bf71af751a807aa65d`
 |===
 
 Each name below was migrated to one entry per producing workflow, using the `path` of the workflow runs read at the two commits above (the producers were identical at both). Included in all three: `estate-rules`, `Estate Governance Policy`, `Central Estate CI/CD Audit`,
@@ -43,6 +44,7 @@ Additionally:
 * resource-algebra: `Core proofs and expected rejections`, `Rocq recheck leg`, `Lean recheck leg` (`proofs.yml`), `Rust standalone tools and workspace gate`.
 * mathesis: `Agda, Rocq and Lean in the pinned Guix` (`agda-proof-policy.yml`). It was red on the `main` commit read, so the gate will correctly refuse pull requests until `main` is green.
 * rsr-template-repo: `Rust standalone tools and workspace gate`, `scan / rust-secrets`, `mint-gates`.
+* tsunami-breaker: `Rust standalone tools and workspace gate`, `scan / rust-secrets`. `mint-gates` (`quality.yml`) is NOT listed: that workflow ended as `startup_failure` on the pull request head read, because it calls an action that the organisation policy refuses (fixed in the template by rsr-template-repo#456, not yet taken by tsunami-breaker). For this repository the read was of workflow runs and their conclusions; the job names were taken from the workflow files at the pull request head.
 
 == Renamed in-workflow aggregators
 
