@@ -65,7 +65,7 @@ poll_cost=10
 # a job or workflow name) becomes '?': GitHub's statuses API answers HTTP 422 "Description doesn't
 # accept 4-byte Unicode", which would make the gate publish no verdict. It is one character for one,
 # so the 140-character count is unchanged.
-clip() { jq -rn --arg d "$1" '($d | explode | map(if . > 65535 then 63 else . end) | implode) | if length > 140 then .[0:139] + "…" else . end'; }
+clip() { local text=$1; jq -rn --arg d "$text" '($d | explode | map(if . > 65535 then 63 else . end) | implode) | if length > 140 then .[0:139] + "…" else . end'; }
 
 current_matches() { # <state> <clipped description> -> prints "same" only if the combined status holds exactly this for $CONTEXT
   local r
