@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath) <j.d.a.jewell@open.ac.uk>
+#
+# advisory-autofix-self-test.yml — the advisory auto-fix must be able to FAIL,
+# for each thing it claims, before any repository schedules it. Runs
+# tests/advisory-autofix.sh: planner unit cases, positive (lowest patched
+# version), no-patch (issue, no PR), multi-workspace, Dependabot generator, and
+# a LIVE control with the real cargo-deny; each control is also killed by a
+# planted mutant. Kept out of language-gates-self-test.yml because that file is
+# lock-managed (a new full-SHA action there would need an actions.lock edit).
+
+name: Advisory Autofix Self-Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tests/advisory-autofix.sh"
+      - "tests/fixtures/advisory-autofix/**"
+      - "scripts/advisory-autofix-*.sh"
+      - ".github/workflows/advisory-autofix.yml"
+      - ".github/workflows/advisory-autofix-self-test.yml"
+      - "templates/advisory-autofix-caller.yml"
+      - "templates/dependabot.yml"
+  pull_request:
+    paths:
+      - "tests/advisory-autofix.sh"
+      - "tests/fixtures/advisory-autofix/**"
+      - "scripts/advisory-autofix-*.sh"
+      - ".github/workflows/advisory-autofix.yml"
+      - ".github/workflows/advisory-autofix-self-test.yml"
+      - "templates/advisory-autofix-caller.yml"
+      - "templates/dependabot.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  controls:
+    name: Advisory autofix controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install cargo-deny 0.20.2 (prebuilt, pinned) for the live control
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Scripts parse and are shellcheck-clean
+        run: |
+          set -euo pipefail
+          bash -n scripts/advisory-autofix-*.sh tests/advisory-autofix.sh tests/fixtures/advisory-autofix/audit-standin.sh
+          shellcheck -S warning scripts/advisory-autofix-*.sh tests/advisory-autofix.sh tests/fixtures/advisory-autofix/audit-standin.sh
+      - name: Controls (positive, no-patch, multi-workspace, generator, live; planted mutants killed)
+        # REQUIRE_LIVE=1: a missing cargo-deny is exit 2, not a skipped control.
+        env:
+          REQUIRE_LIVE: "1"
+        run: bash tests/advisory-autofix.sh
+      - name: The caller template pins by placeholder and hands over only AUTOFIX_TOKEN
+        run: |
+          set -euo pipefail
+          t=templates/advisory-autofix-caller.yml
+          grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\.github/workflows/advisory-autofix\.yml@__CICD_SUITE_SHA__' "$t" \
+            || { echo "$t does not call advisory-autofix.yml at __CICD_SUITE_SHA__"; exit 1; }
+          [ "$(grep -cE '^\s+[A-Z_]+: \$\{\{ secrets\.' "$t")" -eq 1 ] && grep -q 'AUTOFIX_TOKEN: \${{ secrets.AUTOFIX_TOKEN }}' "$t" \
+            || { echo "$t must pass exactly AUTOFIX_TOKEN"; exit 1; }
+          ! grep -qE 'secrets: inherit' "$t" || { echo "$t must not inherit every secret"; exit 1; }
