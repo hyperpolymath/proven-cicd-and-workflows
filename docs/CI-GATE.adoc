@@ -34,7 +34,13 @@ Only GitHub Actions jobs are read. Third-party checks (SonarCloud, CodeRabbit, G
 . A malformed or wrong-repository profile, an empty list, a list naming the gate's own context, a missing `job.workflow_sha`, any API error, malformed input, or any event other than `workflow_run`, `schedule` and `workflow_dispatch` is a failure, never pending and never success.
 
 The status description is at most 140 characters (truncated with an ellipsis); the step summary
-carries the full table. `scripts/ci-gate-verdict.sh` exits 0 for success, 3 for pending and 1
+carries the full table. A character outside the Basic Multilingual Plane (an emoji, such as a red
+circle in a job or workflow name) is replaced by `?` in the description, one for one, because
+GitHub's statuses API answers HTTP 422 ("Description doesn't accept 4-byte Unicode") to it and no
+verdict would be published; the step summary keeps the original names. Both places that write a
+description do this: `clip()` in `scripts/ci-gate-publish.sh` and the early "re-run started" step
+of `.github/workflows/ci-gate.yml`. A caller that pins this suite before that change posts no verdict
+for a run whose name contains such a character. `scripts/ci-gate-verdict.sh` exits 0 for success, 3 for pending and 1
 for failure and for every error.
 
 == Publishing and the settle guard
