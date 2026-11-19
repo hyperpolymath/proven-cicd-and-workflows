@@ -25,6 +25,7 @@
         "actions/formatting-check/**",
         "actions/badges-check/**",
         "actions/metrics-check/**",
+        "actions/tests-benches-check/**",
         "tests/**",
         "scripts/deonboard-estate-audit.sh",
         "scripts/deonboard-workflow.sh",
@@ -33,6 +34,15 @@
         "scripts/proven-stamp.sh",
         "scripts/proven-coverage-collect.sh",
         "scripts/coverdata-to-lcov.exs",
+        "scripts/ci-gate-verdict.sh",
+        "scripts/ci-gate-publish.sh",
+        "scripts/ci-gate-sweep.sh",
+        "scripts/ci-gate-tamper-guard.sh",
+        "scripts/validate-ci-gate-profile.sh",
+        "profiles/ci-gate/**",
+        ".github/workflows/ci-gate.yml",
+        ".github/workflows/ci-gate-caller.yml",
+        ".github/workflows/ci-gate-tamper-guard*.yml",
         ".github/workflows/proven-lock-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
@@ -68,6 +78,7 @@
         "actions/formatting-check/**",
         "actions/badges-check/**",
         "actions/metrics-check/**",
+        "actions/tests-benches-check/**",
         "tests/**",
         "scripts/deonboard-estate-audit.sh",
         "scripts/deonboard-workflow.sh",
@@ -76,6 +87,15 @@
         "scripts/proven-stamp.sh",
         "scripts/proven-coverage-collect.sh",
         "scripts/coverdata-to-lcov.exs",
+        "scripts/ci-gate-verdict.sh",
+        "scripts/ci-gate-publish.sh",
+        "scripts/ci-gate-sweep.sh",
+        "scripts/ci-gate-tamper-guard.sh",
+        "scripts/validate-ci-gate-profile.sh",
+        "profiles/ci-gate/**",
+        ".github/workflows/ci-gate.yml",
+        ".github/workflows/ci-gate-caller.yml",
+        ".github/workflows/ci-gate-tamper-guard*.yml",
         ".github/workflows/proven-lock-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
@@ -170,6 +190,16 @@
           # where the toolchain is present (a missing one is named SKIP).
           run: "bash tests/proven-coverage-collect.sh",
         },
+        {
+          # The interim CI/gate: the pure verdict (a required check that never
+          # reported is a failure, never a pass), the profile validator, the
+          # shipped profiles, and static guards on the reusable and its caller.
+          run: "bash tests/ci-gate.sh",
+        },
+        {
+          # The tamper guard: file matching, label logic, fail-closed errors, static guards.
+          run: "bash tests/ci-gate-tamper-guard.sh",
+        },
       ],
     },
     # proven/registry/sq-map.tsv against both of its sources: the praxis column
@@ -249,6 +279,10 @@
         },
         {
           run: "bash actions/secrets-check/test.sh",
+        },
+        {
+          # Observer contract's silent, firing and no-check control cases.
+          run: "bash actions/tests-benches-check/test.sh",
         },
         {
           run: "bash actions/boj-cartridge-check/test.sh",

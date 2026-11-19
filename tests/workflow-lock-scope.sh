@@ -47,6 +47,15 @@ yq -o=json '.' "$file" | jq '.jobs.scan.uses="hyperpolymath/cicd-suite/.github/w
 cp "$tmp/changed.json" "$file"
 reject 'floating reusable in immutable workflow'
 stage
+yq -o=json '.' "$tmp/base/.github/workflows/ci-gate-caller.yml" | jq '.jobs.gate.uses="./.github/workflows/no-such-reusable.yml"' > "$tmp/tree/.github/workflows/ci-gate-caller.yml"
+reject 'local reusable that does not exist'
+stage
+yq -o=json '.' "$tmp/base/.github/workflows/ci-gate-caller.yml" | jq '.jobs.gate.uses="./.github/workflows/../workflows/ci-gate.yml"' > "$tmp/tree/.github/workflows/ci-gate-caller.yml"
+reject 'local reusable path with a traversal segment'
+stage
+yq -o=json '.' "$tmp/base/.github/workflows/ci-gate.yml" | jq '.jobs.gate.steps += [{uses:"owner/floating@main"}]' > "$tmp/tree/.github/workflows/ci-gate.yml"
+reject 'floating reference inside a local reusable'
+stage
 mv "$tmp/tree/actions/manifest-check/action.yml" "$tmp/tree/actions/manifest-check/action.yaml"
 SCOPE_ROOT="$tmp/tree" bash "$builder" >/dev/null
 echo 'ok: action.yaml local composite is inspected'
@@ -55,4 +64,4 @@ rc=0
 SCOPE_ROOT="$tmp/tree" bash "$builder" > "$tmp/log" 2>&1 || rc=$?
 [[ $rc == 2 ]] || { echo "missing metadata returned $rc rather than unavailable (2)" >&2; exit 1; }
 echo 'ok: missing action.yml and action.yaml remains unavailable'
-echo 'ok: scope baseline, eight coverage mutants and two metadata-name controls'
+echo 'ok: scope baseline, eleven coverage mutants and two metadata-name controls'

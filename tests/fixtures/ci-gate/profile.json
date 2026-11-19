@@ -1,0 +1,1 @@
+{"checks":[{"job":"Build","workflow":".github/workflows/ci-build.yml"},{"job":"Lint","workflow":".github/workflows/ci-quality.yml"},{"job":"Test","workflow":".github/workflows/ci-quality.yml"}],"repository":"example/repo","schema_version":2}
