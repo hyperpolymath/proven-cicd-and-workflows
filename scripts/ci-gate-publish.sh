@@ -61,7 +61,11 @@ published=0
 declare -A completed_keys=() completed_jobs=()
 poll_cost=10
 
-clip() { jq -rn --arg d "$1" 'if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }  # by characters, whatever the locale
+# By characters, whatever the locale. A character outside the BMP (an emoji such as a red circle in
+# a job or workflow name) becomes '?': GitHub's statuses API answers HTTP 422 "Description doesn't
+# accept 4-byte Unicode", which would make the gate publish no verdict. It is one character for one,
+# so the 140-character count is unchanged.
+clip() { jq -rn --arg d "$1" '($d | explode | map(if . > 65535 then 63 else . end) | implode) | if length > 140 then .[0:139] + "…" else . end'; }
 
 current_matches() { # <state> <clipped description> -> prints "same" only if the combined status holds exactly this for $CONTEXT
   local r
