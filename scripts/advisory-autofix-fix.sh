@@ -7,7 +7,7 @@
 # For each workspace dir (advisory-autofix-discover.sh):
 #   1. audit it (cargo deny advisories);
 #   2. plan (advisory-autofix-plan.sh): `bump` rows run
-#        cargo update --manifest-path <dir>/Cargo.toml -p <crate>@<locked> --precise <lowest patched>
+#        (cd <dir> && cargo update --manifest-path Cargo.toml -p <crate>@<locked> --precise <lowest patched>)
 #      `issue` rows are recorded, nothing is changed for them;
 #   3. audit again. Anything still failing is recorded as an issue row, so a
 #      bump that did not cure the advisory is never presented as a fix.
@@ -23,7 +23,10 @@
 #               JSON diagnostics on stderr, exit 0 clean / non-zero failing.
 #               Default: cargo deny --format json check advisories. A test
 #               substitutes a stand-in oracle here (tests/advisory-autofix.sh).
-#   DENY_ARGS   extra cargo-deny global options (default AUDIT_CMD only).
+#   DENY_ARGS   extra cargo-deny global options (default audit only). The default
+#               audit and update run INSIDE each workspace directory, so that
+#               workspace's own .cargo/config.toml, rust-toolchain and deny.toml
+#               apply; paths in DENY_ARGS are therefore relative to the workspace.
 #   REPORT      report path.
 #   ADVISORY_AUTOFIX_EXCLUDE  see advisory-autofix-discover.sh.
 #
@@ -44,7 +47,7 @@ audit() { # <dir> -> stdout: diagnostics (jsonl); returns 0 clean, 1 failing, 2 
   else
     set +e
     # shellcheck disable=SC2086
-    cargo deny --log-level warn ${DENY_ARGS:-} --format json --manifest-path "$dir/Cargo.toml" check advisories 2>"$out" >/dev/null
+    ( cd "$dir" && cargo deny --log-level warn ${DENY_ARGS:-} --format json --manifest-path Cargo.toml check advisories ) 2>"$out" >/dev/null
     rc=$?; set -e
   fi
   cat "$out"
@@ -96,7 +99,7 @@ for dir in "${dirs[@]}"; do
       target="$(awk -F'\t' -v c="$crate" -v v="$ver" '$1=="bump" && $3==c && $4==v {print $5}' <<<"$plan" | sort -V | tail -n1)"
       ids="$(awk -F'\t' -v c="$crate" -v v="$ver" '$1=="bump" && $3==c && $4==v {print $2}' <<<"$plan" | sort -u | tr '\n' ' ')"
       echo "advisory-autofix: $dir: cargo update -p $crate@$ver --precise $target ($ids)" >&2
-      if err="$(cargo update --manifest-path "$dir/Cargo.toml" -p "$crate@$ver" --precise "$target" 2>&1)"; then
+      if err="$(cd "$dir" && cargo update --manifest-path Cargo.toml -p "$crate@$ver" --precise "$target" 2>&1)"; then
         did=1
         bumped="$(jq -c --arg id "${ids% }" --arg c "$crate" --arg f "$ver" --arg t "$target" '. + [{id:$id,crate:$c,from:$f,to:$t}]' <<<"$bumped")"
       else

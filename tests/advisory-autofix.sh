@@ -16,6 +16,9 @@
 #                 an untracked Cargo.lock is not even discovered.
 #   A  two advisories on ONE crate (different patched versions) are cured by one
 #                 consistent bump, with no false issue.
+#   I  the SAME advisory in two workspaces is ONE issue listing both.
+#   S  the bot branch is reused only if it is exactly the intended change.
+#   W  the default audit and update run inside each workspace directory.
 #   G  dependabot  the generated dependabot.yml has a cargo entry for every workspace
 #                 (root + fuzz/), security-only (limit 0, no semver-patch ignore).
 #   L  live       when cargo-deny is installed, the REAL audit finds the
@@ -36,6 +39,40 @@ fail=0
 ok()  { echo "  ok    $*"; }
 bad() { echo "  FAIL  $*" >&2; fail=1; }
 for t in jq cargo git sort; do command -v "$t" >/dev/null || { echo "$t is required" >&2; exit 2; }; done
+
+# Fake `gh` and `cargo` for the delivery and cwd controls. They log every call
+# and answer only what the scripts ask; they never touch the network.
+mkdir -p "$work/bin"
+cat > "$work/bin/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+echo "$*" | sed -E 's/^api -X ([A-Z]+)/PATCHLIKE \1 api/' >>"${FAKE_LOG:-/dev/null}"
+args="$*"; jqx=""; prev=""
+for a in "$@"; do [ "$prev" = "--jq" ] && jqx="$a"; prev="$a"; done
+emit() { if [ -n "$jqx" ]; then jq -r "$jqx" <<<"$1"; else printf '%s\n' "$1"; fi; }
+case "$args" in
+  *"-X PATCH"*|*"-X POST"*|"api graphql"*) echo "PATCH $args" >>"${FAKE_LOG:-/dev/null}"; exit 0 ;;
+  "api repos/"*"/git/ref/heads/main"*) emit "{\"object\":{\"sha\":\"$FAKE_BASE\"}}" ;;
+  "api repos/"*"/git/ref/heads/advisory-autofix"*) emit '{"object":{"sha":"x"}}' ;;
+  "api repos/"*"/compare/"*) emit "$(jq -n --argjson f "$FAKE_FILES" --argjson a "$FAKE_AHEAD" --argjson b "$FAKE_BEHIND" '{ahead_by:$a,behind_by:$b,files:($f|map({filename:.}))}')" ;;
+  "api repos/"*"/contents/"*) emit "$(jq -n --arg c "$FAKE_CONTENT" '{content:$c}')" ;;
+  "pr list"*) exit 0 ;;
+  "pr create"*) echo "pr create" >>"${FAKE_LOG:-/dev/null}"; exit 0 ;;
+  *) exit 0 ;;
+esac
+FAKEGH
+cat > "$work/bin/cargo" <<'FAKECARGO'
+#!/usr/bin/env bash
+# deny: replay the stand-in oracle for this directory; update: edit the lock.
+case "$1" in
+  deny) echo "deny $PWD" >>"$FAKE_LOG"; "$STANDIN" "$PWD"; exit $? ;;
+  update)
+    echo "update $PWD" >>"$FAKE_LOG"
+    t=""; prev=""; for a in "$@"; do [ "$prev" = "--precise" ] && t="$a"; prev="$a"; done
+    sed -i "/^name = \"smallvec\"/{n;s/version = \".*\"/version = \"$t\"/}" Cargo.lock; exit 0 ;;
+esac
+exit 0
+FAKECARGO
+chmod +x "$work/bin/gh" "$work/bin/cargo"
 
 # new_repo <name> <dir>...: a git repo with the ws fixture in each <dir>
 new_repo() {
@@ -92,6 +129,40 @@ controls() {
     ok "A two advisories on one crate: one consistent bump to 1.7.0, no false issue"
   else bad "A two advisories: locked=$(locked "$r") rc=$rc report=$(jq -c . "$r/report.json" 2>/dev/null | head -c 400)"; fi
 
+  # I issues: the SAME advisory in two workspaces is ONE issue listing both
+  r="$(new_repo "i-$tag" .)"
+  jq -n '{workspaces:[{dir:".",bumped:[],issues:[{id:"RUSTSEC-X",crate:"foo",version:"1.0.0",reason:"no patched version exists"}],clean_after:false},{dir:"fuzz",bumped:[],issues:[{id:"RUSTSEC-X",crate:"foo",version:"1.0.1",reason:"no patched version exists"}],clean_after:false}],changed:[]}' >"$r/report.json"
+  out="$( cd "$r" && DRY_RUN=1 GH_REPO=o/r BASE_BRANCH=main REPORT="$r/report.json" bash "$s/advisory-autofix-deliver.sh" 2>&1 || true )"
+  if [ "$(grep -c 'DRY: gh issue create' <<<"$out")" = 1 ] && grep -q 'workspace `fuzz`' <<<"$out" && grep -q 'workspace `\.`' <<<"$out"; then
+    ok "I issues: one issue for the same advisory across two workspaces, listing both"
+  else bad "I issues: $(tr '\n' ' ' <<<"$out" | head -c 300)"; fi
+
+  # S stale bot branch: reused only when it is exactly the intended change
+  r="$(new_repo "s-$tag" .)"
+  jq -n '{workspaces:[{dir:".",bumped:[{id:"A",crate:"smallvec",from:"1.6.0",to:"1.6.1"}],issues:[],clean_after:true}],changed:["./Cargo.lock"]}' >"$r/report.json"
+  sed -i 's/version = "1.6.0"/version = "1.6.1"/' "$r/Cargo.lock"
+  base="$(git -C "$r" rev-parse HEAD)"
+  stale_run() { # <files-json> <ahead> <behind> -> prints the fake-gh call log
+    rm -f "$r/gh.log"
+    ( cd "$r" && PATH="$work/bin:$PATH" FAKE_LOG="$r/gh.log" FAKE_BASE="$base" FAKE_FILES="$1" FAKE_AHEAD="$2" FAKE_BEHIND="$3" FAKE_CONTENT="$(base64 -w0 "$r/Cargo.lock")" \
+        GH_REPO=o/r BASE_BRANCH=main AUTOFIX_TOKEN=t REPORT="$r/report.json" bash "$s/advisory-autofix-deliver.sh" >/dev/null 2>&1 || true ); cat "$r/gh.log" 2>/dev/null
+  }
+  exact="$(stale_run '["Cargo.lock"]' 1 0)"
+  extra="$(stale_run '["Cargo.lock","fuzz/Cargo.lock"]' 1 0)"
+  behind="$(stale_run '["Cargo.lock"]' 1 3)"
+  if ! grep -q 'PATCH' <<<"$exact" && grep -q 'pr create' <<<"$exact" \
+     && grep -q 'PATCH' <<<"$extra" && grep -q 'PATCH' <<<"$behind"; then
+    ok "S stale branch: exact branch reused (PR still ensured); extra files or old base rebuilt"
+  else bad "S stale branch: exact=[$(tr '\n' '|' <<<"$exact")] extra=[$(tr '\n' '|' <<<"$extra")] behind=[$(tr '\n' '|' <<<"$behind")]"; fi
+
+  # W workspace cwd: the default audit and update run INSIDE the workspace
+  r="$(new_repo "w-$tag" fuzz)"; rc=0
+  ( cd "$r" && PATH="$work/bin:$PATH" FAKE_LOG="$r/cargo.log" STANDIN="$fx/audit-standin.sh" REPORT="$r/report.json" bash "$s/advisory-autofix-fix.sh" >"$r/fix.log" 2>&1 ) || rc=$?
+  if [ "$rc" -eq 0 ] && grep -q '^deny .*/fuzz$' "$r/cargo.log" && grep -q '^update .*/fuzz$' "$r/cargo.log" \
+     && ! grep -qE '^(deny|update) .*/w-[a-z0-9-]*$' "$r/cargo.log"; then
+    ok "W workspace cwd: cargo deny and cargo update ran inside fuzz/"
+  else bad "W workspace cwd: rc=$rc log=[$(tr '\n' '|' <"$r/cargo.log" 2>/dev/null)]"; fi
+
   # G dependabot: one cargo entry per discovered workspace (root and fuzz/, not vendor/)
   r="$(new_repo "g-$tag" . fuzz vendor/dep)"
   if bash "$s/advisory-autofix-dependabot.sh" "$r" >"$r/dependabot.yml" 2>/dev/null \
@@ -138,6 +209,9 @@ mutate vendored  advisory-autofix-discover.sh 's#\*/vendor/\*|##'
 mutate onedir advisory-autofix-dependabot.sh 's/^for d in .*; do$/for d in "${dirs[0]}"; do/'
 mutate onebump   advisory-autofix-fix.sh      's/:-4}"/:-1}"/; s/sort -V | tail -n1)"$/sort -V | head -n1)"/'
 mutate claimclean advisory-autofix-fix.sh     's/^  clean=false; plan=""; unaudited=0/  clean=true; plan=""; unaudited=0/'
+mutate oneperws  advisory-autofix-deliver.sh  's/| group_by(\[.id, .crate\])\[\]/| map({id,crate,items:[{dir,version,reason}]})[]/'
+mutate pathsonly advisory-autofix-deliver.sh  '/ahead_by/s/!= 1/== 99/; /behind_by/s/!= 0/== 99/; s/\[ "\$want" != "\$have_files" \]/false/'
+mutate rootcwd   advisory-autofix-fix.sh      's/( cd "\$dir" \&\& cargo deny/( cargo deny/; s/\$(cd "\$dir" \&\& cargo update/$(cargo update/'
 
 echo "== L live cargo-deny =="
 if command -v cargo-deny >/dev/null 2>&1; then

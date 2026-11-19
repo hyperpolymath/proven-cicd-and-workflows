@@ -30,15 +30,22 @@ run="${RUN_URL:-}"
 say() { echo "advisory-autofix-deliver: $*" >&2; }
 gh_() { if [ "${DRY_RUN:-}" = 1 ]; then echo "DRY: gh $*" >&2; return 0; fi; gh "$@"; }
 
-# ---- issues: one per (advisory, crate), opened or updated, never duplicated
-jq -r '.workspaces[] | .dir as $d | .issues[] | [.id,.crate,.version,.reason,$d] | @tsv' "$REPORT" |
-sort -u | while IFS=$'\t' read -r id crate ver reason dir; do
+# ---- issues: ONE per (advisory, crate) across ALL workspaces, opened or
+# updated, never duplicated. The same advisory in several workspaces is one
+# issue that lists every affected workspace, version and reason; otherwise each
+# workspace would overwrite the issue body with its own.
+jq -c '[.workspaces[] | .dir as $d | .issues[] | {id, crate, version, reason, dir: $d}]
+       | group_by([.id, .crate])[]
+       | {id: .[0].id, crate: .[0].crate, items: (map({dir, version, reason}) | unique)}' "$REPORT" |
+while IFS= read -r grp; do
+  id="$(jq -r .id <<<"$grp")"; crate="$(jq -r .crate <<<"$grp")"
   title="advisory-autofix: $id in $crate has no automatic fix"
+  affected="$(jq -r '.items[] | "- workspace `\(.dir)`: `\(.version)` — \(.reason)"' <<<"$grp")"
   body="$(printf '%s\n' \
 "<!-- advisory-autofix:$id:$crate -->" \
-"**$id** affects \`$crate $ver\` in the Cargo workspace \`$dir\`." \
+"**$id** affects \`$crate\` and cannot be fixed automatically in:" \
 "" \
-"Why no PR was opened: $reason." \
+"$affected" \
 "" \
 "Advisory: https://rustsec.org/advisories/$id" \
 "" \
@@ -78,14 +85,29 @@ if [ "${DRY_RUN:-}" != 1 ]; then
   fi
 fi
 
-# Idempotence: if the bot branch already holds exactly these lockfiles, skip the
-# branch and commit, but still make sure the PR exists.
+# Idempotence: reuse the bot branch only if it is EXACTLY the intended change:
+# one commit on top of the audited base, touching exactly the lockfiles in this
+# report, with exactly their contents. A branch with extra stale changes from an
+# earlier run, or built on an older base, is rebuilt from the audited base.
 same=1
-while IFS= read -r p; do
-  [ "${DRY_RUN:-}" = 1 ] && { same=0; break; }
-  have="$(gh api "repos/$GH_REPO/contents/${p#./}?ref=$BRANCH" --jq .content 2>/dev/null | tr -d '\n' || true)"
-  [ -n "$have" ] && [ "$have" = "$(base64 -w0 "$p")" ] || { same=0; break; }
-done < <(jq -r '.changed[]' "$REPORT")
+if [ "${DRY_RUN:-}" = 1 ]; then
+  same=0
+else
+  cmp_json="$(gh api "repos/$GH_REPO/compare/$base_oid...$BRANCH" 2>/dev/null || true)"
+  want="$(jq -r '.changed[] | ltrimstr("./")' "$REPORT" | sort)"
+  have_files="$(jq -r '.files[]?.filename' <<<"${cmp_json:-null}" 2>/dev/null | sort || true)"
+  if [ -z "$cmp_json" ] \
+     || [ "$(jq -r '.ahead_by // -1' <<<"$cmp_json" 2>/dev/null)" != 1 ] \
+     || [ "$(jq -r '.behind_by // -1' <<<"$cmp_json" 2>/dev/null)" != 0 ] \
+     || [ "$want" != "$have_files" ]; then
+    same=0
+  else
+    while IFS= read -r p; do
+      have="$(gh api "repos/$GH_REPO/contents/${p#./}?ref=$BRANCH" --jq .content 2>/dev/null | tr -d '\n' || true)"
+      [ -n "$have" ] && [ "$have" = "$(base64 -w0 "$p")" ] || { same=0; break; }
+    done < <(jq -r '.changed[]' "$REPORT")
+  fi
+fi
 if [ "$same" = 1 ]; then say "branch $BRANCH already carries these lockfiles; skipping the branch and commit, checking the PR"; fi
 
 if [ "$same" != 1 ]; then
