@@ -1,0 +1,5 @@
+a5_id	sq_id	kind	generator	tool	escalation	source
+hypatia/ci_failure_triage/repository_map_stale	SQ-GEN-01	generator	bash scripts/gen-repo-map.sh . && commit (SQ-GEN-01)	-	owner	CASE-009; ledger Generated files; Hypatia fix text
+hypatia/ci_failure_triage/kyaml_format	SQ-GEN-04	generator	scripts/kyaml-format.sh <file> with Go yq (mikefarah), then commit	yq	owner	CASE-033; ledger Generated files; yq pinned in toolchain.tsv; Python yq corrupts the file
+hypatia/ci_failure_triage/always_after_cancel	SQ-GEN-03	static	always-to-not-cancelled	-	owner	WF029; a static workflow fix, no generator to run
+hypatia/ci_failure_triage/generated_file_stale	hypatia-only	referral	-	-	owner	ADR 0004: no squabbler rule; a bot must not run a command it read from a log

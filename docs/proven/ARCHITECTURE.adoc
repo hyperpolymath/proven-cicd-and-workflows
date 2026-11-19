@@ -299,6 +299,22 @@ Each policy below becomes registry rules with fixtures, one PR per topic:
   and that rule is squabbler-only, so it has no row here. Not covered yet: the
   Dependabot "behind main" case (CASE-030), and `SQ-RUN-02` and `SQ-NOI-03`,
   which are squabbler-only and whose meaning is not in this repository.
+* *Generated files.* A generated file that drifts is fixed by a named generator,
+  never by a command read from a log. The table is `proven/policy/generated.tsv`:
+  one row per rule, with its kind (`generator`, `static` or `referral`), the
+  generator or fix text, the pinned tool it needs, and who gets it if the fix
+  fails (always the owner). `repository_map_stale` (`SQ-GEN-01`) runs
+  `bash scripts/gen-repo-map.sh .`; `kyaml_format` (`SQ-GEN-04`) runs
+  `scripts/kyaml-format.sh <file>` with Go yq (mikefarah, pinned in
+  `toolchain.tsv`; Python yq corrupts the file); `always_after_cancel`
+  (`SQ-GEN-03`) is a static workflow fix. Any other stale generated file
+  (`generated_file_stale`) is a referral with no command: each new generated file
+  becomes its own rule, generator named. `tests/generated-policy.sh` takes the id
+  pairing from `sq-map.tsv`, requires the tool to be pinned, and, with
+  `HYPATIA_RULES` set (the praxis job does), compares the kind, fix text and
+  escalation with the same-named rule in Hypatia's `ci_failure_triage.ex`.
+  `tests/generated-policy-controls.sh` has the mutants. The generator scripts
+  themselves live in the consumer repositories and are not checked here.
 * *Concurrency.* WF021 wins over WH007, and publishers never set
   `cancel-in-progress`.
 * *Toolchain pins in one file:* OTP 27.3.4.19 (R2), Bun 1.4.2, Nickel 1.18.0

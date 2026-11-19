@@ -134,7 +134,9 @@ jobs:
             desc="waiting for the required checks to report"
           else
             [[ "$EVENT_ACTION" == in_progress ]] || { echo "event action '$EVENT_ACTION': no early pending"; exit 0; }
-            desc=$(jq -rn --arg n "$RUN_NAME" '"re-run started: " + $n | if length > 140 then .[0:139] + "…" else . end')
+            # A character outside the BMP (an emoji) becomes '?': GitHub answers HTTP 422
+            # "Description doesn't accept 4-byte Unicode" to it, and no verdict would follow.
+            desc=$(jq -rn --arg n "$RUN_NAME" '"re-run started: " + $n | explode | map(if . > 65535 then 63 else . end) | implode | if length > 140 then .[0:139] + "…" else . end')
           fi
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
             -f state=pending -f context="$CONTEXT" -f description="$desc" \
