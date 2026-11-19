@@ -31,7 +31,7 @@ as RustSec-only advisories with no GHSA alias.
 . *Discover* every tracked, non-vendored `Cargo.lock` (`vendor/`,
   `vendored/`, `third_party/`, `node_modules/`, `target/`, `fixtures/` skipped, plus the
   caller's `exclude`). Nested workspaces such as `fuzz/` need no listing.
-. *Audit* each with `cargo deny check advisories`, the tool and pinned
+. *Audit* each (from inside the workspace directory, so its own cargo config and `deny.toml` apply) with `cargo deny check advisories`, the tool and pinned
   prebuilt `rust-ci.yml` already uses. The caller's `deny.toml` is honoured.
 . *Bump*: `cargo update -p <crate>@<locked> --precise <lowest patched version
   semver-compatible with the locked one>`, then audit again. A bump that does

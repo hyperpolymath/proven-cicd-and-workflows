@@ -61,7 +61,7 @@ on:
         required: false
         default: "0.20.2"
       deny_args:
-        description: cargo-deny global options, placed before `check` (e.g. `--all-features`)
+        description: cargo-deny global options, placed before `check` (e.g. `--all-features`); the audit runs inside each workspace directory, so any paths here are relative to that workspace
         type: string
         required: false
         default: ""
