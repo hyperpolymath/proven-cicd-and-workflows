@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: CC-BY-SA-4.0
+= Advisory auto-fix
+
+A new RustSec advisory turns a repository's daily cargo audit red on `main`
+and on every PR, docs-only ones included. On 2026-11-14 RUSTSEC-2026-0538
+(GHSA-6pp4-4cxf-xf88, quinn-udp < 0.5.16) did exactly that to echidna and was
+fixed by hand in echidna#507. Two mechanisms, both required (owner decision
+2026-11-15), cover that class of failure permanently.
+
+== Mechanism 1: Dependabot security updates for every workspace
+
+Dependabot only watches the manifests its config lists. echidna's config listed
+`/` and missed `/fuzz`, which has its own `Cargo.lock`.
+
+`scripts/advisory-autofix-dependabot.sh` prints a `.github/dependabot.yml`
+(KYAML) with one `cargo` entry per Cargo workspace, discovered the same way
+the auto-fix discovers them. `templates/dependabot.yml` is the example shape.
+`open-pull-requests-limit: 0` keeps version-update PRs off and still lets
+security PRs through; an `ignore: update-types: [version-update:semver-patch]`
+rule would block the patch-level security PRs and must not be added.
+
+A file cannot switch on "Dependabot security updates" in repository settings.
+The owner does that, per repository.
+
+== Mechanism 2: the scheduled auto-fix
+
+`.github/workflows/advisory-autofix.yml` (reusable; caller
+`templates/advisory-autofix-caller.yml`) catches what Dependabot cannot, such
+as RustSec-only advisories with no GHSA alias.
+
+. *Discover* every tracked, non-vendored `Cargo.lock` (`vendor/`,
+  `vendored/`, `third_party/`, `node_modules/`, `target/`, `fixtures/` skipped, plus the
+  caller's `exclude`). Nested workspaces such as `fuzz/` need no listing.
+. *Audit* each with `cargo deny check advisories`, the tool and pinned
+  prebuilt `rust-ci.yml` already uses. The caller's `deny.toml` is honoured.
+. *Bump*: `cargo update -p <crate>@<locked> --precise <lowest patched version
+  semver-compatible with the locked one>`, then audit again. A bump that does
+  not cure the advisory is reported, never presented as a fix.
+. *Deliver*: one PR for all bumped lockfiles. The commit is made through the
+  `createCommitOnBranch` GraphQL mutation, which GitHub signs.
+. *No fix possible*: no patched version, a patch only across a major version,
+  a strict lower bound, or `cargo update` refusing: one issue per advisory
+  (opened or updated in place) names the advisory and the reason. No PR.
+
+`cargo-deny`'s JSON gives the patched ranges only as the note
+`Solution: Upgrade to >=A, <B OR >=C`. The parser
+(`scripts/advisory-autofix-plan.sh`) is conservative: what it does not
+understand becomes an issue, not a guessed bump.
+
+== Rulings on the bump PRs
+
+* *Never auto-merged.* The workflow opens the PR and stops. The owner merges.
+* *Green means full CI and the declared proof lanes.* Creusot with Pearlite
+  and Verus for first-party Rust, plus Kani and Aeneas where the repository
+  declares them (standards `3-practice/PROOF-POLICY.adoc` §1.2). The PR is
+  opened with `AUTOFIX_TOKEN`, so those workflows actually run on it. Making
+  them required checks is repository branch protection, not something this
+  workflow can do; Phase 2 confirms it per repository. A repository that
+  declares no proof lane says so in its PR rather than inventing one.
+
+== What it does NOT cover
+
+* *Proof failures are not advisories.* A dependency bump can break a Creusot
+  or Pearlite proof, a Verus proof, a Kani harness or an Aeneas extraction
+  (Creusot and Verus pin specific rustc builds). This workflow cannot see
+  that. The bump PR only routes it to those lanes, where a verifier failure
+  shows red. Nothing here skips, silences or retries a lane.
+* *Non-Cargo ecosystems* (npm, Python, Zig, ...) are not audited.
+* *Warnings.* Only error-level advisories (the ones that fail
+  `cargo deny check advisories`) are fixed. Unmaintained or informational
+  advisories that the caller's `deny.toml` only warns on are left alone.
+* *A missing `AUTOFIX_TOKEN`.* A found fix then ends red with the reason and
+  nothing is pushed: a PR from `GITHUB_TOKEN` starts no CI, so it could never
+  be green.
+
+== Self-tests
+
+`tests/advisory-autofix.sh` (run by Language Gates Self-Test):
+
+[cols="1,4"]
+|===
+|U |Planner unit: lowest compatible patched range wins; major-only and strict
+bounds become issues; `0.x` stays inside its minor.
+|P |Positive: a lockfile pinning smallvec 1.6.0 (RUSTSEC-2021-0003, patched in
+1.6.1) is bumped to exactly 1.6.1 and the re-audit is clean.
+|N |Negative: an advisory with no patched version changes no lockfile and is
+reported as an issue.
+|M |Multi-workspace: root and `fuzz/` are both bumped; a vendored and an
+untracked lockfile are not.
+|G |The generated `dependabot.yml` has an entry for every workspace.
+|L |Live: with the real cargo-deny, the advisory is found and, after the fix,
+gone. `REQUIRE_LIVE=1` (CI) makes a missing cargo-deny fatal.
+|===
+
+Each control is also tested by a planted mutant (newest instead of lowest
+version, root-only discovery, vendored trees scanned, one Dependabot entry
+only, no re-audit); a mutant that survives fails the suite. The audit oracle in
+P, N and M is a stand-in replaying recorded real cargo-deny output; `cargo
+update --precise` runs for real, so the suite needs the crates.io index.
