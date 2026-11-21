@@ -36,7 +36,7 @@ Computed from the copy, the manifest at `X` and `scripts/proven-stamp.sh`.
 | UNSTAMPED | file, no stamp | refuses, referral
 | OTHER-ARTIFACT | stamp names another artifact | refuses
 | DRIFT | body does not match its stamp (hand edit) | refuses, never overwritten
-| LEGACY | stamp on line 1; its hash covers a different region from any published body, so it cannot match the manifest's history and cannot be told from a forged copy | refuses by default (open point 1)
+| LEGACY | stamp on line 1; its hash covers a different region from any published body, so it cannot match the manifest's history and cannot be told from a forged copy | refuses by default; a per-repository flag allows the rewrite (decided, below)
 | UNPUBLISHED | stamp is self-consistent but its `{version, sha256}` is not in the manifest history | refuses
 | AHEAD | version above the manifest's | refuses
 | CURRENT | version and hash equal the manifest's | no-op
@@ -101,12 +101,15 @@ NOT checked here, and recorded as gaps:
   Whether install mode should also refresh a Dependabot-stale local value is
   not decided.
 
+== Decided by the owner
+
+* *LEGACY copies* (owner ruling, 21 Nov, option A): install mode refuses LEGACY by
+  default, and a per-repository flag allows the rewrite. A self-consistent legacy
+  copy with edits cannot be told from a clean one, so the default is to refuse.
+  The model checks the refusal (I10); the flag is the applier's to build and is
+  not modelled here.
+
 == Open points for the owner
 
-. *LEGACY copies.* Recommended: refuse by default and allow the rewrite only
-  with an explicit flag per repository, because a self-consistent legacy copy
-  with edits cannot be told from a clean one. The alternative is to publish the
-  legacy hashes of every shipped version in `history`, which changes the
-  manifest format.
 . Whether the model's refusal of UNPUBLISHED should be a referral to the owner
   or to Hypatia. This page says referral only.
