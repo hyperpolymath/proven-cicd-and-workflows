@@ -20,6 +20,7 @@
         "actions/vaulted-tokens-check/**",
         "actions/www-compliance-check/**",
         "actions/manifest-check/**",
+        "actions/recipes-set-check/**",
         "actions/required-files-check/**",
         "actions/spdx-license-check/**",
         "actions/formatting-check/**",
@@ -73,6 +74,7 @@
         "actions/vaulted-tokens-check/**",
         "actions/www-compliance-check/**",
         "actions/manifest-check/**",
+        "actions/recipes-set-check/**",
         "actions/required-files-check/**",
         "actions/spdx-license-check/**",
         "actions/formatting-check/**",
@@ -145,6 +147,11 @@
           # the fixed gates must also stay out of main-estate-audit,
           # which installs none of their tools.
           run: "bash tests/pass-on-absence.sh",
+        },
+        {
+          # The recipes gate installs a pinned, checksummed just, and a failed
+          # install says why (the mutant control shows the suite can fail).
+          run: "bash tests/recipes-set-install.sh",
         },
         {
           # Exercise both exact suite names, stale pins, missing history and
