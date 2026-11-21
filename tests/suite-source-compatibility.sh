@@ -44,7 +44,7 @@ run_case() {
 }
 
 resolved=0
-for workflow in rust-ci.yml creusot-gate.yml spark-gate.yml kanren-gate.yml secret-scanner-reusable.yml; do
+for workflow in rust-ci.yml creusot-gate.yml spark-gate.yml kanren-gate.yml agda-gate.yml rocq-gate.yml lean-axioms-gate.yml tla-gate.yml secret-scanner-reusable.yml; do
     yq -o=json '.' "$root/.github/workflows/$workflow" > "$tmp/workflow.json"
     mapfile -t jobs < <(jq -r '.jobs | to_entries[] | select(any(.value.steps[]?; .id == "suite")) | .key' "$tmp/workflow.json")
     [[ "${#jobs[@]}" -gt 0 ]] || { echo "$workflow has no checked resolver"; exit 1; }
@@ -135,12 +135,12 @@ jobs:
         echo "ok: $workflow/$job accepts both names and refuses untrusted source selections"
     done
 done
-[[ "$resolved" -eq 12 ]] || { echo "Expected all 12 bootstrap sites, got $resolved"; exit 1; }
+[[ "$resolved" -eq 20 ]] || { echo "Expected all 20 bootstrap sites, got $resolved"; exit 1; }
 
 # SHA checking remains mandatory after the selected repository is checked out.
 checkout="$tmp/checkout"
 git init -q "$checkout"
-for gate in rust-ci-check creusot-check spark-check kanren-check; do
+for gate in rust-ci-check creusot-check spark-check kanren-check agda-check rocq-check lean-axioms-check tla-check; do
     mkdir -p "$checkout/actions/$gate"
     printf '#!/usr/bin/env bash\n' > "$checkout/actions/$gate/check.sh"
 done
