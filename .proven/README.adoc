@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: MPL-2.0
+= Counted coverage for this repository
+
+`scripts/proven-coverage.sh OUT_DIR` is the whole-repository shell and workflow run. It needs
+`actionlint`, `jq` and mikefarah `yq` on PATH. The Rust crate under `actions/creusot-check` is measured separately.
+
+== What counts
+
+[cols="1,3"]
+|===
+| Shell (actions/, scripts/, root) | The firing and silence fixtures in `tests/*.sh` and `actions/*/test.sh`, run under bash tracing (`scripts/proven-shell-coverage.sh`). The unit is a statement.
+| Workflows | `actionlint` clean, with each ignore scoped and explained in `.github/actionlint.yaml`.
+| Idris2 (`src/**/*.idr`) | *Placeholder.* Not measured yet: whether a CI `idris2` typecheck of `%default total` modules counts as proof evidence is an open owner question. `src/Proven/Lock/Axioms.idr` is the declared trusted base and will be a written exclusion.
+|===
+
+== Exclusions
+
+`coverage-exclusions.tsv`:: written exclusions, `unreachable` or `environment`, each with a reason and pinned to the line text. It is empty: there is no debt list and no ratchet. Every statement no counted evidence reaches is reported as UNCOVERED and fails the gate; that count is the true gap.
+
+== Limits of the shell measurement (no kcov)
+
+* Bash reports a multi-line command at one of its lines; the tracer groups lines into statements and credits the group.
+* A process started with `env -i`, `sh` or `bash -c` loses the trace hook, so its statements show as uncovered (never falsely covered).
+* Trace paths match scripts by suffix: an unmodified copy run from a temporary directory counts for the original. A test that runs a *modified* copy must give it a different file name.
+* Tests that exit 2 did not run (a missing toolchain such as `idris2`); their statements stay UNCOVERED until they run in CI.
