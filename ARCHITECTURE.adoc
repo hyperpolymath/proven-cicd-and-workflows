@@ -24,6 +24,7 @@ actions/kanren-check/                miniKanren: detect · run · purity
 .github/workflows/kanren-gate.yml     reusable
 .github/workflows/language-gates-self-test.yml  each gate's test.sh, every PR
 templates/*-caller.yml                the thin callers for the four gates
+.github/workflows/advisory-autofix.yml  reusable; scheduled audit + lowest-patched bump (scripts/advisory-autofix-*.sh)
 scripts/verify-suite-checkout.sh      proves the self-checkout is the caller's pin
 scripts/deonboard-workflow.sh         the one de-onboard implementation, every caller
 rollout_language_gates.sh             installs the callers by what a tree contains

@@ -7,6 +7,16 @@
       "reason": "Bounded read-only recovery runner; full-SHA official actions, candidate artifacts only, no target writeback or policy changes."
     },
     {
+      "path": ".github/workflows/advisory-autofix-self-test.yml",
+      "mode": "immutable",
+      "reason": "Self-test for the advisory auto-fix; full-SHA actions outside the existing lock map."
+    },
+    {
+      "path": ".github/workflows/advisory-autofix.yml",
+      "mode": "immutable",
+      "reason": "Reusable advisory auto-fix; full-SHA actions outside the existing lock map (de-onboarded like rust-ci.yml); remote closure is not certified by this scope guard."
+    },
+    {
       "path": ".github/workflows/assurance-kernel.yml",
       "mode": "immutable",
       "reason": "Experimental Idris2 kernel and read-only execution bridge canary; full-SHA actions, no lock-map onboarding or consumer enforcement."
