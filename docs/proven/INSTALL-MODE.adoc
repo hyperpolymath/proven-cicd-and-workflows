@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: MPL-2.0
+= Install mode: the content-only rewrite of a stamped copy
+:toc:
+
+Status: specification. The executor is the standards applier and is not built
+here. This repository holds the contract and `tests/proven-install-mode.sh`,
+which checks the contract as a model with mutant controls.
+
+== What it is
+
+`ARCHITECTURE.adoc` ("The stamp, drift and staleness") says detection comes
+first, as the read-only `BEHIND-CONTENT` census token, and that "rewriting a
+stale copy is a separate applier mode, with its own flag, controls and PR
+branch". This page is that mode's contract. Call it *install mode*: it brings a
+stamped copy to the published current version, or installs one where none exists.
+It changes content only. It never moves a pin by hand, never edits a ruleset,
+never touches a repository except through a PR the owner reviews.
+
+== Inputs
+
+* The suite at one published commit `X`: `proven/manifest.json` and the
+  template named by the entry's `template`.
+* One consumer repository and one artifact (`artifact`).
+* The only path written is the entry's `install_path`.
+
+== States
+
+Computed from the copy, the manifest at `X` and `scripts/proven-stamp.sh`.
+`classify` is pure: it reads and never writes.
+
+[cols="1,3,2"]
+|===
+| State | Meaning | Install mode
+
+| ABSENT | no file at `install_path` | installs
+| UNSTAMPED | file, no stamp | refuses, referral
+| OTHER-ARTIFACT | stamp names another artifact | refuses
+| DRIFT | body does not match its stamp (hand edit) | refuses, never overwritten
+| LEGACY | stamp on line 1; its hash covers a different region from any published body, so it cannot match the manifest's history and cannot be told from a forged copy | refuses by default; a per-repository flag allows the rewrite (decided, below)
+| UNPUBLISHED | stamp is self-consistent but its `{version, sha256}` is not in the manifest history | refuses
+| AHEAD | version above the manifest's | refuses
+| CURRENT | version and hash equal the manifest's | no-op
+| BEHIND | older version whose `{version, sha256}` is in `history` | rewrites
+|===
+
+A refusal leaves the file byte for byte as it was and exits non-zero with its
+state, so the applier reports `decided_by: referred` (see "Propagation and
+feedback" in `ARCHITECTURE.adoc`).
+
+== The rewrite
+
+For ABSENT or BEHIND only. Take the template at `X` and:
+
+. keep the copy's *local region* (the line after each
+  `# proven-cicd:local-next` marker) in marker order. If the counts differ from
+  the template's, refuse as LOCAL-SHAPE;
+. set `PROVEN_SHA` to `X`, the commit whose template is installed. The gate
+  reports `not_run:suite-behind` when a pin is older than the installed
+  version, and this is how the rewrite meets that "by construction";
+. keep the template's stamp, which is the manifest's `{version, sha256}`;
+. write `install_path` and nothing else.
+
+== Invariants
+
+`tests/proven-install-mode.sh` names each one. A defect that breaks one is
+caught under that name.
+
+[cols="1,4"]
+|===
+| I0 | a BEHIND copy is rewritten
+| I1 | the result classifies CURRENT
+| I2 | `proven-stamp.sh check` passes
+| I3 | the stamp is exactly the manifest's current `{version, sha256}`
+| I4 | every local value except `PROVEN_SHA` is unchanged
+| I5 | `PROVEN_SHA` is `X`
+| I6 | no path other than `install_path` changed
+| I7 | line 1 is the SPDX line and line 2 the stamp
+| I8 | a second run is a no-op and changes no byte
+| I9 | an ABSENT copy is installed CURRENT with the new pin
+| I10 | DRIFT, AHEAD, UNPUBLISHED, UNSTAMPED, OTHER-ARTIFACT and LEGACY are refused and untouched
+| I11 | a copy with no local markers is refused
+|===
+
+== What is checked here and what is not
+
+Checked here: the classification known answers, using the real stamp tool and a
+manifest in the real format; the invariants against a reference model; and that
+each of seven mutants of the model is caught by a named invariant.
+
+NOT checked here, and recorded as gaps:
+
+. The standards applier's `--fix-content` has not been read from this
+  repository, so this page does not say it meets I0 to I11. Its own self-test
+  (`test_apply_workflow_pins_remote.sh`) should be held to them. That is an
+  applier PR, owner reviewed, and is out of scope for this slice.
+. The model does not exercise the `ENV-PIN-REFRESH-MOVED` report line, the PR
+  branch name, the canary-first ordering, or lock regeneration.
+. The model treats every `PROVEN_SHA: "<40-hex>"` line as the suite pin. A
+  template that sets it differently needs its own rule.
+. Third-party `uses:` SHAs in the local region are kept as the copy has them.
+  Whether install mode should also refresh a Dependabot-stale local value is
+  not decided.
+
+== Decided by the owner
+
+* *LEGACY copies* (owner ruling, 21 Nov, option A): install mode refuses LEGACY by
+  default, and a per-repository flag allows the rewrite. A self-consistent legacy
+  copy with edits cannot be told from a clean one, so the default is to refuse.
+  The model checks the refusal (I10); the flag is the applier's to build and is
+  not modelled here.
+
+== Open points for the owner
+
+. Whether the model's refusal of UNPUBLISHED should be a referral to the owner
+  or to Hypatia. This page says referral only.
