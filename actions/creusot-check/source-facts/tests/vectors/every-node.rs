@@ -59,16 +59,16 @@ fn every_expression(mut a: [u8; 3], b: Option<u8>) -> Result<u8, u8> {
     let sum = 1 + 2;
     let block = { 1 };
     let brk = loop {
-        break 1;
+        if b.is_some() {
+            break 1;
+        }
     };
     let call = mem::size_of::<u8>();
     let cast = 1u8 as u16;
     let closure = |x: u8| x;
     let konst = const { 1 };
     for _ in 0..1 {
-        if b.is_some() {
-            continue;
-        }
+        continue;
     }
     let field = (1, 2).0;
     if let Some(v) = b {}
