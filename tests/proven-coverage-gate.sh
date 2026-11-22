@@ -113,6 +113,15 @@ bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" round5.sh >"$tmp/round5.lcov"
 want=$'SF:round5.sh\nDA:2,0\nDA:3,0\nDA:5,0\nDA:6,0\nDA:9,0\nDA:11,0\nDA:13,0\nLF:7\nLH:0\nend_of_record'
 check "tracer: tabs before a terminator redirection, a function brace and a | are structure" "tracer lcov: $(tr '\n' ' ' <"$tmp/round5.lcov")" \
   test "$(cat "$tmp/round5.lcov")" = "$want"
+# A subshell line is a statement; only a line where a case pattern may
+# start (after case ... in or ;;) is a pattern list.
+printf '%s\n' '#!/usr/bin/env bash' 'if false; then' '  (echo)' 'fi' \
+  'case $1 in' '  a | b)' '    (echo ab)' '    case $2 in' '      c) echo c ;;' \
+  '    esac ;;' '  (d)' '    echo d' '    ;;' 'esac' >"$tmp/repo/subshell.sh"
+bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" subshell.sh >"$tmp/subshell.lcov"
+want=$'SF:subshell.sh\nDA:2,0\nDA:3,0\nDA:5,0\nDA:7,0\nDA:8,0\nDA:9,0\nDA:12,0\nLF:7\nLH:0\nend_of_record'
+check "tracer: a subshell is a statement outside a case pattern position" "tracer lcov: $(tr '\n' ' ' <"$tmp/subshell.lcov")" \
+  test "$(cat "$tmp/subshell.lcov")" = "$want"
 cat >"$tmp/repo/heredoc.sh" <<'SH'
 #!/usr/bin/env bash
 cat <<EOF

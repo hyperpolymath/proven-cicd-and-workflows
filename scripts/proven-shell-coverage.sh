@@ -111,14 +111,16 @@ HOOK
         if (r ~ /^(done|fi|esac|\}|\))([ \t]*[0-9]*(<<<|<<?|>>?|<>|<&|>&|&>>?)[ \t]*[^ \t;&|<>]+)*([ \t]*(;|;;|;&|;;&|&))?[ \t]*$/) return 1
         if (t ~ /^(function[ \t]+)?[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\([ \t]*\)[ \t]*\{?$/) return 1
         if (t ~ /^function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\{?$/) return 1
-        # A case pattern list, blanks (spaces or tabs) allowed around | (x | y)).
-        if (t ~ /^\(?[ \t]*[^ \t()=|]*[^ \t()=|\\]([ \t]*\|[ \t]*[^ \t()=|]*[^ \t()=|\\])*[ \t]*\)([ \t]*;;)?$/) return 1
+        # A case pattern list, blanks (spaces or tabs) allowed around | (x | y)),
+        # only where a pattern may start (after case ... in or ;;), so a
+        # subshell such as (echo) stays a statement.
+        if (pat && t ~ /^\(?[ \t]*[^ \t()=|]*[^ \t()=|\\]([ \t]*\|[ \t]*[^ \t()=|]*[^ \t()=|\\])*[ \t]*\)([ \t]*;;)?$/) return 1
         return 0
       }
       /^FILE\t/ {
         flush()
         file = substr($0, 6); lineno = 0; ngroups = 0; total = 0; covered = 0
-        open = 0; sp = 0; nh = 0; hc = 0; cont = 0
+        open = 0; sp = 0; nh = 0; hc = 0; cont = 0; ncase = 0; pat = 0
         delete exec
         nmatch = 0
         for (s = 1; s <= nsrc; s++) {
@@ -167,6 +169,13 @@ HOOK
         if (!open) { ngroups++; gstart[ngroups] = lineno }
         gend[ngroups] = lineno
         if (t != "" && !(lineno == 1 && line ~ /^#!/) && !structural(t)) exec[lineno] = 1
+        # Case context: a pattern may start after case ... in or after ;;, ;&
+        # or ;;&, until esac closes the innermost case.
+        if (t != "") {
+          if (ncase && t ~ /^esac([ \t;&|<>].*)?$/) ncase--
+          if (t ~ /^case[ \t].*[ \t]in$/) { ncase++; pat = 1 }
+          else pat = (ncase && t ~ /(;;|;&|;;&)$/)
+        }
         # A here-document opens at a plain << that no < precedes (<<< is a
         # here-string), that is not escaped and not inside quotes or
         # arithmetic (1<<n). Its delimiter is the whole following word after
