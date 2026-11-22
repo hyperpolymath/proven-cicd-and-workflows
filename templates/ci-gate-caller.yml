@@ -79,8 +79,10 @@ jobs:
   # branch and posts the same verdict, waiting (bounded) for the checks named in the profile to report.
   # Same-repository branches only: a fork's or Dependabot's pull_request token cannot write statuses,
   # and those are covered by the workflow_run job. No trust decision uses github.actor.
-  # Because a pull request can edit this file, the Gate tamper guard (ci-gate-tamper-guard.yml, run from
-  # the default branch) fails a pull request that touches gate files unless the owner has approved it.
+  # Because a pull request can edit this file, the gate tamper guard (scripts/ci-gate-tamper-status.sh, run
+  # by the `gate` job from the default branch on workflow_run and in the sweep) publishes
+  # `CI/gate-tamper-guard` = failure on a pull request that touches gate files unless the owner has applied
+  # the label `gate-change-approved` after its newest commit. AGENTS MUST NEVER APPLY THAT LABEL.
   gate-pr:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate.yml@__CICD_SUITE_SHA__ # cicd-suite ci-gate

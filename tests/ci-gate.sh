@@ -733,6 +733,44 @@ sweep CONTEXT='CI / gate'
 chk "third sweep, one head now failing: exactly that one is written" "$(cut -f1,3 "$FAKEGH/posts.log" | tr '\t' ' ')/$RC" "failure $(sha_n 12)/1"
 pubreset
 
+echo "-- the sweep runs the tamper guard publisher for each pull request head (Silence, Firing, mutants) --"
+mk_tamper() { # [exit code] -> a stand-in scripts/ci-gate-tamper-status.sh that logs what it was asked
+  cat > "$SUITE_DIR/scripts/ci-gate-tamper-status.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\t%s\n' "\$HEAD_SHA" "\$PR_NUMBERS" >> "$FAKEGH/tamper.calls"
+[[ ${1:-0} == 0 ]] || { echo "::error::ci-gate-tamper-status: stand-in refused; NO TAMPER VERDICT WAS PRODUCED"; exit ${1:-0}; }
+echo "CI/gate-tamper-guard = success: stand-in"
+STUB
+}
+SWEEP_UT="$SUITE_DIR/scripts/ci-gate-sweep.sh"
+tsweep_case() { # <tamper exit> -> TC (calls), RC
+  pubreset; : > "$FAKEGH/tamper.calls"; mk_tamper "$1"
+  set_pulls "4 $T1 21" "9 2026-11-17T10:01:00Z 21" "5 2026-11-17T10:02:00Z 22"; set_default 23
+  for i in 21 22 23; do sweep_sha "$i" "$DONE"; done
+  sweep; TC=$(sort "$FAKEGH/tamper.calls")
+}
+tcase_silence() { tsweep_case 0; [[ $TC == "$(printf '%s\t4 9\n%s\t5' "$(sha_n 21)" "$(sha_n 22)")" && $RC == 0 ]]; }
+tcase_firing()  { tsweep_case 1; [[ $RC == 1 ]] && grep -qF "| PR #5 (tamper guard) | error |" "$WORK/gss"; }
+tcase_absent()  { pubreset; rm -f "$SUITE_DIR/scripts/ci-gate-tamper-status.sh"; : > "$FAKEGH/tamper.calls"; set_pulls "4 $T1 21"; set_default 23
+                  for i in 21 23; do sweep_sha "$i" "$DONE"; done; sweep; [[ $RC == 0 && ! -s $FAKEGH/tamper.calls ]]; }
+tcase_silence && ok "two PRs share a head: one tamper call with both numbers; one call per other PR head; none for the default branch" || bad "tamper calls from the sweep: '$TC' rc=$RC"
+tcase_firing && ok "a tamper publisher that could not publish is an error row and the sweep exits non-zero" || bad "a tamper error is not surfaced by the sweep (rc=$RC)"
+tcase_absent && ok "a suite without the tamper publisher: the sweep runs as before" || bad "the sweep needs the tamper publisher (rc=$RC)"
+cp "$SWEEP_UT" "$WORK/sweep.orig"
+tmutant() { # <case> <what> <old> <new>
+  python3 -c 'import sys; s=open(sys.argv[1]).read(); assert s.count(sys.argv[2])==1; open(sys.argv[4],"w").write(s.replace(sys.argv[2],sys.argv[3]))' "$WORK/sweep.orig" "$3" "$4" "$SWEEP_UT" \
+    || { bad "sweep mutant '$2': anchor not found"; cp "$WORK/sweep.orig" "$SWEEP_UT"; return; }
+  if "$1" > /dev/null 2>&1; then bad "sweep mutant survived: $2"; else ok "sweep mutant killed: $2 (by $1)"; fi
+  cp "$WORK/sweep.orig" "$SWEEP_UT"
+}
+tmutant tcase_silence 'only one PR number per head'        "| sort -un | paste -sd' ' -)" "| sort -un | head -n 1)"
+tmutant tcase_silence 'every PR is judged on every head'   '$2 == s && '                '1 && '
+tmutant tcase_firing  'a tamper error is not counted'       '    if (( trc != 0 )); then'"
+      tdesc"                                                                     '    if (( trc > 99 )); then'"
+      tdesc"
+tmutant tcase_absent  'a missing publisher is still run'    'if [[ -n $prs && -f $TAMPER ]]; then' 'if [[ -n $prs ]]; then'
+rm -f "$SUITE_DIR/scripts/ci-gate-tamper-status.sh"; pubreset
+
 echo "== repository coordinate: a leading dot is a name; traversal and malformed ones are not =="
 step_script() { # <file> <step name prefix> -> the step's run: block, de-indented
   awk -v name="$2" '

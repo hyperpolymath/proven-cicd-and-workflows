@@ -167,6 +167,8 @@ jobs:
           fetch scripts/validate-ci-gate-profile.sh
           fetch scripts/ci-gate-publish.sh
           fetch scripts/ci-gate-sweep.sh
+          fetch scripts/ci-gate-tamper-guard.sh
+          fetch scripts/ci-gate-tamper-status.sh
           fetch profiles/ci-gate/validate.jq
           fetch profiles/ci-gate/select-runs.jq
           mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
@@ -196,6 +198,19 @@ jobs:
           else
             SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-sweep" bash "$suite/scripts/ci-gate-sweep.sh"
           fi
+      - name: Publish the gate tamper guard status (default-branch evaluators only)
+        # The tamper guard used to run from a pull_request_target caller, which an Actions event policy
+        # blocks (and GitHub blocks by default in public repositories from 2 Dec 2026). It now runs here,
+        # from the default branch: on workflow_run `completed` for the pull requests GitHub lists for the
+        # run (same-repository ones), and in the sweep for every open pull request head. Never on the
+        # pull_request job, which a pull request can edit. It publishes `CI/gate-tamper-guard` and does not
+        # change the CI/gate verdict. AGENTS MUST NEVER APPLY THE APPROVAL LABEL.
+        if: ${{ !cancelled() && github.event_name == 'workflow_run' && github.event.action == 'completed' }}
+        env:
+          PR_NUMBERS: ${{ join(github.event.workflow_run.pull_requests.*.number, ' ') }}
+        run: |
+          set -euo pipefail
+          SUITE="$suite" bash "$suite/scripts/ci-gate-tamper-status.sh"
       - name: Publish a failure status when no verdict could be produced
         if: ${{ failure() && steps.publish.outputs.published != 'true' }}
         run: |

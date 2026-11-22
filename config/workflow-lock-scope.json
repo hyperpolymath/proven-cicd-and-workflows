@@ -17,16 +17,6 @@
       "reason": "Interim CI/gate reusable: uses no actions, reads only API metadata and its own suite files at job.workflow_sha; nothing from a consumer is checked out or run."
     },
     {
-      "path": ".github/workflows/ci-gate-tamper-guard.yml",
-      "mode": "immutable",
-      "reason": "Reusable tamper guard: uses no actions, never checks out or runs pull request code; reads changed files, label events and commit dates through the API."
-    },
-    {
-      "path": ".github/workflows/ci-gate-tamper-guard-caller.yml",
-      "mode": "immutable",
-      "reason": "The suite guards its own gate files: pull_request_target caller of the local reusable guard; runs from the default branch, no checkout, minimal permissions."
-    },
-    {
       "path": ".github/workflows/ci-gate-caller.yml",
       "mode": "immutable",
       "reason": "The suite gates itself: caller of its own local reusable ci-gate.yml (no remote reference, no actions); runs from the default branch only."
