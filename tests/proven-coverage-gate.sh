@@ -104,6 +104,15 @@ bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" round4.sh >"$tmp/round4.lcov"
 want=$'SF:round4.sh\nDA:2,0\nDA:3,0\nDA:4,0\nDA:5,0\nDA:7,0\nDA:9,0\nDA:14,0\nLF:7\nLH:0\nend_of_record'
 check "tracer: fi; cmd, a spaced case pattern and two here-documents" "tracer lcov: $(tr '\n' ' ' <"$tmp/round4.lcov")" \
   test "$(cat "$tmp/round4.lcov")" = "$want"
+# CodeRabbit round 5: tabs separate tokens as spaces do. A terminator, a
+# function header and a case pattern with tabs are still structure.
+printf '%s\n' '#!/usr/bin/env bash' 'for i in 1; do' '  echo loop' $'done\t>/dev/null' \
+  'for j in 1; do' '  echo spaced' 'done >/dev/null' $'f()\t{' '  echo body' '}' \
+  'case $1 in' $'  x\t|\ty)' '    echo xy ;;' 'esac' >"$tmp/repo/round5.sh"
+bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" round5.sh >"$tmp/round5.lcov"
+want=$'SF:round5.sh\nDA:2,0\nDA:3,0\nDA:5,0\nDA:6,0\nDA:9,0\nDA:11,0\nDA:13,0\nLF:7\nLH:0\nend_of_record'
+check "tracer: tabs before a terminator redirection, a function brace and a | are structure" "tracer lcov: $(tr '\n' ' ' <"$tmp/round5.lcov")" \
+  test "$(cat "$tmp/round5.lcov")" = "$want"
 cat >"$tmp/repo/heredoc.sh" <<'SH'
 #!/usr/bin/env bash
 cat <<EOF

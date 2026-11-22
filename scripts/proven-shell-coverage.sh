@@ -102,16 +102,17 @@ HOOK
       }
       function structural(t,   r) {
         if (t ~ /^(then|else|do|done|fi|esac|in|\{|\}|\(|\)|;;|;&|;;&)$/) return 1
-        # A terminator followed only by redirections and an optional ; or &
+        # A terminator followed only by redirections and an optional ; or &,
+        # with spaces or tabs between tokens
         # (fi; echo x keeps echo x). Quotes, $(...), <(...) and >(...) are
         # folded first, so done <<< "$(cmd | f)" is still a terminator.
         r = t; gsub(/\x27[^\x27]*\x27|"[^"]*"/, "Q", r)
         while (gsub(/[$<>]\([^()]*\)/, "P", r)) ;
         if (r ~ /^(done|fi|esac|\}|\))([ \t]*[0-9]*(<<<|<<?|>>?|<>|<&|>&|&>>?)[ \t]*[^ \t;&|<>]+)*([ \t]*(;|;;|;&|;;&|&))?[ \t]*$/) return 1
-        if (t ~ /^(function +)?[A-Za-z_][A-Za-z0-9_:.-]* *\( *\) *\{?$/) return 1
-        if (t ~ /^function +[A-Za-z_][A-Za-z0-9_:.-]* *\{?$/) return 1
-        # A case pattern list, spaces allowed around | (x | y)).
-        if (t ~ /^\(? *[^ ()=|]*[^ ()=|\\]( *\| *[^ ()=|]*[^ ()=|\\])* *\)( *;;)?$/) return 1
+        if (t ~ /^(function[ \t]+)?[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\([ \t]*\)[ \t]*\{?$/) return 1
+        if (t ~ /^function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\{?$/) return 1
+        # A case pattern list, blanks (spaces or tabs) allowed around | (x | y)).
+        if (t ~ /^\(?[ \t]*[^ \t()=|]*[^ \t()=|\\]([ \t]*\|[ \t]*[^ \t()=|]*[^ \t()=|\\])*[ \t]*\)([ \t]*;;)?$/) return 1
         return 0
       }
       /^FILE\t/ {
