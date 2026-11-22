@@ -16,10 +16,10 @@ ok() { echo "ok: $*"; }
 bad() { echo "FAIL $*"; fail=1; }
 
 mkdir -p "$tmp/bin"
-cat >"$tmp/bin/sudo" <<'STUB'
+cat >"$tmp/bin/sudo" <<'SUDO'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$SUDO_LOG"
-STUB
+SUDO
 chmod +x "$tmp/bin/sudo"
 
 # run NAME WANT_RC WANT_OUTPUT WANT_SUDO_LOG APT_PACKAGES
