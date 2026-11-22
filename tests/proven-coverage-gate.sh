@@ -65,6 +65,22 @@ bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" shifts.sh >"$tmp/shifts.lcov"
 want=$'SF:shifts.sh\nDA:2,0\nDA:3,0\nDA:4,0\nDA:5,0\nDA:6,0\nDA:7,0\nLF:6\nLH:0\nend_of_record'
 check "tracer: <<<, shifts and a quoted <<EOF open no here-document" "tracer lcov: $(tr '\n' ' ' <"$tmp/shifts.lcov")" \
   test "$(cat "$tmp/shifts.lcov")" = "$want"
+
+cat >"$tmp/repo/redirected-loops.sh" <<'SH'
+#!/usr/bin/env bash
+while read -r word; do
+  echo "$word"
+done <<< space
+while read -r word; do
+  echo "$word"
+done	<<< tab
+SH
+bash "$tracer" run "$tmp/trace" bash "$tmp/repo/redirected-loops.sh" >/dev/null
+bash "$tracer" lcov "$tmp/repo" "$tmp/trace" redirected-loops.sh >"$tmp/redirected-loops.lcov"
+want=$'SF:redirected-loops.sh\nDA:2,1\nDA:3,1\nDA:5,1\nDA:6,1\nLF:4\nLH:4\nend_of_record'
+check "tracer: loop terminators with space or tab before redirection are structural" \
+  "tracer lcov: $(tr '\n' ' ' <"$tmp/redirected-loops.lcov")" test "$(cat "$tmp/redirected-loops.lcov")" = "$want"
+
 # CodeRabbit round 4: a command after fi; stays counted, a spaced case
 # pattern is not a statement, and two here-documents on one command are
 # both read as data before scanning resumes.

@@ -107,7 +107,7 @@ HOOK
         # folded first, so done <<< "$(cmd | f)" is still a terminator.
         r = t; gsub(/\x27[^\x27]*\x27|"[^"]*"/, "Q", r)
         while (gsub(/[$<>]\([^()]*\)/, "P", r)) ;
-        if (r ~ /^(done|fi|esac|\}|\))( *[0-9]*(<<<|<<?|>>?|<>|<&|>&|&>>?) *[^ ;&|<>]+)*( *(;|;;|;&|;;&|&))? *$/) return 1
+        if (r ~ /^(done|fi|esac|\}|\))([ \t]*[0-9]*(<<<|<<?|>>?|<>|<&|>&|&>>?)[ \t]*[^ \t;&|<>]+)*([ \t]*(;|;;|;&|;;&|&))?[ \t]*$/) return 1
         if (t ~ /^(function +)?[A-Za-z_][A-Za-z0-9_:.-]* *\( *\) *\{?$/) return 1
         if (t ~ /^function +[A-Za-z_][A-Za-z0-9_:.-]* *\{?$/) return 1
         # A case pattern list, spaces allowed around | (x | y)).

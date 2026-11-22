@@ -18,7 +18,11 @@ bad() { echo "FAIL $*"; fail=1; }
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/sudo" <<'SUDO'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$SUDO_LOG"
+# One line per call, with each argument escaped and delimited separately.
+{
+  printf '<%q>' "$@"
+  printf '\n'
+} >>"$SUDO_LOG"
 SUDO
 chmod +x "$tmp/bin/sudo"
 
@@ -36,7 +40,7 @@ run "blank list installs nothing" 0 "nothing to install" "" $' \t\n'
 unset APT_PACKAGES
 rc=0; out=$(PATH="$tmp/bin:$PATH" SUDO_LOG="$tmp/sudo.log" bash "$script" 2>&1) || rc=$?
 if [[ $rc == 0 && $out == *"nothing to install"* ]]; then ok "unset list installs nothing"; else bad "unset list: exit $rc, $out"; fi
-run "valid names are installed after one update" 0 "" $'apt-get update -qq\napt-get install -y --no-install-recommends capnproto protobuf-compiler libssl-dev g++' \
+run "valid names are installed after one update" 0 "" $'<apt-get><update><-qq>\n<apt-get><install><-y><--no-install-recommends><capnproto><protobuf-compiler><libssl-dev><g++>' \
   $'capnproto  protobuf-compiler\nlibssl-dev g++'
 run "an option-looking name is refused" 2 "'--allow-unauthenticated' is not a valid" "" "capnproto --allow-unauthenticated"
 run "a shell metacharacter is refused" 2 "'a;b' is not a valid" "" "a;b"
