@@ -4,10 +4,13 @@
 # scripts/proven-coverage-gate.sh.
 #   tracer   a taken branch is hit, an untaken one is not; structure lines are
 #            not statements; a multi-line command is one statement; exit codes
-#            pass through
+#            pass through; <<< , 1<<n, a quoted "<<EOF" and an escaped \<<EOF
+#            open no here-document; a punctuated delimiter (EOF-JSON) closes;
+#            a file without a final newline keeps the next file's record
 #   gate     silence on full coverage; UNCOVERED, STALE, MALFORMED,
-#            COVERED-BUT-EXCLUDED and UNUSED-EXCLUSION each fire; line and fn
-#            rows excuse; usage is exit 2
+#            COVERED-BUT-EXCLUDED, UNUSED-EXCLUSION and EMPTY each fire; line and
+#            fn rows excuse; an exclusion matches whole path components only;
+#            usage is exit 2
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 tracer=$root/scripts/proven-shell-coverage.sh
@@ -17,7 +20,9 @@ trap 'rm -rf -- "$tmp"' EXIT
 fail=0
 ok() { echo "ok: $*"; }
 bad() { echo "FAIL $*"; fail=1; }
-verdict() { if [[ $1 == 0 ]]; then ok "$2"; else bad "$3"; fi; } # STATUS OK_TEXT FAIL_TEXT
+# check OK_TEXT FAIL_TEXT CMD...: runs CMD inside if, so a false CMD reports
+# FAIL instead of ending the script under set -e.
+check() { local yes=$1 no=$2; shift 2; if "$@"; then ok "$yes"; else bad "$no"; fi; }
 
 mkdir -p "$tmp/repo"
 cat >"$tmp/repo/probe.sh" <<'SH'
@@ -35,14 +40,63 @@ exit 3
 SH
 printf '%s\n' '#!/usr/bin/env bash' >"$tmp/repo/other.sh"
 (cd "$tmp/repo" && bash "$tracer" run "$tmp/trace" bash probe.sh yes >/dev/null) && rc=0 || rc=$?
-[[ $rc == 3 ]]; verdict $? "tracer passes the exit code through" "tracer exit $rc, want 3"
+check "tracer passes the exit code through" "tracer exit $rc, want 3" test "$rc" = 3
 (cd "$tmp/repo" && bash "$tracer" lcov . "$tmp/trace" probe.sh) >"$tmp/probe.lcov"
 want=$'SF:probe.sh\nDA:2,1\nDA:3,1\nDA:4,1\nDA:6,0\nDA:8,1\nDA:10,1\nLF:6\nLH:5\nend_of_record'
-[[ $(cat "$tmp/probe.lcov") == "$want" ]]; verdict $? "tracer statements and hits" "tracer lcov: $(tr '\n' ' ' <"$tmp/probe.lcov")"
+check "tracer statements and hits" "tracer lcov: $(tr '\n' ' ' <"$tmp/probe.lcov")" test "$(cat "$tmp/probe.lcov")" = "$want"
 bash "$tracer" lcov 2>/dev/null && rc=0 || rc=$?
-[[ $rc == 2 ]]; verdict $? "tracer usage is exit 2" "tracer usage exit $rc"
+check "tracer usage is exit 2" "tracer usage exit $rc" test "$rc" = 2
 bash "$tracer" bogus a b 2>/dev/null && rc=0 || rc=$?
-[[ $rc == 2 ]]; verdict $? "tracer unknown mode is exit 2" "tracer unknown mode exit $rc"
+check "tracer unknown mode is exit 2" "tracer unknown mode exit $rc" test "$rc" = 2
+
+# Not here-documents: a here-string, two shifts and a quoted <<EOF. Each later
+# line must stay a statement (a false here-document would swallow them).
+cat >"$tmp/repo/shifts.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<< word
+n=$((1<<n))
+(( m = 1 << shift ))
+k=$(( (1<<n) + 1 ))
+echo "x <<EOF"
+echo after
+SH
+: >"$tmp/empty-trace"
+bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" shifts.sh >"$tmp/shifts.lcov"
+want=$'SF:shifts.sh\nDA:2,0\nDA:3,0\nDA:4,0\nDA:5,0\nDA:6,0\nDA:7,0\nLF:6\nLH:0\nend_of_record'
+check "tracer: <<<, shifts and a quoted <<EOF open no here-document" "tracer lcov: $(tr '\n' ' ' <"$tmp/shifts.lcov")" \
+  test "$(cat "$tmp/shifts.lcov")" = "$want"
+cat >"$tmp/repo/heredoc.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<EOF
+text
+EOF
+echo after
+SH
+bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" heredoc.sh >"$tmp/heredoc.lcov"
+want=$'SF:heredoc.sh\nDA:2,0\nDA:5,0\nLF:2\nLH:0\nend_of_record'
+check "tracer: a real here-document is one statement" "tracer lcov: $(tr '\n' ' ' <"$tmp/heredoc.lcov")" \
+  test "$(cat "$tmp/heredoc.lcov")" = "$want"
+# A punctuated delimiter closes at its full word; an escaped \<<EOF is an
+# input redirection, not a here-document.
+cat >"$tmp/repo/delims.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<'EOF-JSON'
+{"a": 1}
+EOF-JSON
+cat <<-"END.TXT"
+	text
+	END.TXT
+cat \<<EOF
+echo after
+SH
+bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" delims.sh >"$tmp/delims.lcov"
+want=$'SF:delims.sh\nDA:2,0\nDA:5,0\nDA:8,0\nDA:9,0\nLF:4\nLH:0\nend_of_record'
+check "tracer: a punctuated delimiter closes and an escaped \\<< opens nothing" "tracer lcov: $(tr '\n' ' ' <"$tmp/delims.lcov")" \
+  test "$(cat "$tmp/delims.lcov")" = "$want"
+printf '%s\n%s' '#!/usr/bin/env bash' 'echo a' >"$tmp/repo/nonl.sh"
+bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" nonl.sh heredoc.sh >"$tmp/nonl.lcov"
+check "tracer: a file without a final newline keeps the next record" "tracer lcov: $(tr '\n' ' ' <"$tmp/nonl.lcov")" \
+  grep -qx 'SF:heredoc.sh' "$tmp/nonl.lcov"
 
 sha() { sed -n "$2p" "$tmp/repo/$1" | sha256sum | cut -c1-12; }
 lcov=$tmp/probe.lcov
@@ -67,4 +121,10 @@ expect "fires: COVERED-BUT-EXCLUDED" 1 "COVERED-BUT-EXCLUDED" "$line6\tunreachab
 expect "fires: UNUSED-EXCLUSION" 1 "UNUSED-EXCLUSION" "$line6\tunreachable\tx\nother.sh\tline:1:$(sha probe.sh 1)\tunreachable\tx\n" "$lcov"
 expect "fires: MALFORMED retired debt kind" 1 "MALFORMED" "$line6\tdebt\tx\n" "$lcov"
 expect "usage: no report is exit 2" 2 "no report" "" "$tmp/missing.lcov"
+: >"$tmp/empty.lcov"
+expect "fires: EMPTY report" 1 "EMPTY" "" "$tmp/empty.lcov"
+printf 'SF:xprobe.sh\nDA:6,0\nend_of_record\n' >"$tmp/xprobe.lcov"
+expect "fires: exclusion does not match a longer file name" 1 $'UNCOVERED\txprobe.sh\tline:6' "$line6\tunreachable\tx\n" "$tmp/xprobe.lcov"
+printf 'SF:actions/a/probe.sh\nDA:6,0\nend_of_record\n' >"$tmp/deeper.lcov"
+expect "silence: exclusion matches on a / boundary" 0 "findings=0" "$line6\tunreachable\tx\n" "$tmp/deeper.lcov"
 exit "$fail"

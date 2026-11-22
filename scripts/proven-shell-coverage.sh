@@ -15,6 +15,9 @@
 #     open $( or ( , a trailing \ | && || or a here-document form one statement;
 #     it is hit when bash reports any of its lines (bash reports a multi-line
 #     command at one of them, not always the first). DA uses its first line.
+#   - A here-document opens only at an unquoted, unescaped << outside
+#     arithmetic; a here-string (<<<) and a shift (1<<n) do not open one. Its
+#     delimiter is the whole word after quote removal ('EOF-JSON' is EOF-JSON).
 #   - Structure-only lines (then, else, do, done, fi, esac, braces, a function
 #     header, a bare case pattern) are not statements: xtrace never reports them.
 #   - A process started with env -i, by sh, or by bash -c loses the hook and
@@ -51,6 +54,8 @@ HOOK
       [[ -f $root/$file ]] || { echo "proven-shell-coverage: no file $file" >&2; exit 2; }
       printf 'FILE\t%s\n' "$file"
       cat -- "$root/$file"
+      # A file without a final newline would glue the next FILE marker to its last line.
+      [[ ! -s $root/$file || -z $(tail -c 1 -- "$root/$file") ]] || echo
     done | awk -v trace="$trace" '
       BEGIN {
         # hit[path suffix, line]: every (source, line) bash reported.
@@ -74,6 +79,23 @@ HOOK
           if (first) { print "DA:" first "," any; total++; covered += any }
         }
         print "LF:" total; print "LH:" covered; print "end_of_record"
+      }
+      # heredoc_word(S, J): the shell word at S[J], quotes and backslashes
+      # removed; empty when there is none.
+      function heredoc_word(s, j,   w, ch, q) {
+        w = ""
+        while (j <= length(s)) {
+          ch = substr(s, j, 1)
+          if (ch ~ /[ \t;&|<>()]/) break
+          if (ch == "\x27" || ch == "\"") {
+            q = index(substr(s, j + 1), ch)
+            if (!q) { w = w substr(s, j + 1); break }
+            w = w substr(s, j + 1, q - 1); j += q + 1; continue
+          }
+          if (ch == "\\") { w = w substr(s, j + 1, 1); j += 2; continue }
+          w = w ch; j++
+        }
+        return w
       }
       function structural(t) {
         if (t ~ /^(then|else|do|done|fi|esac|in|\{|\}|\(|\)|;;|;&|;;&)$/) return 1
@@ -105,29 +127,49 @@ HOOK
           next
         }
         # Scan characters with a context stack: " (double quote), \x27 (single
-        # quote), ( (command substitution or subshell), { (parameter expansion).
-        code = ""
+        # quote), ( (command substitution or subshell), { (parameter expansion),
+        # a (arithmetic, $(( or (( up to its )) ), A (a parenthesis inside
+        # arithmetic). plain has one flag per character of code: 1 where the
+        # character is shell syntax (not inside quotes, ${ } or arithmetic), so
+        # only a plain << can open a here-document.
+        code = ""; plain = ""
         for (i = 1; i <= length(line); i++) {
           c = substr(line, i, 1); top = sp ? stack[sp] : ""
-          if (top == "\x27") { if (c == "\x27") sp--; code = code c; continue }
-          if (c == "\\") { code = code substr(line, i, 2); i++; continue }
+          pf = (top == "" || top == "(") ? "1" : "0"
+          if (top == "\x27") { if (c == "\x27") sp--; code = code c; plain = plain pf; continue }
+          if (c == "\\") { code = code substr(line, i, 2); plain = plain pf "0"; i++; continue }
           two = substr(line, i, 2)
-          if (two == "$(" || two == "${") { stack[++sp] = substr(two, 2); code = code two; i++; continue }
-          if (top == "\"") { if (c == "\"") sp--; code = code c; continue }
-          if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[ \t;(]/)) break
-          if (c == "\x27" || c == "\"" || c == "(") stack[++sp] = c
-          else if (c == ")" && top == "(") sp--
+          if (substr(line, i, 3) == "$((") { stack[++sp] = "a"; code = code "$(("; plain = plain pf pf pf; i += 2; continue }
+          if (two == "$(" || two == "${") { stack[++sp] = substr(two, 2); code = code two; plain = plain pf pf; i++; continue }
+          if (top == "\"") { if (c == "\"") sp--; code = code c; plain = plain pf; continue }
+          if (top == "a" && two == "))") { sp--; code = code two; plain = plain "00"; i++; continue }
+          if (top != "a" && top != "A" && two == "((") { stack[++sp] = "a"; code = code two; plain = plain pf pf; i++; continue }
+          if (top != "a" && top != "A" && c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[ \t;(]/)) break
+          if (c == "(" && (top == "a" || top == "A")) stack[++sp] = "A"
+          else if (c == "\x27" || c == "\"" || c == "(") stack[++sp] = c
+          else if (c == ")" && (top == "(" || top == "A")) sp--
           else if (c == "}" && top == "{") sp--
-          code = code c
+          code = code c; plain = plain pf
         }
         t = code; gsub(/^[ \t]+|[ \t]+$/, "", t)
         if (!open) { ngroups++; gstart[ngroups] = lineno }
         gend[ngroups] = lineno
         if (t != "" && !(lineno == 1 && line ~ /^#!/) && !structural(t)) exec[lineno] = 1
-        if (match(code, /<<-?[ \t]*[\x27"]?[A-Za-z_][A-Za-z0-9_]*[\x27"]?/) && substr(code, RSTART, 3) != "<<<") {
-          heredoc = substr(code, RSTART, RLENGTH)
-          heredoc_strip = (heredoc ~ /^<<-/)
-          sub(/^<<-?[ \t]*/, "", heredoc); gsub(/[\x27"]/, "", heredoc)
+        # A here-document opens at a plain << that no < precedes (<<< is a
+        # here-string), that is not escaped and not inside quotes or
+        # arithmetic (1<<n). Its delimiter is the whole following word after
+        # quote removal, punctuation included (<<\x27EOF-JSON\x27 is EOF-JSON).
+        for (at = 1; at < length(code); at++) {
+          if (substr(code, at, 2) != "<<" || substr(plain, at, 1) != "1") continue
+          if (at > 1 && substr(code, at - 1, 1) == "<") continue
+          if (substr(code, at + 2, 1) == "<") { at += 2; continue }
+          j = at + 2; strip = 0
+          if (substr(code, j, 1) == "-") { strip = 1; j++ }
+          while (substr(code, j, 1) ~ /[ \t]/) j++
+          word = heredoc_word(code, j)
+          if (word == "") continue
+          heredoc = word; heredoc_strip = strip
+          break
         }
         cont = (t ~ /(\\|\||&&|\|\|)$/)
         open = (sp > 0 || cont)

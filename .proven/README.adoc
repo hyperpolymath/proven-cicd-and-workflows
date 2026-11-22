@@ -22,4 +22,5 @@
 * Bash reports a multi-line command at one of its lines; the tracer groups lines into statements and credits the group.
 * A process started with `env -i`, `sh` or `bash -c` loses the trace hook, so its statements show as uncovered (never falsely covered).
 * Trace paths match scripts by suffix: an unmodified copy run from a temporary directory counts for the original. A test that runs a *modified* copy must give it a different file name.
-* Tests that exit 2 did not run (a missing toolchain such as `idris2`); their statements stay UNCOVERED until they run in CI.
+* Tests that exit 2 did not run (a missing toolchain such as `idris2`). They are listed as NOT RUN and fail the run, because a test that did not run is no evidence; their statements also stay UNCOVERED.
+* A here-document opens only at an unquoted `<<` outside arithmetic. A here-string (`<<<`) and a shift (`1<<n`) do not open one.

@@ -7,14 +7,15 @@
 # (tab-separated: path, unit, kind, reason), where unit is one of
 #   line:N:SHA12   line N of path; SHA12 is the first 12 hex of the line's sha256
 #   fn:NAME        a function whose LCOV name ends with NAME
-# and kind is unreachable or environment, with a reason. Paths are relative to ROOT; LCOV paths
-# are matched by that suffix.
+# and kind is unreachable or environment, with a reason. Paths are relative to ROOT; an LCOV
+# path matches when it equals the path or ends with / and the path (a whole-component suffix).
 # Findings (one per line, then a SUMMARY line):
 #   UNCOVERED            a counted line or function nobody hit and nobody excused
 #   STALE                an exclusion whose line text or function name has moved
 #   MALFORMED            an exclusion row that does not parse
 #   COVERED-BUT-EXCLUDED an exclusion the evidence now reaches; delete the row
 #   UNUSED-EXCLUSION     an exclusion that matches nothing in the reports
+#   EMPTY                the reports hold no DA or FNDA record, so nothing was measured
 # Exit 0 when there are no findings, 1 when there are, 2 on usage errors.
 set -euo pipefail
 (($# >= 3)) || { echo "usage: proven-coverage-gate.sh ROOT EXCLUSIONS LCOV..." >&2; exit 2; }
@@ -61,7 +62,7 @@ awk -F'\t' -v exclusions="$resolved" '
     if (what == "line") lines++; else fns++
     excused = 0
     for (i = 1; i <= n; i++) {
-      if (substr(file, length(file) - length(ex_path[i]) + 1) != ex_path[i]) continue
+      if (file != ex_path[i] && substr(file, length(file) - length(ex_path[i])) != "/" ex_path[i]) continue
       split(ex_unit[i], u, ":")
       if (u[1] != what) continue
       if (what == "line" && u[2] != key) continue
@@ -74,6 +75,7 @@ awk -F'\t' -v exclusions="$resolved" '
     else { print "UNCOVERED\t" file "\t" what ":" key; bad++ }
   }
   END {
+    if (lines + fns == 0) { print "EMPTY\tno DA or FNDA record in the reports"; bad++ }
     for (i = 1; i <= n; i++) if (!ex_used[i]) { print "UNUSED-EXCLUSION\t" ex_path[i] "\t" ex_unit[i]; bad++ }
     printf "SUMMARY lines=%d functions=%d covered=%d excluded=%d findings=%d\n", lines, fns, covered, excluded, bad
     exit bad > 0
