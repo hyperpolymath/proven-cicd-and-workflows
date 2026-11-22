@@ -122,6 +122,29 @@ bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" subshell.sh >"$tmp/subshell.l
 want=$'SF:subshell.sh\nDA:2,0\nDA:3,0\nDA:5,0\nDA:7,0\nDA:8,0\nDA:9,0\nDA:12,0\nLF:7\nLH:0\nend_of_record'
 check "tracer: a subshell is a statement outside a case pattern position" "tracer lcov: $(tr '\n' ' ' <"$tmp/subshell.lcov")" \
   test "$(cat "$tmp/subshell.lcov")" = "$want"
+# case may follow then or do on its line, and esac may follow ;; or end a
+# chain such as esac; done. A full traced run then covers every statement.
+cat >"$tmp/repo/inline-case.sh" <<'SH'
+#!/usr/bin/env bash
+if true; then case x in
+  x)
+    echo reached
+    ;;
+esac
+fi
+for v in a; do case $v in
+  (a | b)
+    echo "$v" ;;
+esac; done
+case y in
+  y) echo y ;; esac
+(echo sub)
+SH
+bash "$tracer" run "$tmp/inline-trace" bash "$tmp/repo/inline-case.sh" >/dev/null
+bash "$tracer" lcov "$tmp/repo" "$tmp/inline-trace" inline-case.sh >"$tmp/inline-case.lcov"
+want=$'SF:inline-case.sh\nDA:2,1\nDA:4,1\nDA:8,1\nDA:10,1\nDA:12,1\nDA:13,1\nDA:14,1\nLF:7\nLH:7\nend_of_record'
+check "tracer: case after then or do, and esac after ;; or before ; done, are structure" \
+  "tracer lcov: $(tr '\n' ' ' <"$tmp/inline-case.lcov")" test "$(cat "$tmp/inline-case.lcov")" = "$want"
 cat >"$tmp/repo/heredoc.sh" <<'SH'
 #!/usr/bin/env bash
 cat <<EOF

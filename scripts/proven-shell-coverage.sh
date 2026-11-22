@@ -102,13 +102,14 @@ HOOK
       }
       function structural(t,   r) {
         if (t ~ /^(then|else|do|done|fi|esac|in|\{|\}|\(|\)|;;|;&|;;&)$/) return 1
-        # A terminator followed only by redirections and an optional ; or &,
-        # with spaces or tabs between tokens
+        # A terminator followed only by redirections, more terminators after
+        # ; or & (esac; done), and an optional ; or &, with spaces or tabs
+        # between tokens
         # (fi; echo x keeps echo x). Quotes, $(...), <(...) and >(...) are
         # folded first, so done <<< "$(cmd | f)" is still a terminator.
         r = t; gsub(/\x27[^\x27]*\x27|"[^"]*"/, "Q", r)
         while (gsub(/[$<>]\([^()]*\)/, "P", r)) ;
-        if (r ~ /^(done|fi|esac|\}|\))([ \t]*[0-9]*(<<<|<<?|>>?|<>|<&|>&|&>>?)[ \t]*[^ \t;&|<>]+)*([ \t]*(;|;;|;&|;;&|&))?[ \t]*$/) return 1
+        if (r ~ /^(done|fi|esac|\}|\))([ \t]*[0-9]*(<<<|<<?|>>?|<>|<&|>&|&>>?)[ \t]*[^ \t;&|<>]+)*([ \t]*(;|;;|;&|;;&|&)[ \t]*(done|fi|esac|\}|\))([ \t]*[0-9]*(<<<|<<?|>>?|<>|<&|>&|&>>?)[ \t]*[^ \t;&|<>]+)*)*([ \t]*(;|;;|;&|;;&|&))?[ \t]*$/) return 1
         if (t ~ /^(function[ \t]+)?[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\([ \t]*\)[ \t]*\{?$/) return 1
         if (t ~ /^function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\{?$/) return 1
         # A case pattern list, blanks (spaces or tabs) allowed around | (x | y)),
@@ -170,10 +171,12 @@ HOOK
         gend[ngroups] = lineno
         if (t != "" && !(lineno == 1 && line ~ /^#!/) && !structural(t)) exec[lineno] = 1
         # Case context: a pattern may start after case ... in or after ;;, ;&
-        # or ;;&, until esac closes the innermost case.
+        # or ;;&, until esac closes the innermost case. case and esac may
+        # follow a command boundary (; & | ( {) or a keyword on the same line
+        # (if true; then case x in, x) echo ;; esac).
         if (t != "") {
-          if (ncase && t ~ /^esac([ \t;&|<>].*)?$/) ncase--
-          if (t ~ /^case[ \t].*[ \t]in$/) { ncase++; pat = 1 }
+          if (ncase && t ~ /(^|[;&|][ \t]*)esac([ \t;&|<>)].*)?$/) ncase--
+          if (t ~ /(^|[;&|({][ \t]*|(^|[ \t;])(if|then|do|else|elif|while|until|!)[ \t]+)case[ \t].*[ \t]in$/) { ncase++; pat = 1 }
           else pat = (ncase && t ~ /(;;|;&|;;&)$/)
         }
         # A here-document opens at a plain << that no < precedes (<<< is a
