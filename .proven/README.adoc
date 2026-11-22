@@ -15,7 +15,7 @@
 
 == Exclusions
 
-`coverage-exclusions.tsv`:: written exclusions, `unreachable` or `environment`, each with a reason and pinned to the line text. It is empty: there is no debt list and no ratchet. Every statement no counted evidence reaches is reported as UNCOVERED and fails the gate; that count is the true gap.
+`coverage-exclusions.tsv`:: written exclusions, `unreachable` or `environment`, each with a reason and pinned to the line text. A row excuses only the file it names: the same repo-relative path, or that path under ROOT as an absolute path. It is empty: there is no debt list and no ratchet. Every statement no counted evidence reaches is reported as UNCOVERED and fails the gate; that count is the true gap.
 
 == Limits of the shell measurement (no kcov)
 
