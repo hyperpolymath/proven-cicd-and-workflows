@@ -189,14 +189,17 @@ fn prop_cfg_inside_cfg_attr_is_only_trusted_when_resolved() {
 fn prop_nesting_beyond_the_bound_is_refused() {
     let mut rng = Rng(SEED ^ 3);
     let dir = scratch("depth");
-    for _ in 0..128 {
-        let depth = rng.below(80) as usize;
+    // The bound is `depth > 64` in the binary: 64 wrappers pass, 65 are refused.
+    // Pin the boundary explicitly, then sample the rest at random.
+    let mut depths: Vec<usize> = vec![0, 1, 63, 64, 65, 66, 79];
+    depths.extend((0..128).map(|_| rng.below(80) as usize));
+    for depth in depths {
         let mut meta = String::from("logic");
         for _ in 0..depth {
             meta = format!("cfg_attr(creusot, {meta})");
         }
         let out = facts_of(&dir, &format!("#[{meta}]\nfn f() {{}}\n"));
-        if depth <= 65 {
+        if depth <= 64 {
             assert_eq!(out.0, 0, "depth {depth}: {out:?}");
             assert!(out.1.starts_with("obligation\t"), "depth {depth}");
         } else {
