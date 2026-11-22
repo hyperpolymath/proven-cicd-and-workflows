@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: MPL-2.0 AND CC-BY-SA-4.0
+// MPL-2.0 (code) and CC-BY-SA-4.0 (prose)
+= Proven Governance, Hypatia scan, Scorecard and Mirror: design
+:toc:
+
+Status: DESIGN ONLY. No code, no push, until the owner says go by selector.
+
+== The problem
+
+verisimdb-data#168 calls four reusables at
+`hyperpolymath/standards/...@1ded685`. That repository moved to
+`metadatastician/standards`.
+
+* A `uses:` call does not follow the rename: "workflow was not found".
+* Calling `metadatastician/standards/...` directly is refused by the Actions
+  admission policy: reusables must be owned by `hyperpolymath`. This is
+  observed evidence (see link:SCANNER-STARTUP-AND-PARITY.adoc[]).
+* The upstream reusables also check out `metadatastician/standards` helpers at
+  `${{ job.workflow_sha }}`, and Governance nests two more
+  `metadatastician/...` reusables (deed-conformance, k9-conformance).
+* Scorecard needs four permissions on the *calling job*. Most callers omit
+  one, so it fails until someone fixes it by hand.
+
+The secret scanner already solved the same problem with this repo's caller
+template (suite `1fd5e63`). We copy that pattern. We do not widen policy.
+
+== The shared pattern (all four)
+
+. *Owner.* Each reusable lives here, at
+  `.github/workflows/<name>-reusable.yml`. The owner is `hyperpolymath`, so
+  admission passes.
+. *No foreign helpers.* No `uses:` or checkout of `metadatastician/*`. Helper
+  scripts are vendored into `actions/<name>-check/` (`check.sh`, `test.sh`),
+  copied from a named standards commit. A `PROVENANCE` file records the source
+  commit and sha256 of each copied file. A test fails if a file drifts from it.
+  Tools already owned by hyperpolymath (hypatia, panic-attack, pons-asinorum,
+  deed-ecosystem, k9-ecosystem) are fetched from there at pinned SHAs.
+. *Self-pin, not `job.workflow_sha`.* Like the secret scanner, the first step
+  reads the caller's own `uses:` line (via `GITHUB_WORKFLOW_REF`), accepts only
+  `hyperpolymath/proven-cicd-and-workflows/...@<40-hex>`, and checks out this
+  repo at exactly that SHA, outside the subject.
+. *Verdicts.* Exit 0 pass, 1 real finding, 2 nothing trustworthy was checked.
+  No `continue-on-error`.
+. *Locks.* Callee: the reusables are not keyed in this repo's `actions.lock`
+  (as the language gates). Caller: de-onboarded, or one onboarded record for
+  repos with a lock-sync gate (README, "What a gate may use").
+. *Third-party actions.* Only SHA-pinned actions the suite already uses, or
+  that the caller's allowlist already admits. No new admission requests.
+. *Context names.* Caller job ids stay `governance`, `hypatia`, `scorecard`,
+  `mirror`, and inner job names stay as upstream, so branch rules still match.
+. *Secrets.* Passed by name. Never `secrets: inherit`.
+. *Templates.* `templates/<name>-caller.yml` with `__CICD_SUITE_SHA__`, a
+  catalogue card, and a self-test workflow, as for the other gates.
+
+== The four replacements
+
+[cols="1,3,2,2",options="header"]
+|===
+|Workflow |What it does |Inputs and secrets |Permissions (on the caller job)
+
+|*Scorecard*
+|Non-PR: run OSSF Scorecard, publish only on the default branch, upload SARIF.
+PR: analyse without publishing. Vendored action-pin reconciliation.
+*New:* `actions/scorecard-check/permissions.sh` checks the caller file and
+prints the fix. It is a static check, run on the template in CI and on a
+caller before it is pinned. It cannot run inside the reusable: GitHub refuses
+to start a reusable job that asks for more than the caller grants, before any
+step runs.
+|No inputs. No secrets.
+|`actions: read`, `contents: read`, `security-events: write`, `id-token: write`
+(id-token only on the non-PR job)
+
+|*Hypatia scan*
+|Build hypatia at a pinned SHA, scan, validate findings, run panic-attack and
+pons at pinned SHAs, filter SARIF by baseline and scope, upload SARIF, render
+the verdict grid, gate on baseline and thresholds. Filters and grid renderer
+are vendored.
+|Same input names as upstream (`block-on-high`, `block-on-critical`,
+`scope-excludes`, `hypatia-ref`, `panic-ref`, `pons-ref`, ...).
+Optional `HYPATIA_SCAN_PAT` (read-only).
+|`actions: read`, `contents: read`, `security-events: write`
+
+|*Governance*
+|25 upstream jobs: staleness, UUID, A2ML, deeds, deed and K9 conformance,
+allowlist, live Actions policy, Hypatia baseline, language, package,
+security, quality, well-known, workflow lint, lock verify, trusted base,
+licence, ratchets, JS runtimes. The two nested reusables become local nested
+reusables in this repo. Delivered in stages (see order).
+|`hypatia-ref`, `runs-on`, `baseline-strict`, `conformance-mode`.
+Optional `HYPATIA_SCAN_PAT` (advisory live-policy job only).
+|`actions: read`, `contents: read`
+
+|*Mirror*
+|Visibility guard first (a private source never mirrors to an unconfirmed
+forge). Then one job per forge: GitLab, Bitbucket, Codeberg, SourceHut,
+Disroot, Gitea, Radicle, and an age-encrypted bundle to R2. A forge with no
+key is a visible skip, not a pass. Host keys are pinned in a vendored
+`known_hosts`. The shell `ssh-agent` replaces `webfactory/ssh-agent`, so no
+new action is admitted.
+|`runs-on`. Ten named secrets: six forge SSH keys, `RADICLE_KEY`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_AGE_RECIPIENT`.
+Variable `GITEA_HOST`.
+|`contents: read`
+|===
+
+== Test plan (each PR)
+
+. Unit: `tests/<name>.sh` with fixtures in `tests/fixtures/<name>/`. Each
+  covers pass, real finding (1) and no-trustworthy-check (2).
+. Pattern controls: self-pin rejects a foreign owner, a short SHA and a
+  non-direct caller. Provenance hashes match. No `metadatastician` string in
+  any `uses:` or `repository:`. No `job.workflow_sha`.
+. Specific: Scorecard permission check (missing each of the four). Mirror
+  against local bare repos through a `GIT_SSH_COMMAND` shim, never a real
+  forge; visibility guard; every skip path. Hypatia with a planted finding.
+. Existing suites: `capability-catalogue`, `lock-transitive-closure`,
+  `workflow-lock-scope`, `composite-shell-contract`.
+. Self-test workflow on PR paths, as the secret scanner does.
+. Live: after merge, a caller canary here pinned to the published main SHA.
+  Then repin verisimdb-data#168 for that one workflow. Mirror's live canary
+  pushes to real forges, so it runs only on a scratch repo with the owner's go.
+
+== PR order
+
+[cols="1,2,3",options="header"]
+|===
+|# |PR |Why this place
+|0 |This design doc |Records what was agreed.
+|1 |Scorecard |Smallest. Proves the self-pin and permission check.
+|2 |Hypatia scan |Self-contained; tools are already hyperpolymath-owned.
+|3a |Governance core |Jobs with no nested reusable and simple vendored helpers.
+|3b |Governance deed and K9 |Local nested reusables; deed and K9 tools.
+|3c |Governance Hypatia baseline and JS runtimes |Needs PR 2's build steps.
+|4 |Mirror |Last: it holds secrets and pushes outward.
+|5 |verisimdb-data#168 repins |One workflow at a time, each after its PR is on main.
+|===
+
+== Known gaps
+
+* I cannot read verisimdb-data's rulesets from this session, so the required
+  context names are taken from the workflow files, not checked against rules.
+* Vendoring copies policy. The provenance test catches drift, not new rules
+  upstream; a refresh script re-copies from a named standards commit.
+* Whether the caller allowlist admits `ossf/scorecard-action` and
+  `erlef/setup-beam` must be confirmed on the first canary.

@@ -1,0 +1,345 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# scorecard-reusable.yml: OSSF Scorecard as a reusable workflow owned by
+# hyperpolymath, so the Actions admission policy accepts it.
+#
+# WHY THIS EXISTS. Callers pinned hyperpolymath/standards' scorecard-reusable.
+# That repository moved to metadatastician/standards. A `uses:` call does not
+# follow the move ("workflow was not found"), and a metadatastician-owned
+# reusable is refused by the admission policy (docs/SCANNER-STARTUP-AND-PARITY.adoc).
+# This file keeps the upstream behaviour (standards @1ded685) and fetches
+# nothing from metadatastician: the one helper is vendored in
+# actions/scorecard-check/ with its source commit and hash in PROVENANCE.tsv.
+#
+# PERMISSIONS. The calling job must grant actions: read, contents: read,
+# security-events: write and id-token: write. A job-level block REPLACES the
+# workflow-level one. GitHub refuses to start this workflow when the caller
+# grants less, before any step runs, so the check lives OUTSIDE it:
+# actions/scorecard-check/permissions.sh, run on the caller file before a
+# caller is pinned (templates/scorecard-caller.yml already passes it).
+# `actions: read` is needed by Scorecard's Packaging check.
+#
+# PUBLISHING. Only the default branch publishes (OIDC) to the public Scorecard
+# dataset and badge. PR analysis never publishes unmerged results.
+#
+# CONTEXT NAMES. Callers keep the job id `scorecard`, so the contexts
+# `scorecard / Run Scorecard` and `scorecard / Run Scorecard PR` are unchanged.
+#
+# CONSUMING IT. templates/scorecard-caller.yml at a full suite SHA,
+# de-onboarded from the caller's actions.lock (README, "Consuming it").
+
+name: OSSF Scorecard (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    if: github.event_name != 'pull_request'
+    name: Run Scorecard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the suite repository and commit this caller pins
+        id: suite
+        env:
+          SUITE_WORKFLOW: scorecard-reusable.yml
+        # Inside a reusable the `github` context is the CALLER's, so
+        # GITHUB_WORKFLOW_REF names the caller's workflow file, which holds the
+        # `uses:` line GitHub resolved to reach this file. That one SHA pins
+        # both this workflow and the vendored helper (as in rust-ci.yml).
+        run: |
+          set -euo pipefail
+          command -v yq >/dev/null || { echo '::error::yq is unavailable; source pin NOT VERIFIED'; exit 2; }
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/"* ]] || exit 2
+          path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
+          case "$path" in .github/workflows/*.yml|.github/workflows/*.yaml) ;; *) exit 2 ;; esac
+          [[ "${path#.github/workflows/}" != */* && -f "$path" && ! -L "$path" ]] \
+            || { echo '::error::caller workflow is absent or is not a direct workflow file; source pin NOT VERIFIED'; exit 2; }
+          candidates=$(yq -r '.jobs[] | select(has("uses")) | .uses' "$path") \
+            || { echo '::error::caller workflow cannot be parsed; source pin NOT VERIFIED'; exit 2; }
+          refs=''
+          while IFS= read -r ref; do
+            [[ "$ref" == */.github/workflows/"$SUITE_WORKFLOW"* ]] || continue
+            case "$ref" in
+              hyperpolymath/cicd-suite/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd-and-workflows/.github/workflows/"$SUITE_WORKFLOW"@*)
+                repository=${ref%%/.github/workflows/*}
+                sha=${ref##*@}
+                [[ "$sha" =~ ^[0-9a-f]{40}$ && "$ref" == "$repository/.github/workflows/$SUITE_WORKFLOW@$sha" ]] \
+                  || { echo '::error::suite caller must pin one complete 40-hex SHA; source pin NOT VERIFIED'; exit 2; }
+                refs+="$repository@$sha"$'\n'
+                ;;
+              *) echo '::error::unexpected suite source reference; source pin NOT VERIFIED'; exit 2 ;;
+            esac
+          done <<< "$candidates"
+          refs=$(printf '%s' "$refs" | sort -u)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          [[ "$n" -eq 1 ]] \
+            || { echo "::error::$path selects $n distinct suite repository/commit pairs; exactly one is required. NO CHECK WAS PERFORMED."; exit 2; }
+          printf 'repository=%s\nsha=%s\n' "${refs%@*}" "${refs##*@}" >> "$GITHUB_OUTPUT"
+          echo "Suite source pinned at $refs by $path"
+      - name: Run Scorecard Analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+      # After the analysis, so a local (PR) scan never sees the suite tree.
+      - name: Check out the selected suite at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.suite.outputs.repository }}
+          ref: ${{ steps.suite.outputs.sha }}
+          path: .cicd-suite
+          persist-credentials: false
+          sparse-checkout: |
+            actions/scorecard-check
+            scripts/verify-suite-checkout.sh
+          sparse-checkout-cone-mode: false
+      - name: Refuse helpers from an unverified suite commit
+        env:
+          EXPECTED: ${{ steps.suite.outputs.sha }}
+          EXPECTED_REPOSITORY: ${{ steps.suite.outputs.repository }}
+        run: bash .cicd-suite/scripts/verify-suite-checkout.sh
+      - name: Reconcile native action pins
+        id: reconcile
+        # Fail open on the ARTEFACT, never on the outcome: the upload below is
+        # unconditional and the last step still fails the job. A reconciler
+        # outage must not freeze code scanning behind a green badge.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh extension install github/gh-actions-lock --pin v0.2.0
+          # 3: reconciled SARIF written, some workflows failed lock
+          # verification and keep their findings. 2: nothing written.
+          rc=0
+          ruby .cicd-suite/actions/scorecard-check/reconcile-scorecard-actions-lock.rb \
+            results.sarif results.reconciled.sarif actions-lock-audit.json "$GITHUB_WORKSPACE" || rc=$?
+          printf 'rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+      - name: Select SARIF to upload
+        id: select-sarif
+        run: |
+          set -euo pipefail
+          if [ -s results.reconciled.sarif ]; then
+            printf 'file=results.reconciled.sarif\nreconciled=true\n' >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Scorecard reconciliation produced no SARIF::Uploading raw results.sarif. Native action pins appear UNRECONCILED in this upload."
+            printf 'file=results.sarif\nreconciled=false\n' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ steps.select-sarif.outputs.file }}
+      - name: Upload results artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scorecard-results
+          path: |
+            results.sarif
+            results.reconciled.sarif
+            actions-lock-audit.json
+          retention-days: 90
+      - name: Fail if reconciliation did not succeed
+        if: "!cancelled() && (steps.reconcile.outcome != 'success' || steps.select-sarif.outputs.reconciled != 'true')"
+        env:
+          OUTCOME: ${{ steps.reconcile.outcome }}
+          RC: ${{ steps.reconcile.outputs.rc }}
+          RECONCILED: ${{ steps.select-sarif.outputs.reconciled }}
+        run: |
+          if [ "$RC" = 3 ] && [ "$RECONCILED" = true ]; then
+            echo "::error title=Scorecard reconciliation incomplete::Reconciled SARIF was uploaded. Workflows that failed native action-lock verification keep their findings; the reconcile step names each one."
+          else
+            echo "::error title=Scorecard reconciliation failed::Reconcile outcome '$OUTCOME' (exit '$RC'). Raw SARIF was uploaded so results are not lost; this run fails by design."
+          fi
+          exit 1
+
+  pull-request:
+    if: github.event_name == 'pull_request'
+    name: Run Scorecard PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Resolve the suite repository and commit this caller pins
+        id: suite
+        env:
+          SUITE_WORKFLOW: scorecard-reusable.yml
+        # Inside a reusable the `github` context is the CALLER's, so
+        # GITHUB_WORKFLOW_REF names the caller's workflow file, which holds the
+        # `uses:` line GitHub resolved to reach this file. That one SHA pins
+        # both this workflow and the vendored helper (as in rust-ci.yml).
+        run: |
+          set -euo pipefail
+          command -v yq >/dev/null || { echo '::error::yq is unavailable; source pin NOT VERIFIED'; exit 2; }
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/"* ]] || exit 2
+          path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
+          case "$path" in .github/workflows/*.yml|.github/workflows/*.yaml) ;; *) exit 2 ;; esac
+          [[ "${path#.github/workflows/}" != */* && -f "$path" && ! -L "$path" ]] \
+            || { echo '::error::caller workflow is absent or is not a direct workflow file; source pin NOT VERIFIED'; exit 2; }
+          candidates=$(yq -r '.jobs[] | select(has("uses")) | .uses' "$path") \
+            || { echo '::error::caller workflow cannot be parsed; source pin NOT VERIFIED'; exit 2; }
+          refs=''
+          while IFS= read -r ref; do
+            [[ "$ref" == */.github/workflows/"$SUITE_WORKFLOW"* ]] || continue
+            case "$ref" in
+              hyperpolymath/cicd-suite/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd-and-workflows/.github/workflows/"$SUITE_WORKFLOW"@*)
+                repository=${ref%%/.github/workflows/*}
+                sha=${ref##*@}
+                [[ "$sha" =~ ^[0-9a-f]{40}$ && "$ref" == "$repository/.github/workflows/$SUITE_WORKFLOW@$sha" ]] \
+                  || { echo '::error::suite caller must pin one complete 40-hex SHA; source pin NOT VERIFIED'; exit 2; }
+                refs+="$repository@$sha"$'\n'
+                ;;
+              *) echo '::error::unexpected suite source reference; source pin NOT VERIFIED'; exit 2 ;;
+            esac
+          done <<< "$candidates"
+          refs=$(printf '%s' "$refs" | sort -u)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          [[ "$n" -eq 1 ]] \
+            || { echo "::error::$path selects $n distinct suite repository/commit pairs; exactly one is required. NO CHECK WAS PERFORMED."; exit 2; }
+          printf 'repository=%s\nsha=%s\n' "${refs%@*}" "${refs##*@}" >> "$GITHUB_OUTPUT"
+          echo "Suite source pinned at $refs by $path"
+      # OpenSSF labels pull_request support experimental. A failed scan or
+      # upload must fail the workflow, not become a clean gate.
+      - name: Analyze pull request
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: false
+      # The action forces local mode on pull_request, so only the
+      # supply-chain/local category is produced. The two repo-level categories
+      # (branch-protection, online-scm) are measured at repository HEAD with
+      # the pinned CLI and merged, so code scanning sees all three.
+      - name: Install scorecard CLI (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          SCORECARD_VERSION=5.5.0
+          SHA256=83b90a05c1540ef1390db1cd5711e5fd04be9c1d8537fb84d39d02092d6a8dff
+          cd "$RUNNER_TEMP"
+          curl -fsSL --proto "=https" --proto-redir "=https" -o scorecard.tar.gz \
+            "https://github.com/ossf/scorecard/releases/download/v${SCORECARD_VERSION}/scorecard_${SCORECARD_VERSION}_linux_amd64.tar.gz"
+          echo "${SHA256}  scorecard.tar.gz" | sha256sum -c -
+          tar -xzf scorecard.tar.gz scorecard
+          chmod +x scorecard
+          ./scorecard version
+      - name: Measure repo-level checks at HEAD
+        env:
+          ENABLE_SARIF: "1"
+          GITHUB_AUTH_TOKEN: ${{ github.token }}
+          POLICY_URL: https://raw.githubusercontent.com/ossf/scorecard-action/2d1146689b8cda280b9bc96326124645441f03bc/policies/template.yml
+          POLICY_SHA256: 6e75dcc0df989d333492c0e1f6e484fc5b4d26ab768333ddcd0e3788539689b0
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto "=https" --proto-redir "=https" -o "$RUNNER_TEMP/policy.yml" "$POLICY_URL"
+          echo "${POLICY_SHA256}  $RUNNER_TEMP/policy.yml" | sha256sum -c -
+          "$RUNNER_TEMP/scorecard" \
+            --repo="github.com/${GITHUB_REPOSITORY}" \
+            --checks=Branch-Protection,CI-Tests,CII-Best-Practices,Code-Review,Contributors,Maintained,Signed-Releases \
+            --format=sarif --policy="$RUNNER_TEMP/policy.yml" --show-details \
+            > "$RUNNER_TEMP/repo-state.sarif"
+          jq -s '.[0] as $pr | .[1] as $head | $pr | .runs += $head.runs' \
+            results.sarif "$RUNNER_TEMP/repo-state.sarif" > merged.sarif
+          mv merged.sarif results.sarif
+          jq -r '.runs[].automationDetails.id' results.sarif
+          n=$(jq '[.runs[].automationDetails.id | split("/")[0:2] | join("/")] | unique | length' results.sarif)
+          test "$n" -eq 3 || { echo "expected 3 Scorecard categories, got $n" >&2; exit 1; }
+      # After the analysis, so a local (PR) scan never sees the suite tree.
+      - name: Check out the selected suite at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.suite.outputs.repository }}
+          ref: ${{ steps.suite.outputs.sha }}
+          path: .cicd-suite
+          persist-credentials: false
+          sparse-checkout: |
+            actions/scorecard-check
+            scripts/verify-suite-checkout.sh
+          sparse-checkout-cone-mode: false
+      - name: Refuse helpers from an unverified suite commit
+        env:
+          EXPECTED: ${{ steps.suite.outputs.sha }}
+          EXPECTED_REPOSITORY: ${{ steps.suite.outputs.repository }}
+        run: bash .cicd-suite/scripts/verify-suite-checkout.sh
+      - name: Reconcile native action pins
+        id: reconcile
+        # Fail open on the ARTEFACT, never on the outcome: the upload below is
+        # unconditional and the last step still fails the job. A reconciler
+        # outage must not freeze code scanning behind a green badge.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh extension install github/gh-actions-lock --pin v0.2.0
+          # 3: reconciled SARIF written, some workflows failed lock
+          # verification and keep their findings. 2: nothing written.
+          rc=0
+          ruby .cicd-suite/actions/scorecard-check/reconcile-scorecard-actions-lock.rb \
+            results.sarif results.reconciled.sarif actions-lock-audit.json "$GITHUB_WORKSPACE" || rc=$?
+          printf 'rc=%s\n' "$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+      - name: Select SARIF to upload
+        id: select-sarif
+        run: |
+          set -euo pipefail
+          if [ -s results.reconciled.sarif ]; then
+            printf 'file=results.reconciled.sarif\nreconciled=true\n' >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Scorecard reconciliation produced no SARIF::Uploading raw results.sarif. Native action pins appear UNRECONCILED in this upload."
+            printf 'file=results.sarif\nreconciled=false\n' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: ${{ steps.select-sarif.outputs.file }}
+      - name: Retain scan evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scorecard-pr-results
+          path: |
+            results.sarif
+            results.reconciled.sarif
+            actions-lock-audit.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Fail if reconciliation did not succeed
+        if: "!cancelled() && (steps.reconcile.outcome != 'success' || steps.select-sarif.outputs.reconciled != 'true')"
+        env:
+          OUTCOME: ${{ steps.reconcile.outcome }}
+          RC: ${{ steps.reconcile.outputs.rc }}
+          RECONCILED: ${{ steps.select-sarif.outputs.reconciled }}
+        run: |
+          if [ "$RC" = 3 ] && [ "$RECONCILED" = true ]; then
+            echo "::error title=Scorecard reconciliation incomplete::Reconciled SARIF was uploaded. Workflows that failed native action-lock verification keep their findings; the reconcile step names each one."
+          else
+            echo "::error title=Scorecard reconciliation failed::Reconcile outcome '$OUTCOME' (exit '$RC'). Raw SARIF was uploaded so results are not lost; this run fails by design."
+          fi
+          exit 1

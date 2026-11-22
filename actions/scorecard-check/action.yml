@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+name: Scorecard caller permissions
+description: >-
+  Static check that a workflow calling the Scorecard reusable grants the four
+  permissions its jobs need. GitHub refuses to start the reusable otherwise,
+  before any step runs. The reusable workflow
+  .github/workflows/scorecard-reusable.yml is the entry point for the scan.
+inputs:
+  workflow:
+    description: Path of the caller workflow file to check
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Check the caller grants the Scorecard permissions
+      shell: bash
+      env:
+        WORKFLOW: ${{ inputs.workflow }}
+      run: bash "$GITHUB_ACTION_PATH/permissions.sh" "$WORKFLOW"

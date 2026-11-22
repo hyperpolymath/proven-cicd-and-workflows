@@ -6,7 +6,7 @@
 
 *Repository assurance, organised by purpose. Discover by clade; choose by nature; adopt with evidence.*
 
-*32 composite actions · 1 stamped templates · 8 clades · two independent discovery axes.*
+*33 composite actions · 1 stamped templates · 8 clades · two independent discovery axes.*
 
 This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartridge implementation, or a certification scheme. Inspired by BoJ's separation of capability domain from interface/type, it groups existing CI/CD building blocks without moving their paths or changing their behaviour.
 
@@ -23,7 +23,7 @@ This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartrid
 [cols="2,4,1,1,1,1,1",options="header"]
 |===
 |Clade |Purpose |Total |Enforcing |Tool-dependent |Advisory |Stub
-|<<sentinel,Sentinel — security & trusted results>> |Find exposed credentials and verify authoritative analysis without manufacturing a green result. |4 |4 |0 |0 |0
+|<<sentinel,Sentinel — security & trusted results>> |Find exposed credentials and verify authoritative analysis without manufacturing a green result. |5 |4 |0 |1 |0
 |<<covenant,Covenant — governance & provenance>> |Establish repository identity, policy documents, attribution and licensing. |4 |4 |0 |0 |0
 |<<forge,Forge — source & build hygiene>> |Control source debt, document formats, language policy and task-runner syntax. |4 |4 |0 |0 |0
 |<<schema,Schema — manifests & contracts>> |Validate structured manifests and executable contract declarations. |2 |1 |1 |0 |0
@@ -37,7 +37,7 @@ This is a visitor-facing product catalogue, not a repo-chora file, a BoJ cartrid
 
 * *Enforcing (20):* can reject a subject. This is not a guarantee of completeness, applicability, production readiness or formal verification.
 * *Tool-dependent (3):* requires explicitly supplied validators/toolchains; inspect applicability and not-run behaviour before adoption.
-* *Advisory (8):* signals and warnings, not an assurance verdict. Some current outputs are simulated or heuristic; each card names the boundary.
+* *Advisory (9):* signals and warnings, not an assurance verdict. Some current outputs are simulated or heuristic; each card names the boundary.
 * *Stub (2):* unfinished integration or placeholder. Do not deploy as evidence of a completed check.
 
 Nature is a separate axis: a policy-pattern scan is not a compiler, a receipt verifier is not an analyser, and a proof executor is not a proof that every program is correct. These labels are reviewed inventory metadata; tests enforce coverage and consistency, not semantic correctness of every gate.
@@ -54,7 +54,7 @@ Nature is a separate axis: a policy-pattern scan is not a compiler, a receipt ve
 |policy-gate |10 |link:actions/secrets-check/action.yml[Private-key material] · link:actions/vaulted-tokens-check/action.yml[Vaulted token format] · link:actions/required-files-check/action.yml[Repository foundations] · link:actions/spdx-license-check/action.yml[Licensing & SPDX] · link:actions/affirmation-check/action.yml[Affirmation snapshots] · link:actions/code-hygiene-check/action.yml[Source debt & proof escapes] · link:actions/formatting-check/action.yml[Document format policy] · link:actions/linguist-check/action.yml[Language inventory policy] · link:actions/idris2-abi-check/action.yml[Idris2 ABI source policy] · link:actions/zig-unified-api-adapter-check/action.yml[Zig adapter source policy]
 |proof-executor |3 |link:actions/creusot-check/action.yml[Rust deductive verification] · link:actions/spark-check/action.yml[Ada/SPARK proof] · link:actions/proof-runner-check/action.yml[Idris2 & Lean proof runner]
 |receipt-verifier |1 |link:actions/sonarcloud-result-check/action.yml[Authoritative SonarCloud receipt]
-|scanner |1 |link:actions/secret-scan-check/action.yml[Bounded secret scanning]
+|scanner |2 |link:actions/secret-scan-check/action.yml[Bounded secret scanning] · link:actions/scorecard-check/action.yml[OSSF Scorecard]
 |validator |4 |link:actions/referencing-check/action.yml[Citation metadata] · link:actions/recipes-set-check/action.yml[Task-runner syntax] · link:actions/manifest-check/action.yml[DEED & K9 manifests] · link:actions/contractile-validation-check/action.yml[Contractile declarations]
 |===
 
@@ -63,12 +63,13 @@ Nature is a separate axis: a policy-pattern scan is not a compiler, a receipt ve
 
 Find exposed credentials and verify authoritative analysis without manufacturing a green result.
 
-link:catalogue/clades/sentinel.adoc[Explore this clade — 4 capabilities]
+link:catalogue/clades/sentinel.adoc[Explore this clade — 5 capabilities]
 
 [cols="2,2,2,5",options="header"]
 |===
 |Capability |Nature |Status |What it does
 |link:actions/secret-scan-check/action.yml[Bounded secret scanning] |scanner |enforcing |Redacted working-tree and history scans with checksum-pinned Gitleaks, real detector controls and Rust/shell supplements.
+|link:actions/scorecard-check/action.yml[OSSF Scorecard] |scanner |advisory |Run OSSF Scorecard, reconcile action-pin findings with native lock verification and upload SARIF; publish only from the default branch.
 |link:actions/secrets-check/action.yml[Private-key material] |policy-gate |enforcing |Detect PEM/OpenSSH private-key material in the working tree.
 |link:actions/vaulted-tokens-check/action.yml[Vaulted token format] |policy-gate |enforcing |Enforce the estate token-wrapper representation policy.
 |link:actions/sonarcloud-result-check/action.yml[Authoritative SonarCloud receipt] |receipt-verifier |enforcing |Verify the newest official-app result for an exact repository and commit.

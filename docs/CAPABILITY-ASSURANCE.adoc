@@ -3,7 +3,7 @@
 = Capability Assurance Matrix
 :toc:
 
-Evidence and limits for all 33 capabilities (32 composite actions and 1 stamped template). No new runtime policy is introduced.
+Evidence and limits for all 34 capabilities (33 composite actions and 1 stamped template). No new runtime policy is introduced.
 
 Inspected source: `cd313201ee1e3a73ce9c32d155690c082a94eda6`. This inventory links control sources, not fresh execution results. A file existing does not prove its tests passed or cover every claim. Unlisted evidence means not assessed here, not that evidence cannot exist.
 
@@ -31,6 +31,20 @@ link:../CATALOGUE.adoc[Visitor atlas] · link:assurance/SUITE-CLOSEOUT.adoc[Suit
 Test source linked, not a claim that it was freshly executed or provides complete coverage.
 
 *Consumer proof:* https://github.com/hyperpolymath/unified-dataset-vocab/actions/runs/41199623322[main run] at `4921ac0d161d5619c3186b2e916ed3f6e2c8c89f`. Previously verified full-history main scan and SHA-bound supplemental receipts; not universal estate readiness.
+
+=== OSSF Scorecard
+
+*advisory · scanner · advisory-only*
+
+*Claim:* Run OSSF Scorecard, reconcile action-pin findings with native lock verification and upload SARIF; publish only from the default branch.
+
+*Prerequisites / boundary:* Scores are heuristic signals, not certification. The calling job must grant four permissions; check the caller with permissions.sh before pinning.
+
+*Control evidence:* Not established in this pass.
+
+Scores are signals, not assurance. The caller permission check, helper provenance and reconciler controls are in actions/scorecard-check/test.sh.
+
+*Consumer proof:* no receipt indexed here.
 
 === Private-key material
 

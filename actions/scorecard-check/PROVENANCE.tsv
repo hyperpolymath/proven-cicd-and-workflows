@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MPL-2.0
+# Files copied verbatim from another repository. test.sh fails if a file here
+# no longer has the recorded sha256. To refresh: copy the file from a named
+# source commit, then update the commit and hash on its row in the same PR.
+# path	source_repository	source_commit	source_path	sha256
+reconcile-scorecard-actions-lock.rb	metadatastician/standards	5a0891e9e58b785181a92e141505ca96ca987b42	scripts/reconcile-scorecard-actions-lock.rb	187c1dcb024a18c9ad213659e3fc10430155e4084a3860f8d7ada3cec886a31f

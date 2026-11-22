@@ -38,7 +38,7 @@ publication. See the checkpoint for the exact remaining boundary.
 
 == Discover the suite
 
-Start with the link:CATALOGUE.adoc[*CI/CD Capability Atlas*]: *32 composite actions
+Start with the link:CATALOGUE.adoc[*CI/CD Capability Atlas*]: *33 composite actions
 in 8 clades*, organised by both purpose and nature. Each capability has a source
 link, an assurance boundary and a status: enforcing, tool-dependent, advisory or
 unfinished. Reusable workflows and caller templates are linked where provided.

@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MPL-2.0
+# Self-test for the Scorecard reusable: caller permission check, vendored
+# helper provenance, reconciler with a fake gh, and no-foreign-source rules.
+# Runs suite scripts only; nothing from a consumer is checked out.
+name: Scorecard self-test
+on:
+  pull_request:
+    paths:
+      - 'actions/scorecard-check/**'
+      - '.github/workflows/scorecard-reusable.yml'
+      - '.github/workflows/scorecard-self-test.yml'
+      - 'templates/scorecard-caller.yml'
+permissions:
+  contents: read
+concurrency:
+  group: scorecard-self-test-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Scorecard checks can fail
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Shellcheck
+        run: shellcheck -S warning actions/scorecard-check/*.sh
+      - name: Ruby syntax of the vendored reconciler
+        run: ruby -c actions/scorecard-check/reconcile-scorecard-actions-lock.rb
+      - name: Scorecard checks
+        run: bash actions/scorecard-check/test.sh

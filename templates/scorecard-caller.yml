@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MPL-2.0
+# OSSF Scorecard: thin caller of the reusable in
+# hyperpolymath/proven-cicd-and-workflows. Do not copy its jobs in here.
+#
+# The job id MUST stay `scorecard`: the contexts `scorecard / Run Scorecard`
+# and `scorecard / Run Scorecard PR` are what branch rules may already require.
+#
+# The four permissions MUST be on the job. A job-level block replaces the
+# workflow-level one, and GitHub will not start the reusable with less.
+# Check a caller with actions/scorecard-check/permissions.sh before pinning it.
+#
+# The pin is a full SHA. DE-ONBOARDED from actions.lock, like the other suite
+# callers (README, "Consuming it"). No secrets: the reusable consumes none.
+name: OSSF Scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/scorecard-reusable.yml@__CICD_SUITE_SHA__
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+      id-token: write

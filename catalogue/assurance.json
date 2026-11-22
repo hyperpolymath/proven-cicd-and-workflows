@@ -20,6 +20,13 @@
       ]
     },
     {
+      "id": "scorecard",
+      "test_paths": [],
+      "coverage": "advisory-only",
+      "evidence_note": "Scores are signals, not assurance. The caller permission check, helper provenance and reconciler controls are in actions/scorecard-check/test.sh.",
+      "consumer_receipts": []
+    },
+    {
       "id": "secrets",
       "test_paths": [
         "actions/secrets-check/test.sh"

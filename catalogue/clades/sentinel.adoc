@@ -20,6 +20,19 @@ Redacted working-tree and history scans with checksum-pinned Gitleaks, real dete
 * link:../../.github/workflows/secret-scanner-reusable.yml[Reusable workflow]
 * link:../../templates/secret-scanner-caller.yml[Caller template]
 
+[[scorecard]]
+== OSSF Scorecard
+
+*`scorecard` · scanner · advisory*
+
+Run OSSF Scorecard, reconcile action-pin findings with native lock verification and upload SARIF; publish only from the default branch.
+
+*Assurance boundary:* Scores are heuristic signals, not certification. The calling job must grant four permissions; check the caller with permissions.sh before pinning.
+
+* link:../../actions/scorecard-check/action.yml[Action definition and inputs]
+* link:../../.github/workflows/scorecard-reusable.yml[Reusable workflow]
+* link:../../templates/scorecard-caller.yml[Caller template]
+
 [[secrets]]
 == Private-key material
 

@@ -56,6 +56,18 @@
       "template": "templates/secret-scanner-caller.yml"
     },
     {
+      "id": "scorecard",
+      "clade": "sentinel",
+      "status": "advisory",
+      "nature": "scanner",
+      "title": "OSSF Scorecard",
+      "summary": "Run OSSF Scorecard, reconcile action-pin findings with native lock verification and upload SARIF; publish only from the default branch.",
+      "limitations": "Scores are heuristic signals, not certification. The calling job must grant four permissions; check the caller with permissions.sh before pinning.",
+      "path": "actions/scorecard-check/action.yml",
+      "workflow": ".github/workflows/scorecard-reusable.yml",
+      "template": "templates/scorecard-caller.yml"
+    },
+    {
       "id": "secrets",
       "clade": "sentinel",
       "status": "enforcing",
