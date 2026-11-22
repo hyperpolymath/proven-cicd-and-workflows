@@ -228,6 +228,14 @@ n=$(dlen "$DESC")
   && ok "long failure description is cut to $n chars with an ellipsis" || bad "long description: $n chars '$DESC'"
 PROFILE="$FX/profile.json"
 
+echo "== the status writer is the text of the workflow's own step =="
+# Every status goes through post_status, written by the "Write the status writer" step. The tests
+# extract that heredoc from ci-gate.yml and source it, so they drive the shipped text, not a copy.
+awk '/<<.CI_GATE_STATUS_EOF.$/{f=1;next} /^ *CI_GATE_STATUS_EOF$/{f=0} f' "$WORKFLOW" | sed 's/^          //' > "$WORK/status-lib.sh"
+export CI_GATE_STATUS_LIB="$WORK/status-lib.sh"
+grep -q '^post_status()' "$CI_GATE_STATUS_LIB" && bash -n "$CI_GATE_STATUS_LIB" \
+  && ok "extracted the status writer from ci-gate.yml (it parses and defines post_status)" || bad "could not extract the status writer"
+
 echo "== publisher: fake gh, settle guard, status writes =="
 PUBLISH="$ROOT/scripts/ci-gate-publish.sh"
 SUITE_DIR="$WORK/suite"; FAKEGH="$WORK/stub"
@@ -249,6 +257,15 @@ fi
 if [[ " $* " == *" -X POST "* ]]; then
   state=''; desc=''; psha=''; ctx=''
   for a in "$@"; do case $a in state=*) state=${a#state=} ;; description=*) desc=${a#description=} ;; context=*) ctx=${a#context=} ;; repos/*/statuses/*) psha=${a##*/} ;; esac; done
+  echo "$state" >> "$D/attempts.log"
+  # ratelimit: each line answers one POST as GitHub does under a rate limit, "<code reason>|<header>|...",
+  # with the headers on stdout (gh -i prints them for an error too) and gh's error line on stderr.
+  if [[ -s $D/ratelimit ]]; then
+    IFS='|' read -r -a h < "$D/ratelimit"; sed -i 1d "$D/ratelimit"
+    printf 'HTTP/2.0 %s\r\n' "${h[0]}"; for x in "${h[@]:1}"; do printf '%s\r\n' "$x"; done
+    printf '\r\n{"message":"%s"}\n' "${RL_MESSAGE:-API rate limit exceeded for installation ID 1.}"
+    echo "gh: ${RL_MESSAGE:-API rate limit exceeded for installation ID 1.} (HTTP ${h[0]%% *})" >&2; exit 1
+  fi
   [[ ! -f $D/failpost ]] || { echo "gh: HTTP 500 (post)" >&2; exit 1; }
   # GitHub's statuses API refuses a description with a character outside the BMP (an emoji is one):
   # HTTP 422, "Description doesn't accept 4-byte Unicode".
@@ -261,7 +278,8 @@ if [[ " $* " == *" -X POST "* ]]; then
     awk -F'\t' -v s="$psha" -v c="$ctx" '{print s "\t" c "\t" $1 "\t" $2}' "$D/prepost" >> "$D/status.log"; rm -f "$D/prepost"
   fi
   printf '%s\t%s\t%s\n' "$state" "$desc" "$psha" >> "$D/posts.log"
-  printf '%s\t%s\t%s\t%s\n' "$psha" "$ctx" "$state" "$desc" >> "$D/status.log"; exit 0
+  printf '%s\t%s\t%s\t%s\n' "$psha" "$ctx" "$state" "$desc" >> "$D/status.log"
+  printf 'HTTP/2.0 201 Created\r\n\r\n{}\n'; exit 0
 fi
 args="$*"
 jqarg='' ; prev=''
@@ -305,7 +323,7 @@ SHA=$(printf 'a%.0s' $(seq 40))
 snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
   jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/runs.$1.json"
 }
-pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
+pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$FAKEGH/ratelimit" "$FAKEGH/attempts.log" "$FAKEGH/rl.sleeps" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
   : > "$FAKEGH/jobs.calls"
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
@@ -584,7 +602,7 @@ L_REFUSE=$(step_line 'Refuse anything'); L_PEND=$(step_line 'Mark a started or r
 { [ -n "$L_REFUSE" ] && [ -n "$L_PEND" ] && [ -n "$L_READ" ] && [ "$L_REFUSE" -lt "$L_PEND" ] && [ "$L_PEND" -lt "$L_READ" ]; } \
   && ok "step order: input validation, then the early pending, then the profile fetch" || bad "step order is wrong ($L_REFUSE, $L_PEND, $L_READ)"
 EARLY=$(sed -n "${L_PEND},$((L_READ - 1))p" "$WORKFLOW")
-grep -q 'EVENT_ACTION' <<<"$EARLY" && grep -q 'in_progress' <<<"$EARLY" && grep -q 'state=pending' <<<"$EARLY" && grep -q 're-run started' <<<"$EARLY" \
+grep -q 'EVENT_ACTION' <<<"$EARLY" && grep -q 'in_progress' <<<"$EARLY" && grep -q 'post_status pending' <<<"$EARLY" && grep -q 're-run started' <<<"$EARLY" \
   && ok "the early step posts pending 're-run started' for an in_progress action" || bad "the early step lacks the in_progress pending"
 ! grep -qE '\$suite|fetch |scripts/' <<<"$EARLY" && ok "the early step reads no suite file" || bad "the early step touches the suite"
 ! grep -q '\${{' <(awk '/^        run: \|/{f=1;next} f' <<<"$EARLY") && ok "the early step has no \${{ }} inside its run: script" || bad "the early step interpolates into run:"
@@ -605,6 +623,121 @@ EARLYOUT=$(env PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" EVENT_NAME=workflow
   REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate SERVER_URL=https://github.com RUN_ID=1 bash "$WORK/early.sh" 2>&1); ERC=$?
 chk "an emoji in the run name: the early pending is published" "$ERC/$(sed -n 1p "$FAKEGH/posts.log" | cut -f1)" "0/pending"
 chk "its description keeps the readable part and has no 4-byte character" "$(sed -n 1p "$FAKEGH/posts.log" | cut -f2 | jq -Rr '[explode[] | select(. > 65535)] | length')/$(sed -n 1p "$FAKEGH/posts.log" | cut -f2 | grep -c 'GATE: Invisible Character Detection')" "0/1"
+pubreset
+
+echo "== status writer: rate limits, retries and the duplicate skip, through the workflow's own steps =="
+RL="$WORK/rl"; mkdir -p "$RL"
+printf '#!/usr/bin/env bash\necho 1800000000\n' > "$RL/clock"                          # a fixed wall clock
+printf '#!/usr/bin/env bash\necho "$1" >> "$FAKEGH_DIR/rl.sleeps"\n' > "$RL/sleep"     # records, never sleeps
+chmod +x "$RL/clock" "$RL/sleep"
+RLENV=(PATH="$FAKEGH/bin:$PATH" FAKEGH_DIR="$FAKEGH" CI_GATE_CLOCK="$RL/clock" CI_GATE_SLEEP="$RL/sleep")
+step_text() { # <step name prefix> -> that step's run: block, de-indented
+  awk -v name="$1" '
+    function ind(s) { match(s, /^ */); return RLENGTH }
+    inrun { if ($0 ~ /^[[:space:]]*$/ || ind($0) > runcol) { print substr($0, runcol + 3); next } exit }
+    index($0, "- name: " name) { want = 1; next }
+    want && $0 ~ /^[[:space:]]+run: [|]$/ { runcol = ind($0); inrun = 1 }
+  ' "$WORKFLOW"
+}
+step_text "Publish a failure status when no verdict" > "$WORK/fallback.sh"
+grep -q post_status "$WORK/fallback.sh" && ok "extracted the failure fallback step (it writes through post_status)" || bad "could not extract the failure fallback step"
+grep -q post_status "$WORK/early.sh" && ok "the early pending step writes through post_status" || bad "the early pending step does not use post_status"
+early() { # [VAR=value ...] -> RC, EOUT; the workflow's early pending step for an in_progress run
+  EOUT=$(env "${RLENV[@]}" EVENT_NAME=workflow_run EVENT_ACTION=in_progress RUN_NAME=CI \
+    REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate SERVER_URL=https://github.com RUN_ID=1 "$@" bash "$WORK/early.sh" 2>&1); RC=$?
+}
+fallback() { # [VAR=value ...] -> RC, EOUT; the workflow's failure fallback step
+  EOUT=$(env "${RLENV[@]}" EVENT_NAME=workflow_run REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
+    SERVER_URL=https://github.com RUN_ID=1 "$@" bash "$WORK/fallback.sh" 2>&1); RC=$?
+}
+attempts() { grep -c . "$FAKEGH/attempts.log" 2>/dev/null || echo 0; }
+sleeps() { paste -sd' ' "$FAKEGH/rl.sleeps" 2>/dev/null; }
+RESET_SOON='403 Forbidden|X-Ratelimit-Limit: 5000|X-Ratelimit-Remaining: 0|X-Ratelimit-Reset: 1800000007'
+RESET_LATE='403 Forbidden|X-Ratelimit-Remaining: 0|X-Ratelimit-Reset: 1800003600'
+RETRY_3='429 Too Many Requests|Retry-After: 3'
+
+echo "-- silence: no rate limit, no retry --"
+pubreset; early
+chk "control: the early pending posts once, with no wait and no rate-limit line" "$RC/$(attempts)/$(sleeps)/$(grep -c 'rate limited' <<<"$EOUT")" "0/1//0"
+chk "control: the pending stands with the run's name" "$(cut -f1,2 "$FAKEGH/posts.log")" "$(printf 'pending\tre-run started: CI')"
+
+echo "-- firing: rate limited, then written --"
+pubreset; printf '%s\n' "$RESET_SOON" "$RETRY_3" > "$FAKEGH/ratelimit"; early
+chk "403 quota spent, then 429 Retry-After 3, then accepted: exit 0, 3 attempts, one status" "$RC/$(attempts)/$(grep -c . "$FAKEGH/posts.log")" "0/3/1"
+chk "it waited for x-ratelimit-reset (7 s + 1), then for Retry-After (3 s)" "$(sleeps)" "8 3"
+chk "each retry is logged with its wait" "$(grep -c 'rate limited (HTTP' <<<"$EOUT")" 2
+pubreset; printf '%s\n' '403 Forbidden' '403 Forbidden' > "$FAKEGH/ratelimit"
+early RL_MESSAGE='You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
+read -r s1 s2 <<<"$(sleeps)"
+chk "a secondary rate limit with no headers: exit 0 after 3 attempts" "$RC/$(attempts)" "0/3"
+{ ((s1 >= 5 && s1 <= 7 && s2 >= 10 && s2 <= 15)); } && ok "no headers: capped exponential backoff with jitter (${s1}s in 5..7, ${s2}s in 10..15)" || bad "backoff out of range: '$(sleeps)'"
+
+echo "-- firing: rate limited to exhaustion --"
+pubreset; for _ in 1 2 3 4 5 6; do echo "$RETRY_3"; done > "$FAKEGH/ratelimit"; early
+chk "rate limited every time: exit 1 after exactly 5 attempts and 4 waits" "$RC/$(attempts)/$(sleeps)" "1/5/3 3 3 3"
+chk "it fails with 'rate limited, no verdict' and writes no status" "$(grep -c '::error::rate limited, no verdict' <<<"$EOUT")/$([ -s "$FAKEGH/posts.log" ] && echo posted || echo none)" "1/none"
+chk "the exhausted step does not also claim a generic publish error" "$(grep -c 'could not publish the re-run pending' <<<"$EOUT")" 0
+pubreset; echo "$RESET_LATE" > "$FAKEGH/ratelimit"; early
+chk "quota reset an hour away (over the 300 s budget): one attempt, no wait, rate limited, no verdict" "$RC/$(attempts)/$(sleeps)/$(grep -c 'rate limited, no verdict' <<<"$EOUT")" "1/1//1"
+pubreset; for _ in 1 2 3; do echo '429 Too Many Requests|Retry-After: 120'; done > "$FAKEGH/ratelimit"; early
+chk "Retry-After 120 twice fits 300 s, a third would not: 3 attempts, waits 120 120" "$RC/$(attempts)/$(sleeps)" "1/3/120 120"
+
+echo "-- not a rate limit: no retry --"
+pubreset; touch "$FAKEGH/failpost"; early
+chk "an HTTP 500 is not retried: exit 1, one attempt, the generic error" "$RC/$(attempts)/$(sleeps)/$(grep -c 'could not publish the re-run pending status' <<<"$EOUT")" "1/1//1"
+pubreset; echo '403 Forbidden|X-Ratelimit-Remaining: 4999' > "$FAKEGH/ratelimit"; early RL_MESSAGE='Resource not accessible by integration'
+chk "a 403 that is not a rate limit (permissions) is not retried" "$RC/$(attempts)/$(sleeps)" "1/1/"
+
+echo "-- duplicate writes skipped, new states written --"
+pubreset; printf '%s\tCI/gate\tpending\tre-run started: CI\n' "$SHA" > "$FAKEGH/status.log"; early
+chk "the same pending already stands: no POST, 'write skipped', exit 0" "$RC/$(attempts)/$(grep -c 'write skipped' <<<"$EOUT")" "0/0/1"
+pubreset; printf '%s\tCI/gate\tsuccess\tall 3 required checks passed\n' "$SHA" > "$FAKEGH/status.log"; early
+chk "a success stands: the new pending is written over it" "$RC/$(attempts)/$(cut -f1 "$FAKEGH/posts.log")" "0/1/pending"
+pubreset; printf '%s\tCI/gate\tpending\tre-run started: Lint\n' "$SHA" > "$FAKEGH/status.log"; early
+chk "a pending with another description: written" "$RC/$(attempts)" "0/1"
+pubreset; printf '%s\tCI / gate\tpending\tre-run started: CI\n' "$SHA" > "$FAKEGH/status.log"; early
+chk "the same pending under another context: written" "$RC/$(attempts)" "0/1"
+pubreset; touch "$FAKEGH/failstatus"; printf '%s\tCI/gate\tpending\tre-run started: CI\n' "$SHA" > "$FAKEGH/status.log"; early
+chk "the current status cannot be read: written anyway (toward writing, never silence)" "$RC/$(attempts)" "0/1"
+
+echo "-- the failure fallback step --"
+FB='ci-gate could not produce a verdict (profile or API error); see the run'
+pubreset; printf '%s\n' "$RETRY_3" > "$FAKEGH/ratelimit"; fallback
+chk "fallback: rate limited once, then the failure is written" "$RC/$(attempts)/$(sleeps)/$(cut -f1 "$FAKEGH/posts.log")" "0/2/3/failure"
+pubreset; printf '%s\tCI/gate\tfailure\t%s\n' "$SHA" "$FB" > "$FAKEGH/status.log"; fallback
+chk "fallback: the same failure already stands: skipped" "$RC/$(attempts)/$(grep -c 'write skipped' <<<"$EOUT")" "0/0/1"
+pubreset; for _ in 1 2 3 4 5; do echo "$RETRY_3"; done > "$FAKEGH/ratelimit"; fallback
+chk "fallback: exhausted, it warns and the step still ends" "$RC/$(attempts)/$(grep -c 'could not publish the failure status either' <<<"$EOUT")/$(grep -c 'rate limited, no verdict' <<<"$EOUT")" "0/5/1/1"
+pubreset; fallback EVENT_NAME=schedule
+chk "fallback: a sweep event writes nothing" "$RC/$(attempts)" "0/0"
+
+echo "-- the publisher (verdict writes) --"
+pubreset; snap 1 "$DONE"; printf '%s\n' "$RETRY_3" > "$FAKEGH/ratelimit"; : > "$FAKEGH/rl.sleeps"
+publish CI_GATE_CLOCK="$RL/clock" CI_GATE_SLEEP="$RL/sleep"
+chk "publisher: rate limited once, then the verdict is written: exit 0, success" "$RC/$NPOSTS/$(post_n 1 | cut -f1)/$(sleeps)" "0/1/success/3"
+grep -qx 'published=true' "$WORK/gho" && ok "publisher: published=true after the retried write" || bad "publisher: no published=true"
+pubreset; snap 1 "$DONE"; for _ in $(seq 10); do echo "$RETRY_3"; done > "$FAKEGH/ratelimit"; : > "$FAKEGH/rl.sleeps"
+publish CI_GATE_CLOCK="$RL/clock" CI_GATE_SLEEP="$RL/sleep"
+chk "publisher exhausted: exit 1, 'rate limited, no verdict', nothing written" "$RC/$NPOSTS/$(grep -c 'rate limited, no verdict' <<<"$PUBOUT")" "1/0/1"
+chk "publisher exhausted: die() makes no further failure attempt (5 attempts, all the verdict)" "$(attempts)/$(sort -u "$FAKEGH/attempts.log")" "5/success"
+[ ! -s "$WORK/gho" ] && ok "publisher exhausted: no published=true, so the fallback step runs" || bad "publisher exhausted but claimed published"
+pubreset; snap 1 "$DONE"; publish CI_GATE_STATUS_LIB="$WORK/nonexistent"
+chk "publisher without the status writer: refused, nothing read or written" "$RC/$NPOSTS/$CALLS/$(grep -c 'status writer' <<<"$PUBOUT")" "1/0/0/1"
+
+echo "-- static: the writer step, the concurrency block --"
+step_line2() { grep -n -- "- name: $1" "$WORKFLOW" | head -1 | cut -d: -f1; }
+L_W=$(step_line2 'Write the status writer')
+{ [ -n "$L_W" ] && [ "$L_W" -gt "$L_REFUSE" ] && [ "$L_W" -lt "$L_PEND" ]; } && ok "the writer step sits between input validation and the early pending" || bad "the writer step is misplaced ($L_W)"
+WSTEP=$(sed -n "${L_W},$((L_PEND - 1))p" "$WORKFLOW")
+! grep -qE '\$suite|fetch |scripts/' <<<"$WSTEP" && ok "the writer step reads no suite file" || bad "the writer step touches the suite"
+OUTSIDE=$( { sed -n "1,$((L_W - 1))p" "$WORKFLOW"; sed -n "${L_PEND},\$p" "$WORKFLOW"; } | grep 'gh api')
+[ "$(grep -c . <<<"$OUTSIDE")" = 1 ] && grep -q 'contents/' <<<"$OUTSIDE" \
+  && ok "outside the writer, ci-gate.yml calls gh api only to fetch suite files" || bad "ci-gate.yml calls gh api outside the writer: $OUTSIDE"
+! grep -qE '^[[:space:]]*gh api -X POST' "$WORKFLOW" && ok "no bare status POST remains in ci-gate.yml" || bad "a bare status POST remains"
+! grep -q 'gh api -X POST' "$ROOT/scripts/ci-gate-publish.sh" && ok "no bare status POST remains in the publisher" || bad "the publisher still posts directly"
+CONC=$(sed -n '/^    concurrency:/,/^    permissions:/p' "$WORKFLOW")
+grep -q 'cancel-in-progress: true' <<<"$CONC" && grep -q 'workflow_run.head_sha' <<<"$CONC" && grep -q 'inputs.context' <<<"$CONC" && grep -q "'pr'" <<<"$CONC" && grep -q 'github.run_id' <<<"$CONC" \
+  && ok "the gate job has per-SHA concurrency with cancel-in-progress (context-, event- and sweep-aware)" || bad "the concurrency block is missing or incomplete"
 pubreset
 
 echo "== sweep: schedule and workflow_dispatch re-evaluate every open pull request head and the default branch head =="
@@ -949,7 +1082,7 @@ grep -q "fetch scripts/ci-gate-publish.sh" "$WORKFLOW" && ok "ci-gate.yml fetche
 grep -qE '^  gate:' "$WORKFLOW" && ok "job id is gate" || bad "job id is not gate"
 grep -qE 'default: *"?CI/gate"?' "$WORKFLOW" && ok "context input defaults to CI/gate" || bad "context default is not CI/gate"
 grep -qE 'default: *180' "$WORKFLOW" && ok "timeout_minutes defaults to 180" || bad "timeout_minutes default is not 180"
-WAIT_GUARD=$(sed -n '/# Reserve ten minutes/,/      - name: Mark/{ /      - name: Mark/d; s/^          //; p; }' "$WORKFLOW")
+WAIT_GUARD=$(sed -n '/# Reserve ten minutes/,/      - name: /{ /      - name: /d; s/^          //; p; }' "$WORKFLOW")
 for spec in 0:0 30:0 50:0 51:1 60:1 999999999999999999999999:1; do
   IFS=: read -r minutes expected <<< "$spec"
   env EVENT_NAME=pull_request WAIT_MINUTES="$minutes" bash -c "$WAIT_GUARD" >/dev/null 2>&1

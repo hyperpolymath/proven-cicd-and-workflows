@@ -30,6 +30,20 @@
 # FAIL CLOSED: a missing or invalid profile, an empty `job.workflow_sha`, any API error, or
 # any event other than workflow_run, schedule or workflow_dispatch is a failure, never a pass or a pending.
 #
+# STATUS WRITES: every commit status (the early pending, the verdicts, the failure fallback) goes
+# through one writer, written by the "Write the status writer" step and sourced by the others and by
+# scripts/ci-gate-publish.sh. It skips a write that repeats the status already standing for the
+# context (same state and description: GitHub keeps at most 1000 statuses per SHA and context), and
+# retries a rate-limited POST (HTTP 429, or 403 with a rate-limit answer): it waits for Retry-After,
+# else for x-ratelimit-reset when the quota is spent, else capped exponential backoff with jitter;
+# at most 5 attempts and 300 s of waiting per status. Exhausted, it fails with "rate limited, no verdict".
+#
+# CONCURRENCY: one evaluation per repository, context and head SHA at a time (pull_request apart from
+# the others); a newer event for the same SHA cancels the running one, which re-reads everything
+# anyway. Schedule and workflow_dispatch sweeps are keyed by run, so they never cancel each other.
+# Callers can cut events further by naming their workflows in `workflow_run.workflows` instead of
+# "**" (docs/CI-GATE.adoc, "API budget").
+#
 # The caller must grant: statuses: write, actions: read, contents: read, pull-requests: read
 # (the last one is read only by the sweep, to list open pull requests).
 # No `secrets:` — the reusable consumes none.
@@ -72,6 +86,9 @@ jobs:
     name: CI gate
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    concurrency:
+      group: ci-gate|${{ github.repository }}|${{ inputs.context }}|${{ github.event_name == 'pull_request' && 'pr' || 'run' }}|${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.run_id }}
+      cancel-in-progress: true
     permissions:
       statuses: write
       actions: read
@@ -119,6 +136,83 @@ jobs:
             [[ ${#WAIT_MINUTES} -le 2 ]] && ((10#$WAIT_MINUTES <= 50)) \
               || { echo "::error::wait_minutes must be at most 50 to fit the job timeout"; exit 1; }
           fi
+      - name: Write the status writer
+        # Local only: no API call and no suite file, so the early pending below still runs first.
+        # One copy of the writer for the whole job; tests/ci-gate.sh extracts and drives this text.
+        run: |
+          set -euo pipefail
+          lib="$RUNNER_TEMP/ci-gate-status.sh"
+          cat > "$lib" <<'CI_GATE_STATUS_EOF'
+          # ci-gate status writer: sourced, never run. Needs REPO HEAD_SHA CONTEXT SERVER_URL RUN_ID.
+          # Test hooks: CI_GATE_SLEEP (the sleep command), CI_GATE_CLOCK (a date command, called with +%s).
+          CI_GATE_RETRY_ATTEMPTS=${CI_GATE_RETRY_ATTEMPTS:-5}   # POSTs per status, the first included
+          CI_GATE_RETRY_SECONDS=${CI_GATE_RETRY_SECONDS:-300}   # total waiting per status
+          [[ $CI_GATE_RETRY_ATTEMPTS =~ ^[1-9][0-9]?$ ]] || CI_GATE_RETRY_ATTEMPTS=5
+          [[ $CI_GATE_RETRY_SECONDS =~ ^[0-9]{1,4}$ ]] || CI_GATE_RETRY_SECONDS=300
+          # Read by the caller: ci-gate-publish.sh die() exits without reposting.
+          # shellcheck disable=SC2034
+          CI_GATE_RATE_LIMITED=0
+
+          status_matches() { # <state> <description> -> "same" only if the combined status holds exactly this for $CONTEXT
+            local r
+            r=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status?per_page=100" --jq '.statuses[]' 2> /dev/null \
+              | jq -rs --arg c "$CONTEXT" --arg s "$1" --arg d "$2" \
+                'if type == "array" and any(.[]; type == "object" and .context == $c and .state == $s and (.description // "") == $d) then "same" else "differs" end' 2> /dev/null) || return 0
+            printf '%s\n' "$r"
+          }
+
+          header() { # <lower-case name> <gh -i output file> -> the first value of that response header
+            tr -d '\r' < "$2" | sed -n '/^$/q; p' | awk -v n="$1" 'index(tolower($0), n ": ") == 1 { sub(/^[^:]*: */, ""); print; exit }'
+          }
+
+          rate_limited() { # <HTTP code> <gh -i output file> <gh stderr file>: GitHub's primary or secondary rate limit
+            [[ $1 == 429 ]] && return 0
+            [[ $1 == 403 ]] || return 1
+            [[ $(header x-ratelimit-remaining "$2") == 0 ]] || grep -qi 'rate limit' "$2" "$3"
+          }
+
+          retry_delay() { # <gh -i output file> <attempt> -> seconds to wait before the next POST
+            local d reset
+            d=$(header retry-after "$1")
+            if [[ $d =~ ^[0-9]{1,6}$ ]]; then echo $((10#$d)); return; fi
+            reset=$(header x-ratelimit-reset "$1")
+            if [[ $(header x-ratelimit-remaining "$1") == 0 && $reset =~ ^[0-9]{1,12}$ ]]; then
+              d=$((10#$reset - $("${CI_GATE_CLOCK:-date}" +%s) + 1)); ((d > 0)) || d=1; echo "$d"; return
+            fi
+            d=$((5 << ($2 - 1))); ((d <= 60)) || d=60   # 5, 10, 20, 40, 60 s, plus up to half again
+            echo $((d + RANDOM % (d / 2 + 1)))
+          }
+
+          post_status() { # <state> <description, at most 140 characters>: 0 written or skipped, 1 refused, 2 rate limited
+            if [[ $(status_matches "$1" "$2") == same ]]; then
+              echo "ci-gate: status already $1 with this description on $HEAD_SHA; write skipped (1000-status cap)"
+              return 0
+            fi
+            local attempt=1 waited=0 code delay out err
+            out=$(mktemp) && err=$(mktemp) || return 1
+            while :; do
+              if gh api -i -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+                -f state="$1" -f context="$CONTEXT" -f description="$2" \
+                -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > "$out" 2> "$err"; then
+                rm -f "$out" "$err"; return 0
+              fi
+              code=$(tr -d '\r' < "$out" | sed -n '1s/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p')
+              if ! rate_limited "$code" "$out" "$err"; then
+                cat "$err" >&2; rm -f "$out" "$err"; return 1
+              fi
+              delay=$(retry_delay "$out" "$attempt")
+              if ((attempt >= CI_GATE_RETRY_ATTEMPTS || waited + delay > CI_GATE_RETRY_SECONDS)); then
+                echo "::error::rate limited, no verdict: $CONTEXT $1 on $HEAD_SHA not written after $attempt attempt(s), ${waited}s waited (next wait ${delay}s)"
+                # shellcheck disable=SC2034
+                CI_GATE_RATE_LIMITED=1; rm -f "$out" "$err"; return 2
+              fi
+              echo "ci-gate: rate limited (HTTP $code), attempt $attempt of $CI_GATE_RETRY_ATTEMPTS; retrying in ${delay}s"
+              "${CI_GATE_SLEEP:-sleep}" "$delay"
+              waited=$((waited + delay)); attempt=$((attempt + 1))
+            done
+          }
+          CI_GATE_STATUS_EOF
+          echo "CI_GATE_STATUS_LIB=$lib" >> "$GITHUB_ENV"
       - name: Mark a started or re-run workflow pending
         env:
           EVENT_ACTION: ${{ github.event.action }}
@@ -127,8 +221,11 @@ jobs:
         # the context, and runs before any suite file is fetched. A run that starts (or is
         # re-run) must stop the previous verdict, a possible success, from standing at once.
         # The verdict step later overwrites it; the later write is always a fresh evaluation.
+        # A pending that already stands with the same description is not written again.
         run: |
           set -uo pipefail
+          # shellcheck source=/dev/null
+          source "$CI_GATE_STATUS_LIB"
           if [[ "$EVENT_NAME" == pull_request ]]; then
             # the pull_request run then waits, so the context stands pending meanwhile.
             desc="waiting for the required checks to report"
@@ -138,10 +235,10 @@ jobs:
             # "Description doesn't accept 4-byte Unicode" to it, and no verdict would follow.
             desc=$(jq -rn --arg n "$RUN_NAME" '"re-run started: " + $n | explode | map(if . > 65535 then 63 else . end) | implode | if length > 140 then .[0:139] + "…" else . end')
           fi
-          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
-            -f state=pending -f context="$CONTEXT" -f description="$desc" \
-            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
-            || { echo "::error::could not publish the re-run pending status; NO VERDICT WAS PRODUCED"; exit 1; }
+          post_status pending "$desc" || {
+            (($? == 2)) || echo "::error::could not publish the re-run pending status; NO VERDICT WAS PRODUCED"
+            exit 1
+          }
           echo "$CONTEXT = pending: $desc"
       - name: Read the profile and the verdict scripts from this suite at its own commit
         env:
@@ -217,8 +314,8 @@ jobs:
           set -uo pipefail
           ctx_re='^[A-Za-z0-9]([A-Za-z0-9._/-]| [A-Za-z0-9._/-]){0,127}$'
           [[ ( $EVENT_NAME == workflow_run || $EVENT_NAME == pull_request ) && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && ${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re ]] || exit 0
-          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
-            -f state=failure -f context="$CONTEXT" \
-            -f description="ci-gate could not produce a verdict (profile or API error); see the run" \
-            -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+          [[ -f ${CI_GATE_STATUS_LIB:-} ]] || { echo "::warning::the status writer was not written; no failure status"; exit 0; }
+          # shellcheck source=/dev/null
+          source "$CI_GATE_STATUS_LIB"
+          post_status failure "ci-gate could not produce a verdict (profile or API error); see the run" \
             || echo "::warning::could not publish the failure status either"
