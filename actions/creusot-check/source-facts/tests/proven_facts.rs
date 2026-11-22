@@ -262,14 +262,14 @@ fn prop_every_node_corpus_is_pinned() {
     check(
         "corpus-bytes",
         &String::from_utf8(source).expect("utf-8"),
-        "5987332202e7536add3c063a2bc29244cdf02aa541bfe85ad744d817df5aa89c",
+        "071a28b4fe95bdd55ae986235afef96396607d7f701e8f3d575780da9dd13027",
         &mut printed,
     );
     let out = run(&[&corpus]);
     check(
         "corpus-facts",
         &transcript(&out, here),
-        "4097fcf18e4e6250a0d9013dd59a9d885cf93c2f7fcff63df08a0f3278c60bd8",
+        "1c26117b653f0e20628e79b7b0c770acdf961d030b95def76232f67e1d60482b",
         &mut printed,
     );
     finish(printed);

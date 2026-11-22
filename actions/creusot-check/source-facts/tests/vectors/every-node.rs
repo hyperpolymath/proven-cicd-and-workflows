@@ -66,7 +66,9 @@ fn every_expression(mut a: [u8; 3], b: Option<u8>) -> Result<u8, u8> {
     let closure = |x: u8| x;
     let konst = const { 1 };
     for _ in 0..1 {
-        continue;
+        if b.is_some() {
+            continue;
+        }
     }
     let field = (1, 2).0;
     if let Some(v) = b {}
