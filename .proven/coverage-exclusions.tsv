@@ -1,1 +1,3 @@
 # path	unit	kind	reason
+actions/creusot-check/source-facts/src/main.rs	fn:visit_derive_input	unreachable	syn::visit_file never reaches a DeriveInput; it exists only for derive-macro input, which this tool never parses.
+actions/creusot-check/source-facts/src/main.rs	fn:visit_expr_group	unreachable	syn::parse_file never yields ExprGroup; it comes only from invisible-delimited groups produced by macro expansion, which this tool does not perform.
