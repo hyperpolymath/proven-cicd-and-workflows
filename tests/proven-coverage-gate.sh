@@ -65,6 +65,29 @@ bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" shifts.sh >"$tmp/shifts.lcov"
 want=$'SF:shifts.sh\nDA:2,0\nDA:3,0\nDA:4,0\nDA:5,0\nDA:6,0\nDA:7,0\nLF:6\nLH:0\nend_of_record'
 check "tracer: <<<, shifts and a quoted <<EOF open no here-document" "tracer lcov: $(tr '\n' ' ' <"$tmp/shifts.lcov")" \
   test "$(cat "$tmp/shifts.lcov")" = "$want"
+# CodeRabbit round 4: a command after fi; stays counted, a spaced case
+# pattern is not a statement, and two here-documents on one command are
+# both read as data before scanning resumes.
+cat >"$tmp/repo/round4.sh" <<'SH'
+#!/usr/bin/env bash
+if true; then
+  exit 0
+fi; echo never
+case $1 in
+  x | y)
+    echo xy ;;
+esac
+cat <<A <<B
+a
+A
+"
+B
+echo reached
+SH
+bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" round4.sh >"$tmp/round4.lcov"
+want=$'SF:round4.sh\nDA:2,0\nDA:3,0\nDA:4,0\nDA:5,0\nDA:7,0\nDA:9,0\nDA:14,0\nLF:7\nLH:0\nend_of_record'
+check "tracer: fi; cmd, a spaced case pattern and two here-documents" "tracer lcov: $(tr '\n' ' ' <"$tmp/round4.lcov")" \
+  test "$(cat "$tmp/round4.lcov")" = "$want"
 cat >"$tmp/repo/heredoc.sh" <<'SH'
 #!/usr/bin/env bash
 cat <<EOF

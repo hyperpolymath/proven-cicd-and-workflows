@@ -23,4 +23,4 @@
 * A process started with `env -i`, `sh` or `bash -c` loses the trace hook, so its statements show as uncovered (never falsely covered).
 * Trace paths match scripts by suffix: an unmodified copy run from a temporary directory counts for the original. A test that runs a *modified* copy must give it a different file name.
 * Tests that exit 2 did not run (a missing toolchain such as `idris2`). They are listed as NOT RUN and fail the run, because a test that did not run is no evidence; their statements also stay UNCOVERED.
-* A here-document opens only at an unquoted `<<` outside arithmetic. A here-string (`<<<`) and a shift (`1<<n`) do not open one.
+* A here-document opens only at an unquoted `<<` outside arithmetic. A here-string (`<<<`) and a shift (`1<<n`) do not open one. Several here-documents on one line are read in order. A command after `fi;` or `done;` is still a statement.

@@ -18,8 +18,11 @@
 #   - A here-document opens only at an unquoted, unescaped << outside
 #     arithmetic; a here-string (<<<) and a shift (1<<n) do not open one. Its
 #     delimiter is the whole word after quote removal ('EOF-JSON' is EOF-JSON).
+#     Several here-documents on one line (cat <<A <<B) are read in order.
 #   - Structure-only lines (then, else, do, done, fi, esac, braces, a function
-#     header, a bare case pattern) are not statements: xtrace never reports them.
+#     header, a bare case pattern such as x | y)) are not statements: xtrace
+#     never reports them. A terminator with only redirections after it
+#     (done <<< "$x") is structure; one followed by a command (fi; echo x) is not.
 #   - A process started with env -i, by sh, or by bash -c loses the hook and
 #     reports nothing; its lines show as uncovered, never as falsely covered.
 #   - Trace paths are matched to FILE by suffix, so an unmodified copy of a
@@ -97,18 +100,24 @@ HOOK
         }
         return w
       }
-      function structural(t) {
+      function structural(t,   r) {
         if (t ~ /^(then|else|do|done|fi|esac|in|\{|\}|\(|\)|;;|;&|;;&)$/) return 1
-        if (t ~ /^(done|fi|esac|\}|\))( *[;&<>].*)?$/) return 1
+        # A terminator followed only by redirections and an optional ; or &
+        # (fi; echo x keeps echo x). Quotes, $(...), <(...) and >(...) are
+        # folded first, so done <<< "$(cmd | f)" is still a terminator.
+        r = t; gsub(/\x27[^\x27]*\x27|"[^"]*"/, "Q", r)
+        while (gsub(/[$<>]\([^()]*\)/, "P", r)) ;
+        if (r ~ /^(done|fi|esac|\}|\))( *[0-9]*(<<<|<<?|>>?|<>|<&|>&|&>>?) *[^ ;&|<>]+)*( *(;|;;|;&|;;&|&))? *$/) return 1
         if (t ~ /^(function +)?[A-Za-z_][A-Za-z0-9_:.-]* *\( *\) *\{?$/) return 1
         if (t ~ /^function +[A-Za-z_][A-Za-z0-9_:.-]* *\{?$/) return 1
-        if (t ~ /^\(?[^ ()=]*[^ ()=\\]\)( *;;)?$/) return 1
+        # A case pattern list, spaces allowed around | (x | y)).
+        if (t ~ /^\(? *[^ ()=|]*[^ ()=|\\]( *\| *[^ ()=|]*[^ ()=|\\])* *\)( *;;)?$/) return 1
         return 0
       }
       /^FILE\t/ {
         flush()
         file = substr($0, 6); lineno = 0; ngroups = 0; total = 0; covered = 0
-        open = 0; sp = 0; heredoc = ""; cont = 0
+        open = 0; sp = 0; nh = 0; hc = 0; cont = 0
         delete exec
         nmatch = 0
         for (s = 1; s <= nsrc; s++) {
@@ -120,9 +129,11 @@ HOOK
       {
         lineno++
         line = $0
-        if (heredoc != "") {
-          t = line; if (heredoc_strip) sub(/^\t+/, "", t)
-          if (t == heredoc) heredoc = ""
+        # Pending here-documents (hq[hc..nh]) are read in order; shell
+        # scanning resumes after the last one ends.
+        if (hc <= nh && nh > 0) {
+          t = line; if (hstrip[hc]) sub(/^\t+/, "", t)
+          if (t == hq[hc]) { hc++; if (hc > nh) nh = 0 }
           gend[ngroups] = lineno
           next
         }
@@ -168,12 +179,13 @@ HOOK
           while (substr(code, j, 1) ~ /[ \t]/) j++
           word = heredoc_word(code, j)
           if (word == "") continue
-          heredoc = word; heredoc_strip = strip
-          break
+          if (!nh) hc = 1
+          hq[++nh] = word; hstrip[nh] = strip
+          at = j
         }
         cont = (t ~ /(\\|\||&&|\|\|)$/)
         open = (sp > 0 || cont)
-        if (heredoc != "") open = 0
+        if (nh) open = 0
       }
       END { flush() }
     '
