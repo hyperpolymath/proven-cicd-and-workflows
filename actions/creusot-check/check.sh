@@ -126,21 +126,36 @@ manifest_facts() {
   awk '
     function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
     # Header key path as bare components: split on unquoted dots, drop quotes
-    # and padding; a dot inside a quoted component becomes \001 so that
-    # "dependencies.creusot-std" is one key, not the table dependencies.creusot-std.
+    # and unquoted padding; whitespace inside quotes belongs to the key. A dot
+    # inside a quoted component becomes \001 so that "dependencies.creusot-std"
+    # is one key, not the table dependencies.creusot-std.
     function normkey(h,   i, c, q, out, cur) {
       out = ""; cur = ""; q = ""
       for (i = 1; i <= length(h); i++) {
         c = substr(h, i, 1)
         if (q != "") { if (c == q) q = ""; else cur = cur (c == "." ? "\001" : c) }
         else if (c == "\"" || c == sprintf("%c", 39)) q = c
-        else if (c == ".") { out = out trim(cur) "."; cur = "" }
-        else cur = cur c
+        else if (c == ".") { out = out cur "."; cur = "" }
+        else if (c != " " && c != "\t") cur = cur c
       }
-      return out trim(cur)
+      return out cur
+    }
+    # The line up to a TOML comment: cut at the first `#` outside a string.
+    function strip_comment(line,   i, c, q) {
+      q = ""
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (q != "") {
+          if (q == "\"" && c == "\\") i++
+          else if (c == q) q = ""
+        } else if (c == "#") return substr(line, 1, i - 1)
+        else if (c == "\"" || c == sprintf("%c", 39)) q = c
+      }
+      return line
     }
     function ver_of(line, named,   v) {
       v = ""
+      line = strip_comment(line)
       # `version` may be bare or quoted (TOML treats them as the same key).
       if (match(line, vre)) {
         v = substr(line, RSTART, RLENGTH)

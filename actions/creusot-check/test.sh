@@ -406,11 +406,12 @@ creusot-std.'version' = \"0.14\""
 # is spelled: bare, quoted with either quote character, inline-table or
 # table-header. Otherwise the planted controls fall back to `*`.
 detect_version() { # <label> <manifest body after the [package] header>
-    printf '[package]\nname = "fx"\nversion = "0.1.0"\nedition = "2021"\n%s\n' "$2" > "$FIX/Cargo.toml"
+    local label="$1" body="$2"
+    printf '[package]\nname = "fx"\nversion = "0.1.0"\nedition = "2021"\n%s\n' "$body" > "$FIX/Cargo.toml"
     commit
     run_phase detect
     [[ "$RC" -eq 0 ]] && grep -qx 'creusot_version=0.14' "$OUT" \
-      && ok "reads the version: $1" || { bad "version not read: $1 (exit $RC)"; cat "$OUT"; }
+      && ok "reads the version: $label" || { bad "version not read: $label (exit $RC)"; cat "$OUT"; }
 }
 detect_version 'dotted key, bare version'             '[dependencies]
 creusot-std.version = "0.14"'
@@ -426,6 +427,24 @@ detect_version 'table header, quoted version key'     '[dependencies.creusot-std
 "version" = "0.14"'
 detect_version 'table header, single-quoted version key' "[dependencies.creusot-std]
 'version' = \"0.14\""
+# A trailing TOML comment is not part of the value, and a `#` inside a string is.
+detect_version 'trailing comment mentioning another version'   '[dependencies]
+creusot-std = "0.14" # version = "not-a-version"'
+detect_version 'inline table with trailing version comment'    '[dependencies]
+creusot-std = { version = "0.14" } # version = "9.9"'
+detect_version 'dotted key with trailing version comment'      '[dependencies]
+creusot-std.version = "0.14" # was version = "0.13"'
+detect_version 'table-header version with trailing comment'    '[dependencies.creusot-std]
+version = "0.14" # version = "bad"'
+detect_version 'a # inside a string is not a comment'          '[dependencies]
+creusot-std = { git = "https://example.invalid/a#b", version = "0.14" }'
+# Whitespace inside a quoted key belongs to the key; padding outside it does not.
+detect_manifest 'quoted header key with trailing space is not "dependencies"' none '["dependencies "]
+"creusot-std" = "0.14"'
+detect_manifest 'quoted header key with leading space is not "dependencies"'  none '[" dependencies"]
+"creusot-std" = "0.14"'
+detect_manifest 'padding outside a quoted header key is ignored'              select '[ "dependencies" ]
+creusot-std = "0.14"'
 detect_manifest 'dev-dependencies, dotted'           select '[dev-dependencies]
 creusot-std.workspace = true'
 detect_manifest 'build-dependencies, dotted'         select '[build-dependencies]
