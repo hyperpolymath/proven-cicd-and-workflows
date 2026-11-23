@@ -4,50 +4,65 @@
 # ./.github/workflows/ci-gate.yml (so the gate runs at the suite's own default-branch commit, with no
 # second pin to drift), and the context is "CI / gate", the one this repository's `main` ruleset requires.
 #
-# workflow_run, schedule and workflow_dispatch all run from the DEFAULT branch, so a pull request cannot
-# edit this file or the profile (profiles/ci-gate/hyperpolymath/proven-cicd-and-workflows.json) that
-# judges it. The pull request that first adds this file therefore never receives `CI / gate` itself and
-# is merged past the gate once (docs/CI-GATE.adoc, "Bootstrap"); the gate-pr job at the end removes that need.
+# workflow_run and schedule run from the DEFAULT branch, so a pull request cannot edit this file or the
+# profile (profiles/ci-gate/hyperpolymath/proven-cicd-and-workflows.json) that judges it on those paths.
+# workflow_dispatch runs the file of the ref it is started from; the `gate` job does nothing for a
+# workflow_dispatch from a ref other than the default branch (its `if:`). The pull request that first
+# adds this file never receives `CI / gate` from the default-branch paths and is merged past the gate
+# once (docs/CI-GATE.adoc, "Bootstrap"); the gate-pr job at the end removes that need.
+#
+# TAMPER GUARD: folded into the gate's verdict (docs/CI-GATE.adoc, "Tamper guard"). A same-repository
+# pull request that touches a gate file or a workflow named in the profile fails `CI / gate` until the
+# OWNER applies `gate-change-approved` after the newest commit. AGENTS MUST NEVER APPLY THAT LABEL.
+# Only the default-branch paths are trusted; gate-pr runs the pull request's own copy of this file.
 #
 # The job id MUST stay `gate` and the workflow name MUST stay `CI gate`: the reusable drops runs of
 # that name from the evaluation, and the `if:` below keeps the gate from triggering itself.
 # There is deliberately NO `concurrency:` block. The pull_request job at the end is permanent
 # (docs/CI-GATE.adoc, "The pull_request start"); tests/ci-gate.sh pins its shape.
+# Permissions: none at workflow level; each job grants exactly what the reusable asks for.
 # No `secrets:` line: the reusable consumes none.
 name: CI gate
 
 on:
   pull_request:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] the gate never checks out or runs pull request code; it reads API metadata only
     workflows: ["**", "!CI gate"]
     types: [completed, in_progress]
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch: {}
 
-permissions:
-  statuses: write
-  actions: read
-  contents: read
-  pull-requests: read
+permissions: {}
 
 jobs:
   gate:
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate')
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate') && (github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    permissions:
+      statuses: write
+      actions: read
+      contents: read
+      pull-requests: read
     uses: ./.github/workflows/ci-gate.yml
     with:
       context: "CI / gate"
 
-  # The pull_request start. workflow_run, schedule and workflow_dispatch run only from the default
-  # branch, so without this job the pull request that adds or changes the gate never gets the status
-  # and a ruleset requiring it blocks that very pull request. This job runs from the pull request's own
-  # branch and posts the same verdict, waiting (bounded) for the checks named in the profile to report.
-  # Same-repository branches only: a fork's or Dependabot's pull_request token cannot write statuses,
-  # and those are covered by the workflow_run job. No trust decision uses github.actor.
-  # Because a pull request can edit this file, the Gate tamper guard (ci-gate-tamper-guard.yml, run from
-  # the default branch) fails a pull request that touches gate files unless the owner has approved it.
+  # The pull_request start. workflow_run and schedule run only from the default branch, so without this
+  # job the pull request that adds or changes the gate never gets the status and a ruleset requiring it
+  # blocks that very pull request. This job runs from the pull request's own branch and posts the same
+  # verdict, waiting (bounded) for the checks named in the profile to report.
+  # Same-repository branches only, and not Dependabot's: a fork's or Dependabot's pull_request token is
+  # read-only and cannot write statuses; the workflow_run job covers both. The Dependabot test only
+  # EXCLUDES a run (it can never grant anything), so it is not a trust decision; none uses github.actor.
+  # Because a pull request can edit this file, this path is PR-controlled: it runs the tamper guard for
+  # early feedback only. The trusted guard is the default-branch `gate` job above.
   gate-pr:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
+    permissions:
+      statuses: write
+      actions: read
+      contents: read
+      pull-requests: read
     uses: ./.github/workflows/ci-gate.yml
     with:
       context: "CI / gate"

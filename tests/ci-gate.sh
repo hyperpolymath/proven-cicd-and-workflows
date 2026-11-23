@@ -240,7 +240,7 @@ echo "== publisher: fake gh, settle guard, status writes =="
 PUBLISH="$ROOT/scripts/ci-gate-publish.sh"
 SUITE_DIR="$WORK/suite"; FAKEGH="$WORK/stub"
 mkdir -p "$SUITE_DIR/scripts" "$SUITE_DIR/profiles/ci-gate/example" "$FAKEGH/bin"
-cp "$ROOT"/scripts/ci-gate-verdict.sh "$ROOT"/scripts/validate-ci-gate-profile.sh "$PUBLISH" "$SUITE_DIR/scripts/"
+cp "$ROOT"/scripts/ci-gate-verdict.sh "$ROOT"/scripts/validate-ci-gate-profile.sh "$ROOT"/scripts/ci-gate-tamper-guard.sh "$PUBLISH" "$SUITE_DIR/scripts/"
 cp "$ROOT"/profiles/ci-gate/validate.jq "$ROOT"/profiles/ci-gate/select-runs.jq "$SUITE_DIR/profiles/ci-gate/"
 cp "$FX/profile.json" "$SUITE_DIR/profiles/ci-gate/example/repo.json"
 cat > "$FAKEGH/bin/gh" <<'FAKEGH_EOF'
@@ -306,6 +306,31 @@ case $args in
     id=${args#*actions/runs/}; id=${id%%/*}
     echo "$id" >> "$D/jobs.calls"
     jq -c --argjson id "$id" '.[] | select(.run.id == $id) | del(.run)' "$R/jobs.json" ;;
+  # Tamper guard calls. G=$D/guard: prs.json (GET commits/<sha>/pulls), pr.<n>.json (GET pulls/<n>),
+  # files.<n>.json, events.<n>.json, commits.<n>.json, perms.json; fail.<kind> injects an error.
+  # Every guard call is logged to guard.calls (one kind per line).
+  *"/commits/"*"/pulls?per_page=100"*)
+    echo lookup >> "$D/guard.calls"; [[ ! -f $D/guard/fail.lookup ]] || { echo "gh: HTTP 500 (lookup)" >&2; exit 1; }
+    jq -r "$jqarg" "$D/guard/prs.json" 2>/dev/null || jq -r "$jqarg" <<< '[]' ;;
+  *"/pulls/"*"/files"*)
+    n=${args#*/pulls/}; n=${n%%/*}; echo "files $n" >> "$D/guard.calls"
+    [[ ! -f $D/guard/fail.files ]] || { echo "gh: HTTP 500 (files)" >&2; exit 1; }
+    jq -c "$jqarg" "$D/guard/files.$n.json" ;;
+  *"/issues/"*"/events"*)
+    n=${args#*/issues/}; n=${n%%/*}; echo "events $n" >> "$D/guard.calls"
+    [[ ! -f $D/guard/fail.events ]] || { echo "gh: HTTP 500 (events)" >&2; exit 1; }
+    jq -c "$jqarg" "$D/guard/events.$n.json" ;;
+  *"/collaborators/"*"/permission"*)
+    u=${args#*/collaborators/}; u=${u%%/*}; echo "perm $u" >> "$D/guard.calls"
+    p=$(jq -r --arg u "$u" '.[$u] // empty' "$D/guard/perms.json") && [[ -n $p ]] || { echo "gh: HTTP 404" >&2; exit 1; }
+    echo "$p" ;;
+  *"/pulls/"*"/commits"*)
+    n=${args#*/pulls/}; n=${n%%/*}; echo "commits $n" >> "$D/guard.calls"
+    jq -r "$jqarg" "$D/guard/commits.$n.json" ;;
+  *"/pulls/"[0-9]*" --jq"*)
+    n=${args#*/pulls/}; n=${n%% *}; echo "pr $n" >> "$D/guard.calls"
+    [[ ! -f $D/guard/fail.pr ]] || { echo "gh: HTTP 500 (pr)" >&2; exit 1; }
+    jq -r "$jqarg" "$D/guard/pr.$n.json" ;;
   *"/pulls?state=open"*)
     [[ ! -f $D/failpulls ]] || { echo "gh: HTTP 500 (pulls)" >&2; exit 1; }
     jq -r "$jqarg" "$D/pulls.json" ;;
@@ -323,7 +348,7 @@ SHA=$(printf 'a%.0s' $(seq 40))
 snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
   jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/runs.$1.json"
 }
-pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$FAKEGH/ratelimit" "$FAKEGH/attempts.log" "$FAKEGH/rl.sleeps" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
+pubreset() { rm -rf "$FAKEGH/guard" "$FAKEGH/guard.calls" "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$FAKEGH/ratelimit" "$FAKEGH/attempts.log" "$FAKEGH/rl.sleeps" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
   : > "$FAKEGH/jobs.calls"
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
@@ -419,6 +444,77 @@ pubreset; snap 1 "$DONE"; publish HEAD_SHA=abc
 chk "a head SHA that is not 40 hex: exit 1, no POST" "$RC/$NPOSTS" "1/0"
 pubreset
 
+echo "== tamper guard folded into the verdict (publisher) =="
+# g_pr <n> <head sha> <head repo> [state]: an entry of GET commits/<sha>/pulls and GET pulls/<n>
+G="$FAKEGH/guard"
+g_init() { rm -rf "$G" "$FAKEGH/guard.calls"; mkdir -p "$G"; echo '[]' > "$G/prs.json"; printf '{"boss":"admin","dev":"write"}' > "$G/perms.json"; }
+g_pr() {
+  jq --argjson n "$1" --arg s "$2" --arg r "$3" --arg st "${4:-open}" '. + [{number: $n, state: $st, head: {sha: $s, repo: (if $r == "" then null else {full_name: $r} end)}}]' "$G/prs.json" > "$G/p.tmp" && mv "$G/p.tmp" "$G/prs.json"
+  jq -n --argjson n "$1" --arg s "$2" --arg r "$3" --arg st "${4:-open}" '{number: $n, state: $st, head: {sha: $s, repo: (if $r == "" then null else {full_name: $r} end)}}' > "$G/pr.$1.json"
+  echo '[]' > "$G/events.$1.json"; jq -n '[{commit: {committer: {date: "2026-11-17T10:00:00Z"}}}]' > "$G/commits.$1.json"
+}
+g_files() { local n=$1; shift; printf '%s\n' "$@" | jq -R '{filename: .}' | jq -s . > "$G/files.$n.json"; }
+g_label() { jq -n --arg at "$2" --arg who "${3:-boss}" '[{event: "labeled", label: {name: "gate-change-approved"}, created_at: $at, actor: {login: $who}}]' > "$G/events.$1.json"; }
+gcalls() { grep -c . "$FAKEGH/guard.calls" 2>/dev/null || echo 0; }
+gkinds() { grep -v '^lookup$' "$FAKEGH/guard.calls" 2>/dev/null | cut -d' ' -f1 | sort -u | paste -sd, -; }
+REPOK=example/repo
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 README.adoc .github/workflows/ci-gate.yml; publish
+chk "unapproved PR touching a gate file: one failure POST, exit 1" "$(post_n 1 | cut -f1)/$NPOSTS/$RC" "failure/1/1"
+chk "unapproved PR touching a gate file: the description names the path" "$(post_n 1 | cut -f2)" "gate files changed without owner approval: .github/workflows/ci-gate.yml"
+chk "unapproved: decided before any workflow run was read" "$CALLS" 0
+chk "unapproved: published=true (a verdict, not an error)" "$(grep -c '^published=true$' "$WORK/gho")" 1
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-quality.yml src/x.rs; publish
+chk "unapproved PR touching a profiled producer workflow: failure naming it" "$(post_n 1 | cut -f1,2)/$RC" "$(printf 'failure\tgate files changed without owner approval: .github/workflows/ci-quality.yml')/1"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/other.yml src/x.rs; publish
+chk "a workflow NOT named in the profile is not protected: normal verdict" "$(post_n 1 | cut -f1)/$RC" "success/0"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml .github/workflows/ci-build.yml; g_label 7 2026-11-17T11:00:00Z boss; publish
+chk "approved PR (admin label after the newest commit): the normal verdict" "$(post_n 1 | cut -f1,2)/$NPOSTS/$RC" "$(printf 'success\tall 3 required checks passed')/1/0"
+chk "approved PR: files, events, permission and commits were read" "$(gkinds)" "commits,events,files,perm"
+pubreset; snap 1 "$DONE"; jq 'map(if .name == "Test" then .conclusion = "failure" else . end)' "$FX/jobs.json" > "$FAKEGH/jobs.json"
+g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; g_label 7 2026-11-17T11:00:00Z boss; publish
+chk "approved PR whose checks fail: the checks' failure stands" "$(post_n 1 | cut -f1)/$(post_n 1 | cut -f2 | grep -c 'Test (failure)')" "failure/1"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 scripts/ci-gate-publish.sh; g_label 7 2026-11-17T09:00:00Z boss; publish
+chk "label applied before the newest commit: failure" "$(post_n 1 | cut -f1,2)/$RC" "$(printf 'failure\tgate files changed without owner approval: scripts/ci-gate-publish.sh')/1"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 scripts/ci-gate-publish.sh; g_label 7 2026-11-17T11:00:00Z dev; publish
+chk "non-admin labeller: failure" "$(post_n 1 | cut -f1,2)/$RC" "$(printf 'failure\tgate files changed without owner approval: scripts/ci-gate-publish.sh')/1"
+pubreset; snap 1 "$DONE"; g_init; publish
+chk "a SHA with no open PR: the normal verdict" "$(post_n 1 | cut -f1)/$RC" "success/0"
+chk "a SHA with no open PR: only the one lookup, no per-PR guard call" "$(cat "$FAKEGH/guard.calls")" lookup
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; publish GUARD_PRS=
+chk "GUARD_PRS empty (the sweep found no PR): normal verdict and no guard API call at all" "$(post_n 1 | cut -f1)/$(gcalls)" "success/0"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" fork/repo; g_files 7 .github/workflows/ci-gate.yml; publish
+chk "a fork PR is not matched: normal verdict, no per-PR guard call" "$(post_n 1 | cut -f1)/$(gkinds)" "success/"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK" closed; g_files 7 .github/workflows/ci-gate.yml; publish
+chk "a closed PR is not matched" "$(post_n 1 | cut -f1)/$(gkinds)" "success/"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$(printf 'b%.0s' $(seq 40))" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; publish
+chk "a PR whose head is another SHA is not matched" "$(post_n 1 | cut -f1)/$(gkinds)" "success/"
+for k in files events; do
+  pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; : > "$G/fail.$k"; publish
+  chk "guard API error ($k): failure, no verdict, exit 1" "$(post_n 1 | cut -f1)/$RC/$(grep -c 'tamper guard could not check PR #7; NO VERDICT' <<<"$PUBOUT")" "failure/1/1"
+done
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; g_label 7 2026-11-17T11:00:00Z ghost; publish
+chk "guard API error (permission 404): failure, no verdict" "$(post_n 1 | cut -f1)/$RC/$(grep -c 'tamper guard could not check PR #7' <<<"$PUBOUT")" "failure/1/1"
+pubreset; snap 1 "$DONE"; g_init; : > "$G/fail.lookup"; publish
+chk "PR lookup API error: failure, no verdict" "$(post_n 1 | cut -f1)/$RC/$(grep -c 'could not list the pull requests of this commit' <<<"$PUBOUT")" "failure/1/1"
+pubreset; snap 1 "$DONE"; g_init; rm -f "$SUITE_DIR/scripts/ci-gate-tamper-guard.sh"; publish
+chk "guard script missing from the suite: failure, no verdict" "$(post_n 1 | cut -f1)/$RC" "failure/1"
+cp "$ROOT/scripts/ci-gate-tamper-guard.sh" "$SUITE_DIR/scripts/"
+pubreset; snap 1 "$DONE"; g_init; publish GUARD_PRS='7 x'
+chk "GUARD_PRS with a non-number: failure, no verdict" "$(post_n 1 | cut -f1)/$RC" "failure/1"
+echo "-- workflow_run: the event's pull_requests, confirmed by GET pulls/<n> --"
+EVPR() { jq -nc --arg s "$1" --argjson hid "${2:-1}" '[{number: 7, head: {sha: $s, repo: {id: $hid}}, base: {repo: {id: 1}}}]'; }
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; publish GUARD_EVENT_PRS="$(EVPR "$SHA")"
+chk "event names the PR: guarded, failure" "$(post_n 1 | cut -f1)/$RC" "failure/1"
+chk "event names the PR: confirmed with GET pulls/7, no commits/<sha>/pulls lookup" "$(grep -c '^pr 7$' "$FAKEGH/guard.calls")/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "1/0"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; publish GUARD_EVENT_PRS="$(EVPR "$SHA" 2)"
+chk "event entry from another repository (fork ids): not taken from the event, the lookup still finds the same-repo PR" "$(post_n 1 | cut -f1)/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "failure/1"
+pubreset; snap 1 "$DONE"; g_init; publish GUARD_EVENT_PRS='[]'
+chk "event has no pull requests (a push): falls back to the lookup" "$(post_n 1 | cut -f1)/$(cat "$FAKEGH/guard.calls")" "success/lookup"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; : > "$G/fail.pr"; publish GUARD_EVENT_PRS="$(EVPR "$SHA")"
+chk "GET pulls/<n> error: failure, no verdict" "$(post_n 1 | cut -f1)/$RC/$(grep -c 'could not read pull request #7' <<<"$PUBOUT")" "failure/1/1"
+pubreset; snap 1 "$DONE"; g_init; publish GUARD_EVENT_PRS='{"x":1}'
+chk "a malformed event list: failure, no verdict" "$(post_n 1 | cut -f1)/$RC" "failure/1"
+pubreset; g_init
 echo "== pull_request wait loop: WAIT_SECONDS, POLL_SECONDS =="
 NOQ='map(select(.name != "CI quality"))'   # CI quality produces the required jobs Lint and Test
 cat > "$FAKEGH/bin/clock" <<'CLOCK'
@@ -881,6 +977,23 @@ sweep CI_GATE_SLEEP="$RL/sleep" CI_GATE_CLOCK="$RL/clock"
 chk "control: rate limited once and recovered: all 3 heads written, exit 0" "$(grep -c . "$FAKEGH/posts.log")/$RC/$(grep -c 'not evaluated: rate limited' "$WORK/gss")" "3/0/0"
 pubreset
 
+echo "-- the sweep runs the tamper guard for the same-repository pull requests it lists --"
+set_pulls_repo() { # "<number> <sha n> <head repo>" ... -> open pull requests with a head repository
+  local t num idx hr
+  for t in "$@"; do read -r num idx hr <<<"$t"; jq -nc --argjson n "$num" --arg s "$(sha_n "$idx")" --arg r "$hr" '{number: $n, updated_at: "2026-11-17T10:00:00Z", head: {sha: $s, repo: {full_name: $r}}}'; done | jq -s . > "$FAKEGH/pulls.json"
+}
+pubreset; g_init; set_default 22; set_pulls_repo "7 20 example/repo" "8 21 fork/repo"
+for i in 20 21 22; do sweep_sha "$i" "$DONE"; done
+g_pr 7 "$(sha_n 20)" example/repo; g_pr 8 "$(sha_n 21)" fork/repo; g_files 7 .github/workflows/ci-gate.yml; g_files 8 .github/workflows/ci-gate.yml
+sweep
+chk "sweep: the unapproved same-repo PR head is failure, naming the gate file" "$(last_for 20)/$(grep -P "\t$(sha_n 20)$" "$FAKEGH/posts.log" | cut -f2)" "failure/gate files changed without owner approval: .github/workflows/ci-gate.yml"
+chk "sweep: the fork PR head is not guarded (success) and the default branch head is success" "$(last_for 21) $(last_for 22)" "success success"
+chk "sweep: guard calls only for PR #7, and no commits/<sha>/pulls lookup at all" "$(cut -d' ' -f2 "$FAKEGH/guard.calls" | sort -u | paste -sd, -)/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "7/0"
+chk "sweep: the failure row is in the table and the sweep exits 1" "$(grep -c "| PR #7 | failure | gate files changed without owner approval" "$WORK/gss")/$RC" "1/1"
+g_label 7 2026-11-17T11:00:00Z boss; : > "$FAKEGH/posts.log"; : > "$FAKEGH/guard.calls"
+sweep
+chk "sweep after the owner's label: the PR head becomes success, exit 0" "$(last_for 20)/$RC" "success/0"
+pubreset; g_init
 echo "== repository coordinate: a leading dot is a name; traversal and malformed ones are not =="
 step_script() { # <file> <step name prefix> -> the step's run: block, de-indented
   awk -v name="$2" '
@@ -1076,13 +1189,36 @@ for spec in 0:0 30:0 50:0 51:1 60:1 999999999999999999999999:1; do
 done
 # Template: workflow_run main path; pull_request only as the permanent gate-pr job (pr_start_ok).
 tpl_code() { grep -vE '^[[:space:]]*#' "$1"; }
+# Caller shape shared by the template and the suite's caller (caller_shape <code-lines-fn> <file> <label>):
+# permissions {} at workflow level and the four grants on each of gate and gate-pr; Dependabot kept out
+# of gate-pr; a workflow_dispatch from a non-default ref skipped by gate; the workflow_run zizmor note.
+job_block() { # <code-lines-fn> <file> <job id> -> that job's lines
+  "$1" "$2" | awk -v j="  $3:" '$0 == j { f = 1; print; next } f && /^  [A-Za-z0-9_-]+:/ { exit } f'
+}
+caller_shape() {
+  local code=$1 file=$2 lbl=$3 j
+  "$code" "$file" | grep -qxE 'permissions: \{\}' && ! "$code" "$file" | grep -qE '^  (statuses|actions|contents|pull-requests): ' \
+    && ok "$lbl: permissions {} at workflow level, no workflow-level grant" || bad "$lbl: workflow-level permissions are not {}"
+  for j in gate gate-pr; do
+    job_block "$code" "$file" "$j" > "$WORK/jb.txt"
+    grep -qx '    permissions:' "$WORK/jb.txt" && grep -qx '      statuses: write' "$WORK/jb.txt" && grep -qx '      actions: read' "$WORK/jb.txt" \
+      && grep -qx '      contents: read' "$WORK/jb.txt" && grep -qx '      pull-requests: read' "$WORK/jb.txt" && [ "$(awk '/^    permissions:$/ { f = 1; next } f && /^    [^ ]/ { exit } f' "$WORK/jb.txt" | grep -c .)" = 4 ] \
+      && ok "$lbl: job $j grants exactly statuses: write, actions: read, contents: read, pull-requests: read" || bad "$lbl: job $j permissions are not the four grants"
+  done
+  job_block "$code" "$file" gate-pr | grep -qE "^    if: .*github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'$" \
+    && ok "$lbl: Dependabot pull requests are excluded from gate-pr by PR author" || bad "$lbl: gate-pr does not exclude Dependabot"
+  job_block "$code" "$file" gate | grep -qF "    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate') && (github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))" \
+    && ok "$lbl: a workflow_dispatch from a non-default ref is skipped by gate" || bad "$lbl: gate does not skip a workflow_dispatch from a non-default ref"
+  grep -qE '^  workflow_run: # zizmor: ignore\[dangerous-triggers\] .+' "$file" \
+    && ok "$lbl: the workflow_run trigger carries a justified zizmor ignore" || bad "$lbl: no zizmor ignore on workflow_run"
+}
 # A pull_request trigger is allowed ONLY together with a same-repo-only gate-pr job
 # and a main job that does not also run on pull_request. pr_start_ok <code-lines-fn> <file>
 pr_start_ok() {
   local code=$1 file=$2
   "$code" "$file" | grep -qE '^  pull_request:' || return 1
   "$code" "$file" | grep -qE "^    if: github.event_name != 'pull_request' && \(github.event_name != 'workflow_run' \|\| github.event.workflow_run.name != 'CI gate'\)" || return 1
-  "$code" "$file" | grep -qE "^    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository$" || return 1
+  "$code" "$file" | grep -qE "^    if: github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.repo\.full_name == github\.repository && github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'$" || return 1
   "$code" "$file" | grep -qE '^  gate-pr:' || return 1
   grep -q 'permanent\|The pull_request start' "$file" || return 1
   ! "$code" "$file" | grep -qE 'pull_request_target|actions/checkout|github\.actor|actor\.login' || return 1
@@ -1098,7 +1234,9 @@ tpl_code "$TEMPLATE" | grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\
   && ok "template calls the reusable at the __CICD_SUITE_SHA__ placeholder" || bad "template does not call the reusable at the placeholder"
 tpl_code "$TEMPLATE" | grep -qE '^  schedule:' && tpl_code "$TEMPLATE" | grep -qE '^    - cron: ' && ok "template has the schedule trigger" || bad "template has no schedule trigger"
 tpl_code "$TEMPLATE" | grep -qE '^  workflow_dispatch:' && ok "template has the workflow_dispatch trigger" || bad "template has no workflow_dispatch trigger"
-tpl_code "$TEMPLATE" | grep -qE '^  pull-requests: read' && ok "template grants pull-requests: read" || bad "template does not grant pull-requests: read"
+caller_shape tpl_code "$TEMPLATE" template
+! grep -q 'DE-ONBOARDED' "$TEMPLATE" && grep -qF "'.github/workflows/ci-gate.yml': []" "$TEMPLATE" && grep -q 'Unused lockfile entry' "$TEMPLATE" \
+  && ok "template: the actions.lock note is the empty file-level entry, not de-onboarding" || bad "template: the actions.lock note is wrong"
 tpl_code "$TEMPLATE" | grep -qE "^    if: github.event_name != 'pull_request' && \(github.event_name != 'workflow_run' \|\| github.event.workflow_run.name != 'CI gate'\)" && ok "template excludes the gate's own workflow_run events and pull_request from the main job" || bad "template main job if: is wrong"
 tpl_code "$TEMPLATE" | grep -qE '^  gate:' && ok "template job id is gate" || bad "template job id is not gate"
 tpl_code "$TEMPLATE" | grep -qE 'context: *"CI/gate"' && ok "template publishes CI/gate" || bad "template does not publish CI/gate"
@@ -1116,8 +1254,7 @@ pr_start_ok self_code "$SELF" && ok "the suite's caller: pull_request appears on
 self_code | grep -qE '^[[:space:]]*concurrency:' && bad "the suite's caller has a concurrency block" || ok "the suite's caller has no concurrency block"
 self_code | grep -qE '^    types: \[[^]]*\bcompleted\b[^]]*\]' && self_code | grep -qE '^    types: \[[^]]*\bin_progress\b[^]]*\]' && self_code | grep -qE '^  schedule:' && self_code | grep -qE '^  workflow_dispatch:' \
   && ok "it has workflow_run (completed, in_progress), schedule and workflow_dispatch" || bad "its triggers are not the caller shape"
-self_code | grep -qE '^  pull-requests: read' && self_code | grep -qE '^  statuses: write' && self_code | grep -qE '^  actions: read' && self_code | grep -qE '^  contents: read' \
-  && ok "it grants statuses: write, actions: read, contents: read, pull-requests: read" || bad "its permissions are not the caller shape"
+caller_shape self_code "$SELF" "the suite's caller"
 ! grep -qE '^[[:space:]]*secrets:' "$SELF" && ok "the suite's caller has no secrets: line" || bad "the suite's caller has a secrets: line"
 [ "$(jq -r .repository "$SELFPROFILE")" = hyperpolymath/proven-cicd-and-workflows ] && ok "the suite's profile names the suite" || bad "the suite's profile names another repository"
 bash "$VALIDATE" "$SELFPROFILE" hyperpolymath/proven-cicd-and-workflows "CI / gate" >/dev/null 2>&1 && ok "the suite's profile validates with the caller's context CI / gate forbidden" || bad "the suite's profile does not validate"

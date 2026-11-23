@@ -19,12 +19,7 @@
     {
       "path": ".github/workflows/ci-gate-tamper-guard.yml",
       "mode": "immutable",
-      "reason": "Reusable tamper guard: uses no actions, never checks out or runs pull request code; reads changed files, label events and commit dates through the API."
-    },
-    {
-      "path": ".github/workflows/ci-gate-tamper-guard-caller.yml",
-      "mode": "immutable",
-      "reason": "The suite guards its own gate files: pull_request_target caller of the local reusable guard; runs from the default branch, no checkout, minimal permissions."
+      "reason": "DEPRECATED reusable tamper guard (pull_request_target is refused by the account Actions policy; the guard now runs inside ci-gate.yml). Kept while consumers still reference it: uses no actions, never checks out or runs pull request code."
     },
     {
       "path": ".github/workflows/ci-gate-caller.yml",

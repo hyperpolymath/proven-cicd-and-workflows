@@ -1,4 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
+# ⚠ DEPRECATED (2026-11-23). This guard has NEVER started: every run ends in startup_failure because
+# the account Actions policy refuses its trigger with
+#   "Event 'pull_request_target' is not allowed to trigger Actions workflows."
+# (rsr-template-repo 30/30, resource-algebra 50/50, this suite 30/30). The guard now runs INSIDE the
+# gate's own verdict (ci-gate.yml -> scripts/ci-gate-publish.sh -> scripts/ci-gate-tamper-guard.sh;
+# docs/CI-GATE.adoc, "Tamper guard"). Do not install it anywhere new. It is kept only while consumers
+# still reference it; a later pass removes their pull_request_target caller, then this file.
+#
 #
 # ci-gate-tamper-guard.yml (reusable) - fail a pull request that touches the gate's own files
 # unless the owner approved the change with the label `gate-change-approved`.

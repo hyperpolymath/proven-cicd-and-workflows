@@ -4,9 +4,17 @@
 # ci-gate-tamper-guard.sh - fail a pull request that touches the gate's own files unless the owner
 # approved that change. Reads metadata through `gh` only; never checks out or runs pull request code.
 #
+# Called per pull request by scripts/ci-gate-publish.sh (the gate's own verdict: docs/CI-GATE.adoc,
+# "Tamper guard"), and by the deprecated pull_request_target reusable ci-gate-tamper-guard.yml.
+#
 # Environment (all through env:, never interpolated into a script):
 #   REPO PR_NUMBER        what to inspect
 #   APPROVAL_LABEL        default gate-change-approved
+#   EXTRA_PROTECTED_FILE  optional: a file of further protected paths, one EXACT path per line (no
+#                         glob), each a plain file under .github/workflows (^\.github/workflows/
+#                         [A-Za-z0-9_.-]+\.ya?ml$, the profile's own workflow-path rule). The publisher
+#                         writes the profile's producer workflows here. Blank lines are ignored; any
+#                         other line, or an unreadable file, is an error (fail closed).
 #
 # Protected files (a rename counts through both its old and its new name):
 PROTECTED=(
@@ -18,6 +26,7 @@ PROTECTED=(
   'templates/ci-gate*.yml'
   'profiles/ci-gate/*'
 )
+EXTRA=()   # exact paths from EXTRA_PROTECTED_FILE
 #
 # Approval = the label is on the pull request NOW (its latest labeled/unlabeled event is `labeled`),
 # the actor of that labeled event holds `admin` on the repository (GET collaborators/{login}/permission,
@@ -29,16 +38,33 @@ PROTECTED=(
 # THE LABEL: it is the owner's act (docs/CI-GATE.adoc, "Tamper guard").
 #
 # Exit 0: no gate file touched, or approved. Exit 1: not approved, and EVERY error (fail closed).
+# Stdout, for the publisher: a refusal that is a VERDICT (gate files touched, not approved) prints
+# `guard-result=unapproved` and `guard-touched=<comma-separated paths>`; an error (no verdict) prints
+# neither, so the caller can tell "not approved" from "could not check".
 set -uo pipefail
 APPROVAL_LABEL=${APPROVAL_LABEL:-gate-change-approved}
 
 fail() { echo "::error::gate tamper guard: $1"; exit 1; }
+deny() { echo "guard-result=unapproved"; echo "guard-touched=$list"; fail "$1"; }
+
+if [[ -n ${EXTRA_PROTECTED_FILE:-} ]]; then
+  [[ -f $EXTRA_PROTECTED_FILE && -r $EXTRA_PROTECTED_FILE ]] || fail 'EXTRA_PROTECTED_FILE is not a readable file'
+  while IFS= read -r x || [[ -n $x ]]; do
+    [[ -n $x ]] || continue
+    [[ $x =~ ^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$ ]] \
+      || fail 'EXTRA_PROTECTED_FILE has a line that is not a plain .github/workflows/*.yml path'
+    EXTRA+=("$x")
+  done < "$EXTRA_PROTECTED_FILE"
+fi
 
 protected() { # <path> -> 0 if it is a gate file
   local f=$1 p
   for p in "${PROTECTED[@]}"; do
     # shellcheck disable=SC2053
     [[ $f == $p ]] && return 0
+  done
+  for p in "${EXTRA[@]}"; do
+    [[ $f == "$p" ]] && return 0
   done
   return 1
 }
@@ -75,7 +101,7 @@ latest=$(jq -rs --arg l "$APPROVAL_LABEL" '
   map(select(.label == $l)) | sort_by(.at) | if length == 0 then "" else last | if .event == "labeled" then [.at, .actor] | @tsv else "" end end' <<< "$events") \
   || fail 'could not evaluate the label events'
 if [[ -z $latest ]]; then
-  fail "this pull request touches gate files ($list) and the label '$APPROVAL_LABEL' is not applied. Only the repository owner may apply it; agents must not."
+  deny "this pull request touches gate files ($list) and the label '$APPROVAL_LABEL' is not applied. Only the repository owner may apply it; agents must not."
 fi
 IFS=$'\t' read -r label_at actor <<< "$latest"
 [[ -n $label_at ]] || fail 'the label event has no time'
@@ -83,11 +109,11 @@ IFS=$'\t' read -r label_at actor <<< "$latest"
 # The actor of the latest labeled event must hold admin. The login is validated before it is put into
 # a URL; a missing actor (a deleted account), a bot, an API error or an unexpected answer all refuse.
 [[ $actor =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] \
-  || fail "gate files are touched ($list); the actor of the latest '$APPROVAL_LABEL' event is missing or not a user login, so it cannot be shown to be an admin"
+  || deny "gate files are touched ($list); the actor of the latest '$APPROVAL_LABEL' event is missing or not a user login, so it cannot be shown to be an admin"
 perm=$(gh api "repos/$REPO/collaborators/$actor/permission" --jq '.permission') \
   || fail "could not read the repository permission of '$actor'; no verdict"
 [[ $perm == admin ]] \
-  || fail "gate files are touched ($list); '$APPROVAL_LABEL' was applied by '$actor' whose repository permission is '${perm:-none}', not admin. Only an admin's label counts."
+  || deny "gate files are touched ($list); '$APPROVAL_LABEL' was applied by '$actor' whose repository permission is '${perm:-none}', not admin. Only an admin's label counts."
 
 commits=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits?per_page=100" --jq '.[] | .commit.committer.date') \
   || fail 'could not read the pull request commits; no verdict'
@@ -100,4 +126,4 @@ if (( applied > newest )); then
   echo "gate tamper guard: gate files touched ($list); '$APPROVAL_LABEL' applied by admin '$actor' after the newest commit; approved"
   exit 0
 fi
-fail "gate files are touched ($list) and '$APPROVAL_LABEL' was applied before the newest commit; the owner must re-apply it after every push."
+deny "gate files are touched ($list) and '$APPROVAL_LABEL' was applied before the newest commit; the owner must re-apply it after every push."

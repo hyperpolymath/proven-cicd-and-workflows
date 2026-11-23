@@ -20,7 +20,10 @@
 #  2. De-duplicates the head SHAs. Above the cap (100) it keeps the most recently updated and
 #     prints a ::warning:: naming how many were skipped. The default branch head counts as the
 #     most recently updated. It never skips silently.
-#  3. Runs the publisher for each SHA, with no early in_progress pending. A failure on one SHA
+#  3. Runs the publisher for each SHA, with no early in_progress pending. It passes the publisher
+#     GUARD_PRS: the open SAME-REPOSITORY pull requests headed by that SHA (from the listing above), so
+#     the publisher runs the tamper guard for exactly those, with no lookup of its own; a fork head and
+#     the default branch head (unless a pull request shares it) get none. A failure on one SHA
 #     does not stop the others, except "rate limited, no verdict": the rest would meet the same
 #     limit, so they are listed as not evaluated and the next sweep takes them.
 #  4. Writes a table (SHA, source, state, description) to the step summary and exits non-zero if
@@ -48,6 +51,7 @@ TAB=$'\t'
 errors=0
 rows="$WORK/rows.tsv"; : > "$rows"        # sha<TAB>source<TAB>state<TAB>description
 cand="$WORK/candidates.tsv"; : > "$cand"  # updated_at<TAB>sha<TAB>source
+guardprs="$WORK/guard-prs.tsv"; : > "$guardprs"  # sha<TAB>number of each open same-repository pull request
 
 # 1. the default branch head, first: it sorts above every pull request
 branch=$(gh api "repos/$REPO" --jq .default_branch 2> /dev/null) || branch=''
@@ -66,10 +70,12 @@ fi
 
 # open pull requests, every page
 if gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
-  --jq '.[] | [.updated_at, .head.sha, "PR #\(.number)"] | @tsv' > "$WORK/pulls.tsv" 2> "$WORK/pulls.err"; then
-  while IFS=$'\t' read -r upd sha src; do
+  --jq '.[] | [.updated_at, .head.sha, "PR #\(.number)", .number, (.head.repo.full_name // "")] | @tsv' > "$WORK/pulls.tsv" 2> "$WORK/pulls.err"; then
+  while IFS=$'\t' read -r upd sha src num hrepo; do
     if [[ $sha =~ ^[0-9a-f]{40}$ && -n $upd ]]; then
       printf '%s\t%s\t%s\n' "$upd" "$sha" "$src" >> "$cand"
+      # tamper guard: same-repository pull requests only (a fork head is not guarded; docs/CI-GATE.adoc)
+      if [[ $hrepo == "$REPO" && $num =~ ^[1-9][0-9]{0,9}$ ]]; then printf '%s\t%s\n' "$sha" "$num" >> "$guardprs"; fi
     else
       echo "::error::ci-gate-sweep: $src has an unusable head SHA or date; it was NOT evaluated"
       printf '%s\t%s\terror\tunusable head SHA\n' '-' "$src" >> "$rows"
@@ -100,7 +106,8 @@ while IFS=$'\t' read -r _ sha src; do
   dir="$WORK/sha-$n"; mkdir -p "$dir"
   echo "::group::$CONTEXT for $sha ($src)"
   rc=0
-  env -u GITHUB_OUTPUT HEAD_SHA="$sha" WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/summary.md" \
+  prs=$(awk -F'\t' -v s="$sha" '$1 == s { print $2 }' "$guardprs" | sort -un | paste -sd' ' -)
+  env -u GITHUB_OUTPUT -u GUARD_EVENT_PRS GUARD_PRS="$prs" HEAD_SHA="$sha" WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/summary.md" \
     SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" WF_REPO="$WF_REPO" WF_SHA="$WF_SHA" \
     bash "$PUBLISH" > "$dir/out.txt" 2>&1 || rc=$?
   cat "$dir/out.txt"

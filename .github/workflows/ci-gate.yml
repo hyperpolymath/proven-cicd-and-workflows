@@ -27,6 +27,14 @@
 # publisher on each distinct head SHA (scripts/ci-gate-sweep.sh), with no early pending. That bounds
 # nothing by itself: a sweep is one more last-writer-wins evaluator (docs/CI-GATE.adoc, "Residual limit").
 #
+# TAMPER GUARD: before the verdict, the publisher runs scripts/ci-gate-tamper-guard.sh (fetched with the
+# other scripts) for every open same-repository pull request whose head is the evaluated SHA (workflow_run:
+# the event's pull_requests, else commits/<sha>/pulls; sweep: the pull requests it lists; pull_request:
+# its own number). A pull request that touches a gate file or a workflow named in the profile without the
+# owner's `gate-change-approved` label makes the verdict `failure` ("gate files changed without owner
+# approval: <paths>"); a guard error is "no verdict". Only the default-branch paths (workflow_run, sweep)
+# are trusted; the pull_request path runs the pull request's own caller (docs/CI-GATE.adoc, "Tamper guard").
+#
 # FAIL CLOSED: a missing or invalid profile, an empty `job.workflow_sha`, any API error, or
 # any event other than workflow_run, schedule or workflow_dispatch is a failure, never a pass or a pending.
 #
@@ -45,7 +53,8 @@
 # "**" (docs/CI-GATE.adoc, "API budget").
 #
 # The caller must grant: statuses: write, actions: read, contents: read, pull-requests: read
-# (the last one is read only by the sweep, to list open pull requests).
+# (the last one is read by the sweep, to list open pull requests, and by the tamper guard). Grant them at
+# JOB level, with `permissions: {}` at workflow level (templates/ci-gate-caller.yml).
 # No `secrets:` — the reusable consumes none.
 
 name: CI gate (reusable)
@@ -264,6 +273,7 @@ jobs:
           fetch scripts/validate-ci-gate-profile.sh
           fetch scripts/ci-gate-publish.sh
           fetch scripts/ci-gate-sweep.sh
+          fetch scripts/ci-gate-tamper-guard.sh
           fetch profiles/ci-gate/validate.jq
           fetch profiles/ci-gate/select-runs.jq
           mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
@@ -278,6 +288,8 @@ jobs:
         env:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          WORKFLOW_RUN_PRS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
         # All of the reading, the settle guard and the publishing is scripts/ci-gate-publish.sh
         # (fetched from the suite above), so a stub `gh` can test it offline. On schedule and
         # workflow_dispatch scripts/ci-gate-sweep.sh runs that same publisher once per open pull
@@ -285,10 +297,14 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == workflow_run ]]; then
-            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=0 bash "$suite/scripts/ci-gate-publish.sh"
+            # tamper guard: the pull requests this run names (else the publisher looks them up)
+            GUARD_EVENT_PRS="$WORKFLOW_RUN_PRS" SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=0 \
+              bash "$suite/scripts/ci-gate-publish.sh"
           elif [[ "$EVENT_NAME" == pull_request ]]; then
             # pull_request path: one evaluation, so wait (bounded) for the required checks to report.
-            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=$((WAIT_MINUTES * 60)) \
+            # tamper guard for this pull request too: early feedback only, since this path runs the
+            # pull request's own caller (docs/CI-GATE.adoc, "Tamper guard").
+            GUARD_PRS="$PR_NUMBER" SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=$((WAIT_MINUTES * 60)) \
               bash "$suite/scripts/ci-gate-publish.sh"
           else
             SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-sweep" bash "$suite/scripts/ci-gate-sweep.sh"

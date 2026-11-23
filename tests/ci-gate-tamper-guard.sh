@@ -6,7 +6,6 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GUARD="$ROOT/scripts/ci-gate-tamper-guard.sh"
 WF="$ROOT/.github/workflows/ci-gate-tamper-guard.yml"
-SELF="$ROOT/.github/workflows/ci-gate-tamper-guard-caller.yml"
 TPL="$ROOT/templates/ci-gate-tamper-guard-caller.yml"
 PASS=0; FAIL=0
 ok() { printf '  ok   %s\n' "$1"; PASS=$((PASS+1)); }
@@ -141,9 +140,42 @@ reset; files .github/workflows/ci-gate.yml; events "labeled gate-change-approved
 chk "no commits listed: exit 1" "$RC" 1
 chk "the guard never applies a label: it calls only read endpoints" "$(grep -c -- '-X \(POST\|PUT\|PATCH\|DELETE\)\|--method' "$GUARD")" 0
 
+echo "== extra protected paths: the profile's producer workflows (EXTRA_PROTECTED_FILE) =="
+printf '%s\n' .github/workflows/ci.yml '' .github/workflows/lint.yaml > "$WORK/extra.txt"
+EXTRA_PROTECTED_FILE="$WORK/extra.txt" bash "$GUARD" --match .github/workflows/ci.yml > /dev/null && ok "--match: a listed producer workflow is protected" || bad "--match: a listed producer workflow is not protected"
+EXTRA_PROTECTED_FILE="$WORK/extra.txt" bash "$GUARD" --match .github/workflows/lint.yaml > /dev/null && ok "--match: a listed .yaml producer is protected" || bad "--match: a listed .yaml producer is not protected"
+EXTRA_PROTECTED_FILE="$WORK/extra.txt" bash "$GUARD" --match .github/workflows/ci.yml.bak .github/workflows/other.yml > /dev/null && bad "--match: an unlisted workflow is protected" || ok "--match: only exact listed paths (no prefix, no other workflow)"
+bash "$GUARD" --match .github/workflows/ci.yml > /dev/null && bad "--match: a producer is protected without the list" || ok "--match: without the list a producer workflow is not a gate file"
+EXTRA_PROTECTED_FILE="$WORK/extra.txt" bash "$GUARD" --match .github/workflows/ci-gate.yml > /dev/null && ok "--match: the globs still apply with a list" || bad "--match: the globs are lost with a list"
+for badline in '.github/workflows/*.yml' 'src/x.yml' '.github/workflows/a/b.yml' '../.github/workflows/x.yml' '.github/workflows/x.yml ' '.github/workflows/x.sh'; do
+  printf '%s\n' "$badline" > "$WORK/badextra.txt"
+  OUT=$(EXTRA_PROTECTED_FILE="$WORK/badextra.txt" bash "$GUARD" --match .github/workflows/x.yml 2>&1); RC=$?
+  chk "a malformed list line '$badline' fails closed" "$RC/$(grep -c 'EXTRA_PROTECTED_FILE has a line' <<<"$OUT")" "1/1"
+done
+OUT=$(EXTRA_PROTECTED_FILE="$WORK/nope.txt" bash "$GUARD" --match x 2>&1); RC=$?
+chk "a missing list file fails closed" "$RC/$(grep -c 'not a readable file' <<<"$OUT")" "1/1"
+reset; files .github/workflows/ci.yml; run EXTRA_PROTECTED_FILE="$WORK/extra.txt"
+chk "a PR touching a listed producer workflow, unlabelled: exit 1" "$RC" 1
+chk "that refusal is a verdict: guard-result and guard-touched lines" "$(grep -x 'guard-result=unapproved' <<<"$OUT")|$(grep '^guard-touched=' <<<"$OUT")" "guard-result=unapproved|guard-touched=.github/workflows/ci.yml"
+reset; files .github/workflows/ci.yml; run
+chk "the same PR without the list: exit 0 (the list is what widens the set)" "$RC" 0
+echo "== the result lines tell a verdict from an error =="
+reset; files scripts/ci-gate-publish.sh; events "$LBL dev"; run
+chk "non-admin label: a verdict (guard-result=unapproved)" "$RC/$(grep -cx 'guard-result=unapproved' <<<"$OUT")" "1/1"
+reset; files scripts/ci-gate-publish.sh; events "labeled gate-change-approved 2026-11-17T09:00:00Z boss"; run
+chk "label before the newest commit: a verdict" "$RC/$(grep -cx 'guard-result=unapproved' <<<"$OUT")" "1/1"
+reset; files scripts/ci-gate-publish.sh; events "$LBL none"; run
+chk "no actor on the label event: a verdict" "$RC/$(grep -cx 'guard-result=unapproved' <<<"$OUT")" "1/1"
+for k in files events perm commits; do
+  reset; files .github/workflows/ci-gate.yml; events "$LBL boss"; : > "$D/fail$k"; run
+  chk "API error ($k): exit 1 and NOT a verdict (no guard-result line)" "$RC/$(grep -c '^guard-result=' <<<"$OUT")" "1/0"
+done
+reset; files .github/workflows/ci-gate.yml; events "$LBL boss"; run
+chk "approved: exit 0 and no guard-result line" "$RC/$(grep -c '^guard-result=' <<<"$OUT")" "0/0"
+
 echo "== static guards =="
 code() { grep -vE '^[[:space:]]*#' "$1"; }
-for f in "$WF" "$SELF" "$TPL"; do
+for f in "$WF" "$TPL"; do
   b=$(basename "$f")
   code "$f" | grep -qE 'actions/checkout|ref: *\$\{\{ *github\.(event\.pull_request\.head|head_ref)' && bad "$b checks out code" || ok "$b has no checkout"
   code "$f" | grep -qE 'github\.actor|actor\.login|sender\.login|user\.login' && bad "$b makes a decision on a forgeable actor field" || ok "$b has no actor-based trust decision"
@@ -155,7 +187,7 @@ code "$WF" | grep -qE '^      pull-requests: read' && code "$WF" | grep -qE '^  
 ! grep -qE '^[[:space:]]*(- )?uses:' "$WF" && ok "the reusable uses no actions" || bad "the reusable has a uses: line"
 grep -q 'pull_request_target' <(sed -n '/Refuse anything but/,/Read the guard script/p' "$WF") && ok "the reusable refuses every event but pull_request_target" || bad "the reusable does not refuse other events"
 code "$WF" | grep -qE '^  check:' && code "$WF" | grep -qE '^    name: check$' && ok "the reusable job is check (the gate profile entry is 'guard / check')" || bad "the reusable job is not named check"
-for f in "$SELF" "$TPL"; do
+for f in "$TPL"; do
   b=$(basename "$f")
   code "$f" | grep -qE '^  pull_request_target:' && code "$f" | grep -qE '^    types: \[opened, reopened, synchronize, edited, labeled, unlabeled\]' && ok "$b: pull_request_target with all six types" || bad "$b: wrong trigger or types"
   code "$f" | grep -qE '^  pull-requests: read' && code "$f" | grep -qE '^  contents: read' && ! code "$f" | grep -qE '^  [a-z-]+: write' && ok "$b: read-only permissions" || bad "$b: permissions not minimal"
@@ -176,11 +208,15 @@ refuse hyperpolymath/proven-cicd-and-workflows && ok "the reusable accepts the s
 refuse example/.github && ok "the reusable accepts a workflow repository named .github" || bad "the reusable rejects example/.github"
 for r in a/b/c /x a/ a/. a/.. "" notacoordinate; do refuse "$r" && bad "the reusable accepts the workflow repository '$r'" || ok "the reusable rejects the workflow repository '$r'"; done
 code "$TPL" | grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\.github/workflows/ci-gate-tamper-guard\.yml@__CICD_SUITE_SHA__' && ok "the template pins the reusable at the placeholder" || bad "the template does not use the placeholder"
-code "$SELF" | grep -qE '^    uses: \./\.github/workflows/ci-gate-tamper-guard\.yml$' && ok "the suite's caller uses the local reusable" || bad "the suite's caller does not use the local reusable"
-for b in ci-gate-tamper-guard.yml ci-gate-tamper-guard-caller.yml; do
-  jq -e --arg p ".github/workflows/$b" 'any(.workflows[]; .path == $p)' "$ROOT/config/workflow-lock-scope.json" >/dev/null && ok "lock scope lists $b" || bad "lock scope lacks $b"
+[ ! -e "$ROOT/.github/workflows/ci-gate-tamper-guard-caller.yml" ] && ok "the suite's own pull_request_target caller is removed (it never started)" || bad "the suite still has its pull_request_target guard caller"
+jq -e 'any(.workflows[]; .path == ".github/workflows/ci-gate-tamper-guard.yml")' "$ROOT/config/workflow-lock-scope.json" >/dev/null && ok "lock scope still lists the deprecated reusable (consumers reference it)" || bad "lock scope lacks ci-gate-tamper-guard.yml"
+! jq -e 'any(.workflows[]; .path == ".github/workflows/ci-gate-tamper-guard-caller.yml")' "$ROOT/config/workflow-lock-scope.json" >/dev/null && ok "lock scope no longer lists the removed caller" || bad "lock scope still lists the removed caller"
+for f in "$WF" "$TPL"; do
+  b=$(basename "$f")
+  grep -q 'DEPRECATED' "$f" && grep -qF "Event 'pull_request_target' is not allowed to trigger Actions workflows." "$f" \
+    && ok "$b is marked deprecated and quotes the policy error" || bad "$b is not marked deprecated with the policy error"
 done
-for f in "$WF" "$SELF" "$TPL"; do
+for f in "$WF" "$TPL"; do
   b=$(basename "$f")
   [ -z "$(awk '
     function ind(s) { match(s, /^ */); return RLENGTH }
@@ -196,7 +232,7 @@ echo "== the approval label name: one default, said the same everywhere =="
 chk "the default is defined exactly once, in the script" "$(grep -c 'APPROVAL_LABEL:-' "$GUARD")" 1
 DEFAULT_LABEL=$(sed -n 's/^APPROVAL_LABEL=\${APPROVAL_LABEL:-\([^}]*\)}$/\1/p' "$GUARD")
 chk "the script's default label" "$DEFAULT_LABEL" gate-change-approved
-for f in "$WF" "$SELF" "$TPL" "$ROOT/templates/ci-gate-caller.yml" "$ROOT/.github/workflows/ci-gate-caller.yml" "$ROOT/docs/CI-GATE.adoc"; do
+for f in "$WF" "$TPL" "$ROOT/templates/ci-gate-caller.yml" "$ROOT/.github/workflows/ci-gate-caller.yml" "$ROOT/docs/CI-GATE.adoc"; do
   b=$(basename "$f")
   others=$(grep -oE '[a-z]+(-[a-z]+)*-approved\b' "$f" | sort -u | grep -vxF "$DEFAULT_LABEL" || true)
   [ -z "$others" ] && ok "$b names no approval label but the default" || bad "$b names another approval label: $others"
