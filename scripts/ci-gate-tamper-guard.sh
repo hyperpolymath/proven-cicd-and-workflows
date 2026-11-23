@@ -132,4 +132,4 @@ if (( applied > newest )); then
   echo "gate tamper guard: gate files touched ($list); '$APPROVAL_LABEL' applied by admin '$actor' after the newest commit; approved"
   exit 0
 fi
-deny "gate files are touched ($list) and '$APPROVAL_LABEL' was applied before the newest commit; the owner must re-apply it after every push."
+deny "gate files are touched ($list) and '$APPROVAL_LABEL' was applied before the newest commit; the owner must remove and re-apply it after every push (re-adding a label still on the pull request records no new event)."

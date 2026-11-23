@@ -1138,6 +1138,10 @@ w "$(p "$A" | sed 's/}$/,"repository":"other\/repo"}/')"; v_bad "$WORK/p.json" e
 v_bad "$WORK/absent.json" example/repo "an absent file"
 
 echo "== shipped profiles =="
+# The retired pull_request_target guard never starts, so a profile entry for it would read `never
+# reported` forever (docs/CI-GATE.adoc, "The retired pull_request_target guard").
+RETIRED=$(for f in "$ROOT"/profiles/ci-gate/*/*.json; do jq -r --arg f "$f" '.checks[] | select(.workflow | test("ci-gate-tamper-guard")) | $f' "$f"; done)
+[ -z "$RETIRED" ] && ok "no shipped profile requires the retired guard / check" || bad "a shipped profile requires the retired guard: $RETIRED"
 shopt -s nullglob dotglob   # a repository named .github has the profile .github.json
 n=0
 for f in "$ROOT"/profiles/ci-gate/*/*.json; do
