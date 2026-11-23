@@ -21,8 +21,9 @@
 #     prints a ::warning:: naming how many were skipped. The default branch head counts as the
 #     most recently updated. It never skips silently.
 #  3. Runs the publisher for each SHA, with no early in_progress pending. It passes the publisher
-#     GUARD_PRS: the open pull requests headed by that SHA (from the listing above, forks included), so
-#     the publisher runs the tamper guard for exactly those, with no lookup of its own; the default
+#     GUARD_PRS: EVERY open pull request headed by that SHA (from the listing above, forks included;
+#     several pull requests can share one head), with GUARD_NO_LOOKUP=1, since the listing is complete,
+#     so the publisher runs the tamper guard for exactly those, with no lookup of its own; the default
 #     branch head (unless a pull request shares it) gets none. A failure on one SHA
 #     does not stop the others, except "rate limited, no verdict": the rest would meet the same
 #     limit, so they are listed as not evaluated and the next sweep takes them.
@@ -107,7 +108,7 @@ while IFS=$'\t' read -r _ sha src; do
   echo "::group::$CONTEXT for $sha ($src)"
   rc=0
   prs=$(awk -F'\t' -v s="$sha" '$1 == s { print $2 }' "$guardprs" | sort -un | paste -sd' ' -)
-  env -u GITHUB_OUTPUT -u GUARD_EVENT_PRS GUARD_PRS="$prs" HEAD_SHA="$sha" WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/summary.md" \
+  env -u GITHUB_OUTPUT -u GUARD_EVENT_PRS -u GUARD_HEAD_REPO -u GUARD_HEAD_BRANCH GUARD_NO_LOOKUP=1 GUARD_PRS="$prs" HEAD_SHA="$sha" WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/summary.md" \
     SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" WF_REPO="$WF_REPO" WF_SHA="$WF_SHA" \
     bash "$PUBLISH" > "$dir/out.txt" 2>&1 || rc=$?
   cat "$dir/out.txt"

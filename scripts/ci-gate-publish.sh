@@ -18,8 +18,8 @@
 #   CI_GATE_SLEEP    test hook: the sleep command
 #   GITHUB_STEP_SUMMARY, GITHUB_OUTPUT                  optional; `published=true` is written
 #                                                       once a verdict status was posted
-#   GUARD_PRS GUARD_EVENT_PRS GUARD_HEAD_REPO GUARD_HEAD_BRANCH  which pull requests the tamper guard
-#                    checks (step a. below)
+#   GUARD_PRS GUARD_NO_LOOKUP GUARD_EVENT_PRS GUARD_HEAD_REPO GUARD_HEAD_BRANCH  which pull requests the
+#                    tamper guard checks: the union of all sources (step a. below)
 #
 # (The `pending` "re-run started" write for an in_progress event is the FIRST STEP of the
 #  workflow, before any suite file is read; this script posts only verdicts.)
@@ -121,24 +121,25 @@ write_summary() { # <state> <description> <detail-from-summary-file: 1|0>
   } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 }
 
-# a. Tamper guard, folded into this verdict (docs/CI-GATE.adoc, "Tamper guard"). For every OPEN pull
-# request INTO this repository (base = REPO) whose head is HEAD_SHA, from a branch of this repository
+# a. Tamper guard, folded into this verdict (docs/CI-GATE.adoc, "Tamper guard"). For EVERY open pull
+# request into this repository (base = REPO) whose head is HEAD_SHA, from a branch of this repository
 # or from a FORK, run scripts/ci-gate-tamper-guard.sh with the profile's producer workflows as extra
-# protected paths. A pull request that touches a protected path without the owner's approval makes the
-# verdict `failure` at once, whatever the checks say. Any error of the guard (or of finding the pull
-# requests) is "no verdict" (die). Which pull requests:
-#   GUARD_PRS        set (even empty): these numbers, already listed open with base REPO by the caller
-#                    (the sweep; gate-pr passes its own number). No lookup.
-#   GUARD_EVENT_PRS  else, the workflow_run event's pull_requests (JSON; empty for a fork's run):
-#                    entries whose head.sha is HEAD_SHA.
-#   GUARD_HEAD_REPO GUARD_HEAD_BRANCH  else, when the run's head repository is not REPO (a fork):
-#                    GET pulls?state=open&head=<owner>:<branch>.
-#   still none:      GET commits/<sha>/pulls.
-# Every candidate is confirmed with GET pulls/<n> (open, base REPO, head HEAD_SHA), except the
-# GUARD_PRS numbers and the commits/<sha>/pulls answer, which already carry those fields and are
-# filtered on them. The guard's per-pull-request calls (files, label events, permission, commits) are
-# base-repository endpoints and are made only for a matched pull request; a SHA that heads no open
-# pull request costs at most the lookups.
+# protected paths. The status is per commit, and several pull requests can share one head (two
+# branches at one commit, or one branch into two bases), so the guard covers all of them: the set is
+# the UNION of every source below, de-duplicated. A pull request that touches a protected path
+# without the owner's approval makes the verdict `failure` at once, whatever the checks say. Any
+# error of the guard or of any lookup is "no verdict" (die). Sources:
+#   GUARD_PRS        numbers the caller already knows are open with base REPO at HEAD_SHA (the sweep's
+#                    listing; gate-pr's own number). Taken as they are.
+#   GUARD_NO_LOOKUP=1  the caller listed EVERY open pull request of the repository (the sweep): no
+#                    lookup. Otherwise all of the following are added:
+#   GUARD_EVENT_PRS  the workflow_run event's pull_requests (JSON; empty for a fork's run) whose
+#                    head.sha is HEAD_SHA, each confirmed with GET pulls/<n> (open, base REPO, head SHA).
+#   GUARD_HEAD_REPO GUARD_HEAD_BRANCH  when the run's head repository is not REPO (a fork):
+#                    GET pulls?state=open&head=<owner>:<branch>, each confirmed the same way.
+#   always:          GET commits/<sha>/pulls, kept if open, base REPO and head HEAD_SHA.
+# The guard's per-pull-request calls (files, label events, permission, commits) are base-repository
+# endpoints and are made only for a matched pull request.
 GUARD="$SUITE/scripts/ci-gate-tamper-guard.sh"
 [[ -f $GUARD ]] || die 'the tamper guard script is missing from the suite'
 guard_prs=()
@@ -151,12 +152,11 @@ confirm_pr() { # <n>: append it to guard_prs if it is open, into REPO, and heade
   if [[ $pstate == open && $psha == "$HEAD_SHA" && $pbase == "$REPO" ]]; then guard_prs+=("$1"); fi
   return 0
 }
-if [[ -n ${GUARD_PRS+x} ]]; then
-  for n in $GUARD_PRS; do
-    pr_num_ok "$n" || die 'GUARD_PRS holds something that is not a pull request number'
-    guard_prs+=("$n")
-  done
-else
+for n in ${GUARD_PRS:-}; do
+  pr_num_ok "$n" || die 'GUARD_PRS holds something that is not a pull request number'
+  guard_prs+=("$n")
+done
+if [[ ${GUARD_NO_LOOKUP:-} != 1 ]]; then
   if [[ -n ${GUARD_EVENT_PRS:-} && $GUARD_EVENT_PRS != null ]]; then
     hints=$(jq -r --arg sha "$HEAD_SHA" 'if type == "array" then .[] | select(type == "object" and .head.sha == $sha) | .number | tostring else error("not an array") end' <<< "$GUARD_EVENT_PRS") \
       || die 'the workflow_run pull request list is malformed'
@@ -165,7 +165,7 @@ else
       confirm_pr "$n"
     done
   fi
-  if ((${#guard_prs[@]} == 0)) && [[ -n ${GUARD_HEAD_REPO:-} && $GUARD_HEAD_REPO != "$REPO" ]]; then
+  if [[ -n ${GUARD_HEAD_REPO:-} && $GUARD_HEAD_REPO != "$REPO" ]]; then
     # a fork's run: workflow_run.pull_requests is empty, so ask for open pull requests from its branch
     [[ $GUARD_HEAD_REPO =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ ]] \
       || die 'the workflow_run head repository is not an owner/name coordinate'
@@ -179,15 +179,13 @@ else
       confirm_pr "$n"
     done
   fi
-  if ((${#guard_prs[@]} == 0)); then
-    found=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/pulls?per_page=100" --jq '.[] | [.number, .state, .head.sha, (.base.repo.full_name // "")] | @tsv') \
-      || die 'could not list the pull requests of this commit for the tamper guard'
-    while IFS=$'\t' read -r n pstate psha pbase; do
-      [[ -n $n ]] || continue
-      pr_num_ok "$n" || die 'a pull request of this commit has a malformed number'
-      if [[ $pstate == open && $psha == "$HEAD_SHA" && $pbase == "$REPO" ]]; then guard_prs+=("$n"); fi
-    done <<< "$found"
-  fi
+  found=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/pulls?per_page=100" --jq '.[] | [.number, .state, .head.sha, (.base.repo.full_name // "")] | @tsv') \
+    || die 'could not list the pull requests of this commit for the tamper guard'
+  while IFS=$'\t' read -r n pstate psha pbase; do
+    [[ -n $n ]] || continue
+    pr_num_ok "$n" || die 'a pull request of this commit has a malformed number'
+    if [[ $pstate == open && $psha == "$HEAD_SHA" && $pbase == "$REPO" ]]; then guard_prs+=("$n"); fi
+  done <<< "$found"
 fi
 if ((${#guard_prs[@]} > 0)); then
   jq -r '.checks[].workflow' "$PROFILE" | LC_ALL=C sort -u > "$WORK/guard-protected.txt" \
