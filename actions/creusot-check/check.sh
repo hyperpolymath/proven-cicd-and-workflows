@@ -141,12 +141,13 @@ manifest_facts() {
     }
     function ver_of(line, named,   v) {
       v = ""
-      if (match(line, /(^|[ \t,{.])version[ \t]*=[ \t]*"[^"]+"/)) {
+      # `version` may be bare or quoted (TOML treats them as the same key).
+      if (match(line, vre)) {
         v = substr(line, RSTART, RLENGTH)
       } else if (named && match(line, /^[^=]*=[ \t]*"[^"]+"/)) {
         v = substr(line, RSTART, RLENGTH)
       } else return ""
-      sub(/^[^"]*"/, "", v); sub(/".*$/, "", v)
+      sub(/^[^=]*=[ \t]*"/, "", v); sub(/".*$/, "", v)   # value = after the `=`, not the first quote
       return v
     }
     # Scan strings before interpreting headers/keys. Comments and ordinary
@@ -171,6 +172,8 @@ manifest_facts() {
       tgt  = "(target\\.[^\\[\\]]+\\.)?"
       name = "[\"\x27]?(creusot-std|creusot-contracts)[\"\x27]?"
       key  = "^[ \t]*" name "([ \t]*\\.[ \t]*([A-Za-z_-]+|\"[^\"]+\"|\x27[^\x27]+\x27))?[ \t]*="
+      vre = "(^|[ \t,{.])(version|\"version\"|\x27version\x27)[ \t]*=[ \t]*\"[^\"]+\""
+      vline = "^[ \t]*(version|\"version\"|\x27version\x27)[ \t]*="
       pkg = 0; sel = 0; ver = ""; kind = "other"; ml = ""
     }
     # CRLF manifests; then skip the body of multiline strings, whose lines are
@@ -205,7 +208,7 @@ manifest_facts() {
       if (ver == "") ver = ver_of($0, $0 ~ ("^[ \t]*" name "[ \t]*="))
       next
     }
-    (kind == "entry" || kind == "wsentry") && /^[ \t]*version[ \t]*=/ {
+    (kind == "entry" || kind == "wsentry") && $0 ~ vline {
       if (ver == "") ver = ver_of($0, 0)
     }
     END {

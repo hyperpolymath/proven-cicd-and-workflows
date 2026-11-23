@@ -402,6 +402,30 @@ detect_manifest 'quoted dotted suffix'               select '[dependencies]
 creusot-std."version" = "0.14"'
 detect_manifest 'literal quoted dotted suffix'       select "[dependencies]
 creusot-std.'version' = \"0.14\""
+# The version a selected dependency declares must be reported however its key
+# is spelled: bare, quoted with either quote character, inline-table or
+# table-header. Otherwise the planted controls fall back to `*`.
+detect_version() { # <label> <manifest body after the [package] header>
+    printf '[package]\nname = "fx"\nversion = "0.1.0"\nedition = "2021"\n%s\n' "$2" > "$FIX/Cargo.toml"
+    commit
+    run_phase detect
+    [[ "$RC" -eq 0 ]] && grep -qx 'creusot_version=0.14' "$OUT" \
+      && ok "reads the version: $1" || { bad "version not read: $1 (exit $RC)"; cat "$OUT"; }
+}
+detect_version 'dotted key, bare version'             '[dependencies]
+creusot-std.version = "0.14"'
+detect_version 'dotted key, double-quoted version'    '[dependencies]
+creusot-std."version" = "0.14"'
+detect_version 'dotted key, single-quoted version'    "[dependencies]
+creusot-std.'version' = \"0.14\""
+detect_version 'legacy name, double-quoted version'   '[dependencies]
+creusot-contracts."version" = "0.14"'
+detect_version 'inline table, quoted version key'     '[dependencies]
+creusot-std = { "version" = "0.14", features = ["x"] }'
+detect_version 'table header, quoted version key'     '[dependencies.creusot-std]
+"version" = "0.14"'
+detect_version 'table header, single-quoted version key' "[dependencies.creusot-std]
+'version' = \"0.14\""
 detect_manifest 'dev-dependencies, dotted'           select '[dev-dependencies]
 creusot-std.workspace = true'
 detect_manifest 'build-dependencies, dotted'         select '[build-dependencies]
