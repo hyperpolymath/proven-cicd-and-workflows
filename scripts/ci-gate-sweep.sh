@@ -21,9 +21,9 @@
 #     prints a ::warning:: naming how many were skipped. The default branch head counts as the
 #     most recently updated. It never skips silently.
 #  3. Runs the publisher for each SHA, with no early in_progress pending. It passes the publisher
-#     GUARD_PRS: the open SAME-REPOSITORY pull requests headed by that SHA (from the listing above), so
-#     the publisher runs the tamper guard for exactly those, with no lookup of its own; a fork head and
-#     the default branch head (unless a pull request shares it) get none. A failure on one SHA
+#     GUARD_PRS: the open pull requests headed by that SHA (from the listing above, forks included), so
+#     the publisher runs the tamper guard for exactly those, with no lookup of its own; the default
+#     branch head (unless a pull request shares it) gets none. A failure on one SHA
 #     does not stop the others, except "rate limited, no verdict": the rest would meet the same
 #     limit, so they are listed as not evaluated and the next sweep takes them.
 #  4. Writes a table (SHA, source, state, description) to the step summary and exits non-zero if
@@ -51,7 +51,7 @@ TAB=$'\t'
 errors=0
 rows="$WORK/rows.tsv"; : > "$rows"        # sha<TAB>source<TAB>state<TAB>description
 cand="$WORK/candidates.tsv"; : > "$cand"  # updated_at<TAB>sha<TAB>source
-guardprs="$WORK/guard-prs.tsv"; : > "$guardprs"  # sha<TAB>number of each open same-repository pull request
+guardprs="$WORK/guard-prs.tsv"; : > "$guardprs"  # sha<TAB>number of each open pull request (forks included)
 
 # 1. the default branch head, first: it sorts above every pull request
 branch=$(gh api "repos/$REPO" --jq .default_branch 2> /dev/null) || branch=''
@@ -70,12 +70,12 @@ fi
 
 # open pull requests, every page
 if gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
-  --jq '.[] | [.updated_at, .head.sha, "PR #\(.number)", .number, (.head.repo.full_name // "")] | @tsv' > "$WORK/pulls.tsv" 2> "$WORK/pulls.err"; then
-  while IFS=$'\t' read -r upd sha src num hrepo; do
+  --jq '.[] | [.updated_at, .head.sha, "PR #\(.number)", .number] | @tsv' > "$WORK/pulls.tsv" 2> "$WORK/pulls.err"; then
+  while IFS=$'\t' read -r upd sha src num; do
     if [[ $sha =~ ^[0-9a-f]{40}$ && -n $upd ]]; then
       printf '%s\t%s\t%s\n' "$upd" "$sha" "$src" >> "$cand"
-      # tamper guard: same-repository pull requests only (a fork head is not guarded; docs/CI-GATE.adoc)
-      if [[ $hrepo == "$REPO" && $num =~ ^[1-9][0-9]{0,9}$ ]]; then printf '%s\t%s\n' "$sha" "$num" >> "$guardprs"; fi
+      # tamper guard: every open pull request into REPO, fork or not (docs/CI-GATE.adoc, "Tamper guard")
+      if [[ $num =~ ^[1-9][0-9]{0,9}$ ]]; then printf '%s\t%s\n' "$sha" "$num" >> "$guardprs"; fi
     else
       echo "::error::ci-gate-sweep: $src has an unusable head SHA or date; it was NOT evaluated"
       printf '%s\t%s\terror\tunusable head SHA\n' '-' "$src" >> "$rows"

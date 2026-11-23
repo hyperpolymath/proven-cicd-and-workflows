@@ -31,9 +31,9 @@
 # any active run makes the verdict pending, so a rerun replaces a stale success with pending,
 # approximating a native required check. `completed` then re-evaluates it (last-writer-wins; see docs/CI-GATE.adoc, "Residual limit").
 #
-# TAMPER GUARD: the gate's own verdict includes it. For an open same-repository pull request whose head
-# is the evaluated commit, a change to a gate file or to a workflow named in the profile fails the
-# status ("gate files changed without owner approval: <paths>") until the OWNER applies the label
+# TAMPER GUARD: the gate's own verdict includes it. For an open pull request into this repository (a fork's
+# included) whose head is the evaluated commit, a change to a gate file or to a workflow named in the
+# profile fails the status ("gate files changed without owner approval: <paths>") until the OWNER applies the label
 # `gate-change-approved` after the newest commit. AGENTS MUST NEVER APPLY THAT LABEL. Only the
 # default-branch paths (workflow_run, schedule) are trusted; gate-pr runs the pull request's own copy of
 # this file (docs/CI-GATE.adoc, "Tamper guard"). No separate pull_request_target guard is needed.

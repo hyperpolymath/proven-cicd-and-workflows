@@ -38,14 +38,20 @@ EXTRA=()   # exact paths from EXTRA_PROTECTED_FILE
 # THE LABEL: it is the owner's act (docs/CI-GATE.adoc, "Tamper guard").
 #
 # Exit 0: no gate file touched, or approved. Exit 1: not approved, and EVERY error (fail closed).
-# Stdout, for the publisher: a refusal that is a VERDICT (gate files touched, not approved) prints
-# `guard-result=unapproved` and `guard-touched=<comma-separated paths>`; an error (no verdict) prints
-# neither, so the caller can tell "not approved" from "could not check".
+# GUARD_RESULT_FILE (optional, for the publisher): a refusal that is a VERDICT (gate files touched, not
+# approved) writes the touched paths there, one per line; an error (no verdict) writes nothing, so the
+# caller can tell "not approved" (exit 1, file non-empty) from "could not check" (exit 1, file empty).
+# A file, not stdout: the paths come from the API, and stdout also carries them in messages.
 set -uo pipefail
 APPROVAL_LABEL=${APPROVAL_LABEL:-gate-change-approved}
 
 fail() { echo "::error::gate tamper guard: $1"; exit 1; }
-deny() { echo "guard-result=unapproved"; echo "guard-touched=$list"; fail "$1"; }
+deny() { # a verdict: not approved
+  if [[ -n ${GUARD_RESULT_FILE:-} ]]; then
+    printf '%s\n' "${touched[@]}" | LC_ALL=C sort -u > "$GUARD_RESULT_FILE" || { : > "$GUARD_RESULT_FILE"; fail 'could not write GUARD_RESULT_FILE; no verdict'; }
+  fi
+  fail "$1"
+}
 
 if [[ -n ${EXTRA_PROTECTED_FILE:-} ]]; then
   [[ -f $EXTRA_PROTECTED_FILE && -r $EXTRA_PROTECTED_FILE ]] || fail 'EXTRA_PROTECTED_FILE is not a readable file'

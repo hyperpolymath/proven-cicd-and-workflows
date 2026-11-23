@@ -28,10 +28,11 @@
 # nothing by itself: a sweep is one more last-writer-wins evaluator (docs/CI-GATE.adoc, "Residual limit").
 #
 # TAMPER GUARD: before the verdict, the publisher runs scripts/ci-gate-tamper-guard.sh (fetched with the
-# other scripts) for every open same-repository pull request whose head is the evaluated SHA (workflow_run:
-# the event's pull_requests, else commits/<sha>/pulls; sweep: the pull requests it lists; pull_request:
-# its own number). A pull request that touches a gate file or a workflow named in the profile without the
-# owner's `gate-change-approved` label makes the verdict `failure` ("gate files changed without owner
+# other scripts) for every open pull request into the repository, FORKS INCLUDED, whose head is the
+# evaluated SHA (workflow_run: the event's pull_requests, else a fork run's head branch, else
+# commits/<sha>/pulls; sweep: the pull requests it lists; pull_request: its own number).
+# A pull request that touches a gate file or a workflow named in the profile without the owner's
+# `gate-change-approved` label makes the verdict `failure` ("gate files changed without owner
 # approval: <paths>"); a guard error is "no verdict". Only the default-branch paths (workflow_run, sweep)
 # are trusted; the pull_request path runs the pull request's own caller (docs/CI-GATE.adoc, "Tamper guard").
 #
@@ -290,6 +291,8 @@ jobs:
           WF_SHA: ${{ job.workflow_sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           WORKFLOW_RUN_PRS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          WORKFLOW_RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         # All of the reading, the settle guard and the publishing is scripts/ci-gate-publish.sh
         # (fetched from the suite above), so a stub `gh` can test it offline. On schedule and
         # workflow_dispatch scripts/ci-gate-sweep.sh runs that same publisher once per open pull
@@ -297,8 +300,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == workflow_run ]]; then
-            # tamper guard: the pull requests this run names (else the publisher looks them up)
-            GUARD_EVENT_PRS="$WORKFLOW_RUN_PRS" SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=0 \
+            # tamper guard: the pull requests this run names; for a fork's run (which names none) the head
+            # repository and branch; else the publisher looks them up by commit.
+            GUARD_EVENT_PRS="$WORKFLOW_RUN_PRS" GUARD_HEAD_REPO="$WORKFLOW_RUN_HEAD_REPO" GUARD_HEAD_BRANCH="$WORKFLOW_RUN_HEAD_BRANCH" \
+              SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=0 \
               bash "$suite/scripts/ci-gate-publish.sh"
           elif [[ "$EVENT_NAME" == pull_request ]]; then
             # pull_request path: one evaluation, so wait (bounded) for the required checks to report.

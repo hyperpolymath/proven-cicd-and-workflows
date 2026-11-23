@@ -156,22 +156,30 @@ OUT=$(EXTRA_PROTECTED_FILE="$WORK/nope.txt" bash "$GUARD" --match x 2>&1); RC=$?
 chk "a missing list file fails closed" "$RC/$(grep -c 'not a readable file' <<<"$OUT")" "1/1"
 reset; files .github/workflows/ci.yml; run EXTRA_PROTECTED_FILE="$WORK/extra.txt"
 chk "a PR touching a listed producer workflow, unlabelled: exit 1" "$RC" 1
-chk "that refusal is a verdict: guard-result and guard-touched lines" "$(grep -x 'guard-result=unapproved' <<<"$OUT")|$(grep '^guard-touched=' <<<"$OUT")" "guard-result=unapproved|guard-touched=.github/workflows/ci.yml"
+RF="$WORK/result.txt"
+rf() { : > "$RF"; run GUARD_RESULT_FILE="$RF" "$@"; }   # -> RC, OUT; the result file is $RF
+reset; files .github/workflows/ci.yml README.adoc; rf EXTRA_PROTECTED_FILE="$WORK/extra.txt"
+chk "that refusal is a verdict: the touched path is in GUARD_RESULT_FILE" "$RC/$(paste -sd, "$RF")" "1/.github/workflows/ci.yml"
 reset; files .github/workflows/ci.yml; run
 chk "the same PR without the list: exit 0 (the list is what widens the set)" "$RC" 0
-echo "== the result lines tell a verdict from an error =="
-reset; files scripts/ci-gate-publish.sh; events "$LBL dev"; run
-chk "non-admin label: a verdict (guard-result=unapproved)" "$RC/$(grep -cx 'guard-result=unapproved' <<<"$OUT")" "1/1"
-reset; files scripts/ci-gate-publish.sh; events "labeled gate-change-approved 2026-11-17T09:00:00Z boss"; run
-chk "label before the newest commit: a verdict" "$RC/$(grep -cx 'guard-result=unapproved' <<<"$OUT")" "1/1"
-reset; files scripts/ci-gate-publish.sh; events "$LBL none"; run
-chk "no actor on the label event: a verdict" "$RC/$(grep -cx 'guard-result=unapproved' <<<"$OUT")" "1/1"
+echo "== GUARD_RESULT_FILE tells a verdict from an error =="
+reset; files scripts/ci-gate-publish.sh; events "$LBL dev"; rf
+chk "non-admin label: a verdict (result file names the path)" "$RC/$(cat "$RF")" "1/scripts/ci-gate-publish.sh"
+reset; files scripts/ci-gate-publish.sh; events "labeled gate-change-approved 2026-11-17T09:00:00Z boss"; rf
+chk "label before the newest commit: a verdict" "$RC/$(cat "$RF")" "1/scripts/ci-gate-publish.sh"
+reset; files scripts/ci-gate-publish.sh; events "$LBL none"; rf
+chk "no actor on the label event: a verdict" "$RC/$(cat "$RF")" "1/scripts/ci-gate-publish.sh"
+reset; files scripts/ci-gate-publish.sh .github/workflows/ci-gate.yml; rf
+chk "no label: a verdict naming every touched path, sorted" "$RC/$(paste -sd, "$RF")" "1/.github/workflows/ci-gate.yml,scripts/ci-gate-publish.sh"
 for k in files events perm commits; do
-  reset; files .github/workflows/ci-gate.yml; events "$LBL boss"; : > "$D/fail$k"; run
-  chk "API error ($k): exit 1 and NOT a verdict (no guard-result line)" "$RC/$(grep -c '^guard-result=' <<<"$OUT")" "1/0"
+  reset; files .github/workflows/ci-gate.yml; events "$LBL boss"; : > "$D/fail$k"; rf
+  chk "API error ($k): exit 1 and NOT a verdict (result file empty)" "$RC/$(wc -c < "$RF")" "1/0"
 done
-reset; files .github/workflows/ci-gate.yml; events "$LBL boss"; run
-chk "approved: exit 0 and no guard-result line" "$RC/$(grep -c '^guard-result=' <<<"$OUT")" "0/0"
+reset; files .github/workflows/ci-gate.yml; events "$LBL boss"; rf
+chk "approved: exit 0, result file empty" "$RC/$(wc -c < "$RF")" "0/0"
+printf '%s\n' '[{"filename":"scripts/ci-gate-x.sh\nguard-touched=forged"}]' > "$D/files.json"; events; rf
+chk "a filename with a newline cannot forge a protected path: only real protected lines are listed" "$RC/$(paste -sd, "$RF")" "1/scripts/ci-gate-x.sh"
+chk "the guard prints no guard-result or guard-touched protocol line on stdout any more" "$(grep -c '^guard-\(result\|touched\)=' <<<"$OUT")" 0
 
 echo "== static guards =="
 code() { grep -vE '^[[:space:]]*#' "$1"; }

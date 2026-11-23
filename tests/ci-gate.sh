@@ -309,13 +309,18 @@ case $args in
   # Tamper guard calls. G=$D/guard: prs.json (GET commits/<sha>/pulls), pr.<n>.json (GET pulls/<n>),
   # files.<n>.json, events.<n>.json, commits.<n>.json, perms.json; fail.<kind> injects an error.
   # Every guard call is logged to guard.calls (one kind per line).
+  *"/pulls -f state=open"*)
+    h=${args#*-f head=}; h=${h%% --jq*}; echo "headlookup $h" >> "$D/guard.calls"
+    [[ ! -f $D/guard/fail.headlookup ]] || { echo "gh: HTTP 500 (head lookup)" >&2; exit 1; }
+    jq -r "$jqarg" "$D/guard/headprs.json" 2>/dev/null || jq -r "$jqarg" <<< '[]' ;;
   *"/commits/"*"/pulls?per_page=100"*)
     echo lookup >> "$D/guard.calls"; [[ ! -f $D/guard/fail.lookup ]] || { echo "gh: HTTP 500 (lookup)" >&2; exit 1; }
     jq -r "$jqarg" "$D/guard/prs.json" 2>/dev/null || jq -r "$jqarg" <<< '[]' ;;
   *"/pulls/"*"/files"*)
     n=${args#*/pulls/}; n=${n%%/*}; echo "files $n" >> "$D/guard.calls"
     [[ ! -f $D/guard/fail.files ]] || { echo "gh: HTTP 500 (files)" >&2; exit 1; }
-    jq -c "$jqarg" "$D/guard/files.$n.json" ;;
+    # no files.<n>.json: a pull request that changes nothing the guard protects (the sweep's plain PRs)
+    if [[ -f $D/guard/files.$n.json ]]; then jq -c "$jqarg" "$D/guard/files.$n.json"; else jq -c "$jqarg" <<< '[{"filename":"README.adoc"}]'; fi ;;
   *"/issues/"*"/events"*)
     n=${args#*/issues/}; n=${n%%/*}; echo "events $n" >> "$D/guard.calls"
     [[ ! -f $D/guard/fail.events ]] || { echo "gh: HTTP 500 (events)" >&2; exit 1; }
@@ -445,12 +450,12 @@ chk "a head SHA that is not 40 hex: exit 1, no POST" "$RC/$NPOSTS" "1/0"
 pubreset
 
 echo "== tamper guard folded into the verdict (publisher) =="
-# g_pr <n> <head sha> <head repo> [state]: an entry of GET commits/<sha>/pulls and GET pulls/<n>
+# g_pr <n> <head sha> <head repo> [state] [base repo]: an entry of GET commits/<sha>/pulls and GET pulls/<n>
 G="$FAKEGH/guard"
 g_init() { rm -rf "$G" "$FAKEGH/guard.calls"; mkdir -p "$G"; echo '[]' > "$G/prs.json"; printf '{"boss":"admin","dev":"write"}' > "$G/perms.json"; }
 g_pr() {
-  jq --argjson n "$1" --arg s "$2" --arg r "$3" --arg st "${4:-open}" '. + [{number: $n, state: $st, head: {sha: $s, repo: (if $r == "" then null else {full_name: $r} end)}}]' "$G/prs.json" > "$G/p.tmp" && mv "$G/p.tmp" "$G/prs.json"
-  jq -n --argjson n "$1" --arg s "$2" --arg r "$3" --arg st "${4:-open}" '{number: $n, state: $st, head: {sha: $s, repo: (if $r == "" then null else {full_name: $r} end)}}' > "$G/pr.$1.json"
+  jq --argjson n "$1" --arg s "$2" --arg r "$3" --arg st "${4:-open}" --arg b "${5:-example/repo}" '. + [{number: $n, state: $st, head: {sha: $s, repo: (if $r == "" then null else {full_name: $r} end)}, base: {repo: {full_name: $b}}}]' "$G/prs.json" > "$G/p.tmp" && mv "$G/p.tmp" "$G/prs.json"
+  jq -n --argjson n "$1" --arg s "$2" --arg r "$3" --arg st "${4:-open}" --arg b "${5:-example/repo}" '{number: $n, state: $st, head: {sha: $s, repo: (if $r == "" then null else {full_name: $r} end)}, base: {repo: {full_name: $b}}}' > "$G/pr.$1.json"
   echo '[]' > "$G/events.$1.json"; jq -n '[{commit: {committer: {date: "2026-11-17T10:00:00Z"}}}]' > "$G/commits.$1.json"
 }
 g_files() { local n=$1; shift; printf '%s\n' "$@" | jq -R '{filename: .}' | jq -s . > "$G/files.$n.json"; }
@@ -482,8 +487,14 @@ chk "a SHA with no open PR: the normal verdict" "$(post_n 1 | cut -f1)/$RC" "suc
 chk "a SHA with no open PR: only the one lookup, no per-PR guard call" "$(cat "$FAKEGH/guard.calls")" lookup
 pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; publish GUARD_PRS=
 chk "GUARD_PRS empty (the sweep found no PR): normal verdict and no guard API call at all" "$(post_n 1 | cut -f1)/$(gcalls)" "success/0"
-pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" fork/repo; g_files 7 .github/workflows/ci-gate.yml; publish
-chk "a fork PR is not matched: normal verdict, no per-PR guard call" "$(post_n 1 | cut -f1)/$(gkinds)" "success/"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" fork/repo; g_files 7 .github/workflows/ci-quality.yml; publish
+chk "a fork PR touching a profiled producer workflow, unapproved: guarded, failure" "$(post_n 1 | cut -f1,2)/$RC" "$(printf 'failure\tgate files changed without owner approval: .github/workflows/ci-quality.yml')/1"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" fork/repo; g_files 7 src/x.rs README.adoc; publish
+chk "a fork PR with no protected change: the normal verdict" "$(post_n 1 | cut -f1)/$RC/$(gkinds)" "success/0/files"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "" ; g_files 7 .github/workflows/ci-gate.yml; publish
+chk "a PR whose head repository was deleted (head.repo null) is still guarded" "$(post_n 1 | cut -f1)/$RC" "failure/1"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK" open other/base; g_files 7 .github/workflows/ci-gate.yml; publish
+chk "a PR into ANOTHER base repository is not matched" "$(post_n 1 | cut -f1)/$(gkinds)" "success/"
 pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK" closed; g_files 7 .github/workflows/ci-gate.yml; publish
 chk "a closed PR is not matched" "$(post_n 1 | cut -f1)/$(gkinds)" "success/"
 pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$(printf 'b%.0s' $(seq 40))" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; publish
@@ -502,12 +513,33 @@ cp "$ROOT/scripts/ci-gate-tamper-guard.sh" "$SUITE_DIR/scripts/"
 pubreset; snap 1 "$DONE"; g_init; publish GUARD_PRS='7 x'
 chk "GUARD_PRS with a non-number: failure, no verdict" "$(post_n 1 | cut -f1)/$RC" "failure/1"
 echo "-- workflow_run: the event's pull_requests, confirmed by GET pulls/<n> --"
-EVPR() { jq -nc --arg s "$1" --argjson hid "${2:-1}" '[{number: 7, head: {sha: $s, repo: {id: $hid}}, base: {repo: {id: 1}}}]'; }
+EVPR() { jq -nc --arg s "$1" '[{number: 7, head: {sha: $s, repo: {id: 1}}, base: {repo: {id: 1}}}]'; }
 pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; publish GUARD_EVENT_PRS="$(EVPR "$SHA")"
 chk "event names the PR: guarded, failure" "$(post_n 1 | cut -f1)/$RC" "failure/1"
 chk "event names the PR: confirmed with GET pulls/7, no commits/<sha>/pulls lookup" "$(grep -c '^pr 7$' "$FAKEGH/guard.calls")/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "1/0"
-pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; publish GUARD_EVENT_PRS="$(EVPR "$SHA" 2)"
-chk "event entry from another repository (fork ids): not taken from the event, the lookup still finds the same-repo PR" "$(post_n 1 | cut -f1)/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "failure/1"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK" open other/base; g_files 7 .github/workflows/ci-gate.yml; publish GUARD_EVENT_PRS="$(EVPR "$SHA")"
+chk "event entry whose PR has another base: GET pulls/7 rejects it, the lookup finds nothing, normal verdict" "$(post_n 1 | cut -f1)/$(grep -c '^lookup$' "$FAKEGH/guard.calls")/$(gkinds)" "success/1/pr"
+echo "-- workflow_run from a FORK: pull_requests is empty, so the fork branch is looked up --"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" fork/repo; g_files 7 .github/workflows/ci-build.yml; echo '[{"number":7}]' > "$G/headprs.json"
+publish GUARD_EVENT_PRS='[]' GUARD_HEAD_REPO=fork/repo GUARD_HEAD_BRANCH='feat/x'
+chk "fork run, unapproved producer change: failure naming it" "$(post_n 1 | cut -f1,2)/$RC" "$(printf 'failure\tgate files changed without owner approval: .github/workflows/ci-build.yml')/1"
+chk "fork run: looked up open PRs from fork:feat/x, confirmed #7, no commits/<sha>/pulls" "$(grep -c '^headlookup fork:feat/x$' "$FAKEGH/guard.calls")/$(grep -c '^pr 7$' "$FAKEGH/guard.calls")/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "1/1/0"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" fork/repo; g_files 7 src/x.rs; echo '[{"number":7}]' > "$G/headprs.json"
+publish GUARD_EVENT_PRS='[]' GUARD_HEAD_REPO=fork/repo GUARD_HEAD_BRANCH=feat
+chk "fork run, no protected change: the normal verdict" "$(post_n 1 | cut -f1)/$RC" "success/0"
+pubreset; snap 1 "$DONE"; g_init; : > "$G/fail.headlookup"; publish GUARD_EVENT_PRS='[]' GUARD_HEAD_REPO=fork/repo GUARD_HEAD_BRANCH=feat
+chk "fork lookup API error: failure, no verdict" "$(post_n 1 | cut -f1)/$RC/$(grep -c 'could not list the pull requests of the fork branch' <<<"$PUBOUT")" "failure/1/1"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" fork/repo; g_files 7 .github/workflows/ci-gate.yml
+publish GUARD_EVENT_PRS='[]' GUARD_HEAD_REPO=fork/repo GUARD_HEAD_BRANCH=feat
+chk "fork branch lookup finds nothing: commits/<sha>/pulls still finds the fork PR, failure" "$(post_n 1 | cut -f1)/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "failure/1"
+for hr in 'a/b/c' '../x' 'fork/repo?x'; do
+  pubreset; snap 1 "$DONE"; g_init; publish GUARD_EVENT_PRS='[]' GUARD_HEAD_REPO="$hr" GUARD_HEAD_BRANCH=feat
+  chk "malformed fork head repository '$hr': failure, no verdict, no lookup" "$(post_n 1 | cut -f1)/$RC/$(gcalls)" "failure/1/0"
+done
+pubreset; snap 1 "$DONE"; g_init; publish GUARD_EVENT_PRS='[]' GUARD_HEAD_REPO=fork/repo GUARD_HEAD_BRANCH="$(printf 'a\nb')"
+chk "a fork head branch with a control character: failure, no verdict" "$(post_n 1 | cut -f1)/$RC" "failure/1"
+pubreset; snap 1 "$DONE"; g_init; publish GUARD_EVENT_PRS='[]' GUARD_HEAD_REPO="$REPOK" GUARD_HEAD_BRANCH=main
+chk "a same-repository run with no PR: no fork lookup, one commit lookup" "$(post_n 1 | cut -f1)/$(cat "$FAKEGH/guard.calls")" "success/lookup"
 pubreset; snap 1 "$DONE"; g_init; publish GUARD_EVENT_PRS='[]'
 chk "event has no pull requests (a push): falls back to the lookup" "$(post_n 1 | cut -f1)/$(cat "$FAKEGH/guard.calls")" "success/lookup"
 pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_files 7 .github/workflows/ci-gate.yml; : > "$G/fail.pr"; publish GUARD_EVENT_PRS="$(EVPR "$SHA")"
@@ -977,7 +1009,7 @@ sweep CI_GATE_SLEEP="$RL/sleep" CI_GATE_CLOCK="$RL/clock"
 chk "control: rate limited once and recovered: all 3 heads written, exit 0" "$(grep -c . "$FAKEGH/posts.log")/$RC/$(grep -c 'not evaluated: rate limited' "$WORK/gss")" "3/0/0"
 pubreset
 
-echo "-- the sweep runs the tamper guard for the same-repository pull requests it lists --"
+echo "-- the sweep runs the tamper guard for every pull request it lists, forks included --"
 set_pulls_repo() { # "<number> <sha n> <head repo>" ... -> open pull requests with a head repository
   local t num idx hr
   for t in "$@"; do read -r num idx hr <<<"$t"; jq -nc --argjson n "$num" --arg s "$(sha_n "$idx")" --arg r "$hr" '{number: $n, updated_at: "2026-11-17T10:00:00Z", head: {sha: $s, repo: {full_name: $r}}}'; done | jq -s . > "$FAKEGH/pulls.json"
@@ -987,12 +1019,15 @@ for i in 20 21 22; do sweep_sha "$i" "$DONE"; done
 g_pr 7 "$(sha_n 20)" example/repo; g_pr 8 "$(sha_n 21)" fork/repo; g_files 7 .github/workflows/ci-gate.yml; g_files 8 .github/workflows/ci-gate.yml
 sweep
 chk "sweep: the unapproved same-repo PR head is failure, naming the gate file" "$(last_for 20)/$(grep -P "\t$(sha_n 20)$" "$FAKEGH/posts.log" | cut -f2)" "failure/gate files changed without owner approval: .github/workflows/ci-gate.yml"
-chk "sweep: the fork PR head is not guarded (success) and the default branch head is success" "$(last_for 21) $(last_for 22)" "success success"
-chk "sweep: guard calls only for PR #7, and no commits/<sha>/pulls lookup at all" "$(cut -d' ' -f2 "$FAKEGH/guard.calls" | sort -u | paste -sd, -)/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "7/0"
+chk "sweep: the unapproved FORK PR head is failure too, and the default branch head is success" "$(last_for 21) $(last_for 22)" "failure success"
+chk "sweep: guard calls for PR #7 and fork PR #8, and no lookup at all" "$(cut -d' ' -f2 "$FAKEGH/guard.calls" | sort -u | paste -sd, -)/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "7,8/0"
 chk "sweep: the failure row is in the table and the sweep exits 1" "$(grep -c "| PR #7 | failure | gate files changed without owner approval" "$WORK/gss")/$RC" "1/1"
 g_label 7 2026-11-17T11:00:00Z boss; : > "$FAKEGH/posts.log"; : > "$FAKEGH/guard.calls"
 sweep
-chk "sweep after the owner's label: the PR head becomes success, exit 0" "$(last_for 20)/$RC" "success/0"
+chk "sweep after the owner's label on #7 only: #7 success, fork #8 still failure, exit 1" "$(last_for 20)/$(grep -c '| PR #8 | failure | gate files changed' "$WORK/gss")/$RC" "success/1/1"
+g_label 8 2026-11-17T11:00:00Z boss; : > "$FAKEGH/posts.log"
+sweep
+chk "sweep after the owner's label on the fork PR too: both success, exit 0" "$(last_for 21)/$(grep -c '| PR #[78] | success |' "$WORK/gss")/$RC" "success/2/0"
 pubreset; g_init
 echo "== repository coordinate: a leading dot is a name; traversal and malformed ones are not =="
 step_script() { # <file> <step name prefix> -> the step's run: block, de-indented
