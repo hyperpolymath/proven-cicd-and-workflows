@@ -10,7 +10,8 @@
 # render  Writes <checkout>/.github/workflows/ci-gate.yml from templates/ci-gate-caller.yml AS IT
 #         WAS at <suite-sha> (git show from the local suite clone DIR; no network), with
 #         __CICD_SUITE_SHA__ replaced. It refuses unless profiles/ci-gate/<owner>/<name>.json exists
-#         at that SHA and passes validate-ci-gate-profile.sh (this checkout's validator). If the
+#         at that SHA and passes validate-ci-gate-profile.sh as it was at that SHA (the reusable workflow
+#         validates with its own pinned revision's validator and schema). If the
 #         checkout has .github/workflows/actions.lock, the reusable caller is listed as the EMPTY
 #         file-level entry  '.github/workflows/ci-gate.yml': []  with no leaf record (a leaf record
 #         fails `gh actions-lock` as "Unused lockfile entry", no entry as "not-pinned"). The retired
@@ -91,18 +92,33 @@ render_template() {
   sed "s/__CICD_SUITE_SHA__/$at/g" "$out.raw" > "$out"
   ! grep -q '__CICD_SUITE_SHA__' "$out" || return 5
 }
-# Profile for $2 at $1 into $3, validated. 0 valid; 1 missing or invalid.
+# Profile for $2 at $1 into $3, validated with the validator and schema AS THEY WERE at $1 (the
+# reusable workflow validates with the files at its own pinned SHA). 0 valid; 1 missing or invalid;
+# a pinned revision without the validator is a refusal too.
 profile_ok() {
-  local at=$1 r=$2 out=$3
+  local at=$1 r=$2 out=$3 v=$TMP/validator-$1
   git -C "$suite" show "${at}:profiles/ci-gate/${r}.json" > "$out" 2>/dev/null || return 1
-  bash "$ROOT/scripts/validate-ci-gate-profile.sh" "$out" "$r" >/dev/null 2>&1 || return 1
+  if [[ ! -d $v ]]; then
+    mkdir -p "$v/scripts" "$v/profiles/ci-gate" || return 1
+    git -C "$suite" show "${at}:scripts/validate-ci-gate-profile.sh" > "$v/scripts/validate-ci-gate-profile.sh" 2>/dev/null \
+      && git -C "$suite" show "${at}:profiles/ci-gate/validate.jq" > "$v/profiles/ci-gate/validate.jq" 2>/dev/null \
+      || { rm -rf "$v"; return 1; }
+  fi
+  bash "$v/scripts/validate-ci-gate-profile.sh" "$out" "$r" >/dev/null 2>&1 || return 1
 }
 # True when workflow file $1 has a job whose `uses:` is the suite's tamper-guard reusable (block or
 # flow style; parsed, not grepped). An unparseable file is an error, not "no".
 calls_guard() {
   local u
   u=$(yq -r '(.jobs // {}) | to_entries | .[] | .value.uses // ""' "$1") || die "cannot parse $1" 2
-  grep -Eq "^$SUITE_REPO/\.github/workflows/ci-gate-tamper-guard\.ya?ml@" <<<"$u"
+  # GitHub resolves owner and repository case-insensitively; the workflow path stays case-sensitive.
+  local line prefix rest
+  while IFS= read -r line; do
+    prefix=${line%%/.github/*}; rest=${line#*/.github/}
+    [[ $line == */.github/* && ${prefix,,} == "${SUITE_REPO,,}" ]] || continue
+    [[ $rest =~ ^workflows/ci-gate-tamper-guard\.ya?ml@ ]] && return 0
+  done <<<"$u"
+  return 1
 }
 # Retired guard callers present on disk: files named ci-gate-tamper-guard*.yml|yaml that call the suite.
 guard_files() {

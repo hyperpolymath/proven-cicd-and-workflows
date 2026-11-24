@@ -22,6 +22,7 @@ git -C "$SUITE" init -q
 git -C "$SUITE" config user.email t@example.invalid; git -C "$SUITE" config user.name t
 git -C "$SUITE" config commit.gpgsign false
 cp "$ROOT/templates/ci-gate-caller.yml" "$SUITE/templates/"
+mkdir -p "$SUITE/scripts"; cp "$ROOT/scripts/validate-ci-gate-profile.sh" "$SUITE/scripts/"; cp "$ROOT/profiles/ci-gate/validate.jq" "$SUITE/profiles/ci-gate/"
 sed 's#example/repo#'"$REPO"'#' "$ROOT/tests/fixtures/ci-gate/profile.json" > "$SUITE/profiles/ci-gate/$REPO.json"
 git -C "$SUITE" add -A; git -C "$SUITE" commit -qm A; SHA_A=$(git -C "$SUITE" rev-parse HEAD)
 echo '# a later template revision' >> "$SUITE/templates/ci-gate-caller.yml"
@@ -31,6 +32,10 @@ git -C "$SUITE" add -A; git -C "$SUITE" commit -qm C; SHA_C=$(git -C "$SUITE" re
 git -C "$SUITE" rm -q --cached -r templates >/dev/null; rm -rf "$SUITE/templates"
 git -C "$SUITE" commit -qm 'no template'; SHA_NOTPL=$(git -C "$SUITE" rev-parse HEAD)
 git -C "$SUITE" checkout -q "$SHA_C" -- templates 2>/dev/null; git -C "$SUITE" reset -q --hard "$SHA_C"
+echo 'false' > "$SUITE/profiles/ci-gate/validate.jq"      # a later revision whose schema rejects every profile
+git -C "$SUITE" commit -qam D; SHA_D=$(git -C "$SUITE" rev-parse HEAD)
+git -C "$SUITE" rm -q -r --cached scripts >/dev/null; rm -rf "$SUITE/scripts"
+git -C "$SUITE" commit -qm 'no validator'; SHA_NOVAL=$(git -C "$SUITE" rev-parse HEAD)
 
 run() { OUT=$(bash "$CALLER" "$@" 2>&1); RC=$?; }
 render() { run render --suite "$SUITE" --suite-sha "${SHA:-$SHA_A}" --repo "${R:-$REPO}" --checkout "$C"; }
@@ -127,6 +132,10 @@ mk; T0=$(tree); R=hyperpolymath/no-such-repo render; expect "no profile at the S
 mk; R=hyperpolymath/bad-profile SHA=$SHA_C render; expect "invalid profile" 1 "missing or invalid"
 mk; R=$REPO SHA=$SHA_A render; R=hyperpolymath/bad-profile SHA=$SHA_A render; expect "profile absent AT that SHA though present later" 1 "missing or invalid"
 mk; SHA=$SHA_NOTPL R=$REPO render; expect "no template at that SHA" 1
+mk; T0=$(tree); SHA=$SHA_D render; expect "the validator AT the pinned SHA rejects the profile (current validator would accept)" 1 "missing or invalid"
+[ "$T0" = "$(tree)" ] && ok "pinned-validator refusal: nothing written" || bad "pinned-validator refusal wrote files"
+mk; SHA=$SHA_A render; expect "the same profile is accepted at the SHA whose validator accepts it" 0 "wrote"
+mk; SHA=$SHA_NOVAL render; expect "a pinned revision with no validator is refused" 1 "missing or invalid"
 for s in main HEAD "${SHA_A:0:12}" "${SHA_A^^}" "${SHA_A}0" " "; do
   mk; SHA=$s render; expect "bad SHA '${s:0:14}'" 1 "40-hex"
   [ -z "$(tree)" ] && ok "bad SHA '${s:0:14}': nothing written" || bad "bad SHA wrote files"
@@ -188,6 +197,9 @@ case "$OUT" in *clean:*) bad "reported clean over an uninspected file" ;; *) ok 
 [ "$T0" = "$(tree)" ] && ok "check wrote nothing" || bad "check wrote files"
 clean_c; T0=$(tree); render; expect "render with a malformed guard-named file" 2 "cannot inspect workflows"
 [ "$T0" = "$(tree)" ] && ok "render refused before writing anything" || bad "render wrote files before failing"
+clean; sed "s#hyperpolymath/proven-cicd-and-workflows#HyperPolymath/Proven-CICD-and-Workflows#" <<<"$GUARD_BODY" > "$C/.github/workflows/ci-gate-tamper-guard-case.yml"
+check; expect "guard caller spelled with different owner/repo capitalisation is still detected" 1 "DRIFT guard-caller-leftover"
+render; expect "render removes it" 0 "removed retired guard caller: .github/workflows/ci-gate-tamper-guard-case.yml"
 clean; yq -i -I4 '.workflows[".github/workflows/ci-gate-tamper-guard-gone.yml"] = []' "$L"
 printf 'jobs: [unclosed\n' > "$C/.github/workflows/ci-gate-tamper-guard-gone.yml"
 check; expect "check with a malformed file that has a lock record" 2 "cannot inspect workflows"
