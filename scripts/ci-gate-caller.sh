@@ -4,6 +4,7 @@
 # ci-gate-caller.sh — render and drift-check the CI/gate caller in a consumer checkout.
 #
 #   ci-gate-caller.sh render --suite DIR --suite-sha <40hex> --repo OWNER/NAME --checkout DIR
+#                            [--skip-consumer-checker]
 #   ci-gate-caller.sh check  --suite DIR --checkout DIR [--repo OWNER/NAME]
 #
 # render  Writes <checkout>/.github/workflows/ci-gate.yml from templates/ci-gate-caller.yml AS IT
@@ -15,6 +16,11 @@
 #         fails `gh actions-lock` as "Unused lockfile entry", no entry as "not-pinned"). The retired
 #         pull_request_target guard caller (.github/workflows/ci-gate-tamper-guard*.yml that calls
 #         the suite) and its lock entry are removed. Idempotent: a second run changes nothing.
+#
+#         Finally, if <checkout>/scripts/check-lock-sync.sh exists it is run from the checkout (the
+#         consumer's own lock gate; never vendored or replaced). If it fails, render exits 1 with
+#         `REFUSED consumer-lock-checker` and its output, leaving the written files in place for the
+#         operator. --skip-consumer-checker is the deliberate override; the summary says it was skipped.
 #
 # check   Writes nothing. Reports drift and exits 1 when there is any. Drift kinds (printed as
 #         `DRIFT <kind>: <detail>`):
@@ -52,7 +58,9 @@ yq --version 2>/dev/null | grep -q mikefarah || die 'mikefarah yq v4 required (h
 mode=$1; shift
 [[ $mode == render || $mode == check ]] || usage
 suite='' sha='' repo='' checkout=''
+skip_checker=0
 while [[ $# -gt 0 ]]; do
+  if [[ $1 == --skip-consumer-checker ]]; then skip_checker=1; shift; continue; fi
   [[ $# -ge 2 ]] || die "option $1 needs a value" 2
   case $1 in
     --suite) suite=$2 ;; --suite-sha) sha=$2 ;; --repo) repo=$2 ;; --checkout) checkout=$2 ;;
@@ -189,8 +197,22 @@ if [[ $mode == render ]]; then
   for g in "${guards[@]}"; do
     rm -f -- "$g"; changes+=("removed retired guard caller: ${g#"$checkout"/}")
   done
+  cc=$checkout/scripts/check-lock-sync.sh; cc_rc=0
+  if [[ -f $cc ]]; then
+    if [[ $skip_checker -eq 1 ]]; then
+      changes+=("SKIPPED consumer lock checker scripts/check-lock-sync.sh (--skip-consumer-checker)")
+    else
+      cc_out=$(cd "$checkout" && bash scripts/check-lock-sync.sh 2>&1) || cc_rc=$?
+      [[ $cc_rc -ne 0 ]] || changes+=("consumer lock checker scripts/check-lock-sync.sh passed")
+    fi
+  fi
   printf 'ci-gate-caller render %s @ %s\n' "$repo" "$sha"
   printf '  %s\n' "${changes[@]}"
+  if [[ $cc_rc -ne 0 ]]; then
+    echo "REFUSED consumer-lock-checker: scripts/check-lock-sync.sh exited $cc_rc; the files above were written and are left in place" >&2
+    printf '%s\n' "$cc_out" >&2
+    exit 1
+  fi
   exit 0
 fi
 

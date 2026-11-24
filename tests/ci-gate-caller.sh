@@ -139,6 +139,23 @@ T0=$(tree); render; expect "untested lock schema" 3 "untested"
 [ "$T0" = "$(tree)" ] && ok "untested lock schema: checkout untouched (no caller written)" || bad "untested lock schema still wrote files"
 mk; run bogus; expect "bad mode" 2
 
+echo "== the consumer's own lock checker =="
+stub() { mkdir -p "$C/scripts"; printf '%s\n' "$1" > "$C/scripts/check-lock-sync.sh"; }
+mk; stub 'echo "refs missing from the lockfile"; exit 7'
+render; expect "failing consumer checker" 1 "REFUSED consumer-lock-checker"
+case "$OUT" in *"refs missing from the lockfile"*) ok "failing checker: its output is shown" ;; *) bad "checker output hidden -- $OUT" ;; esac
+[ -f "$C/.github/workflows/ci-gate.yml" ] && ok "failing checker: written files are left in place" || bad "files rolled back"
+mk; stub 'echo fine; exit 0'
+render; expect "passing consumer checker" 0 "consumer lock checker scripts/check-lock-sync.sh passed"
+mk; stub 'echo "cwd=$(pwd)" > ran.txt; exit 0'; render >/dev/null
+[ "$(cat "$C/ran.txt" 2>/dev/null)" = "cwd=$C" ] && ok "checker runs from the checkout root" || bad "checker not run from the checkout"
+mk; stub 'echo "refs missing"; exit 1'
+run render --suite "$SUITE" --suite-sha "$SHA_A" --repo "$REPO" --checkout "$C" --skip-consumer-checker
+expect "failing checker with --skip-consumer-checker" 0 "SKIPPED consumer lock checker"
+mk; render; expect "no consumer checker present" 0 "wrote"
+case "$OUT" in *"consumer lock checker"*) bad "mentions a checker that is absent" ;; *) ok "absent checker: nothing reported" ;; esac
+mk; stub 'exit 0'; SHA=zzz render; expect "refusal before write still wins; checker not reached" 1 "40-hex"
+
 echo "== check on a clean tree, then each drift kind =="
 clean() { mk; cp "$ROOT/tests/fixtures/actions-lock/v0.0.2.lock" "$C/.github/workflows/actions.lock"; render >/dev/null; F="$C/.github/workflows/ci-gate.yml"; L="$C/.github/workflows/actions.lock"; }
 clean; T0=$(tree); check --repo "$REPO"; expect "clean tree with lock" 0 "clean"
