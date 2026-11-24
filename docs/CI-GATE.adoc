@@ -138,6 +138,18 @@ Because the `pull_request` job runs from the pull request's own branch, a pull r
 
 *Listing it in the profile.* The check is `{job: "guard / check", workflow: ".github/workflows/ci-gate-tamper-guard.yml"}` (suite local caller: `.github/workflows/ci-gate-tamper-guard-caller.yml`). It is NOT in any shipped profile yet, for two reasons that the owner should weigh: a `pull_request_target` workflow runs only from the default branch, so on the pull request that adds the guard the entry would read `never reported` and the gate would fail its own introduction; and a `pull_request_target` run's `head_sha` is not shown to be the pull request head, so whether the gate's per-commit run listing sees it is unverified. List it after the guard is on main and one later pull request shows its run in `actions/runs?head_sha=<head>`.
 
+== Rendering and drift-checking a consumer's caller
+
+`scripts/ci-gate-caller.sh render --suite DIR --suite-sha <40hex> --repo OWNER/NAME --checkout DIR`
+writes the consumer's `.github/workflows/ci-gate.yml` from the template as it was at that suite
+commit (read with `git show` from a local suite clone, no network), refuses when the repository's
+profile is missing or invalid at that commit, makes `actions.lock` carry the empty entry
+`'.github/workflows/ci-gate.yml': []` (never a leaf record), and removes the retired
+`pull_request_target` guard caller and its lock entry. `check --suite DIR --checkout DIR [--repo
+OWNER/NAME]` writes nothing and exits non-zero on drift: a caller that differs from the template at
+its own pinned SHA, a pin that is not 40-hex, a missing or extra lock entry, or a leftover guard
+caller. It needs Go yq v4; `tests/ci-gate-caller.sh` covers both modes offline.
+
 == What the owner must do once per repository
 
 . Merge the pull request that adds the gate. The `gate-pr` job posts the status on it, so no ruleset edit is needed. If the pull request also touches gate files, the guard (once on main) will ask for the label.

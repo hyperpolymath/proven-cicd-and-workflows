@@ -38,6 +38,7 @@
         "scripts/ci-gate-publish.sh",
         "scripts/ci-gate-sweep.sh",
         "scripts/ci-gate-tamper-guard.sh",
+        "scripts/ci-gate-caller.sh",
         "scripts/validate-ci-gate-profile.sh",
         "profiles/ci-gate/**",
         ".github/workflows/ci-gate.yml",
@@ -91,6 +92,7 @@
         "scripts/ci-gate-publish.sh",
         "scripts/ci-gate-sweep.sh",
         "scripts/ci-gate-tamper-guard.sh",
+        "scripts/ci-gate-caller.sh",
         "scripts/validate-ci-gate-profile.sh",
         "profiles/ci-gate/**",
         ".github/workflows/ci-gate.yml",
@@ -204,6 +206,12 @@
         {
           # The tamper guard: file matching, label logic, fail-closed errors, static guards.
           run: "bash tests/ci-gate-tamper-guard.sh",
+        },
+        {
+          # The caller renderer / drift check: render at a pinned suite SHA, the empty
+          # actions.lock entry, retired guard removal, refusals, every drift kind. Needs
+          # Go yq v4 (on the runner's PATH).
+          run: "bash tests/ci-gate-caller.sh",
         },
       ],
     },
