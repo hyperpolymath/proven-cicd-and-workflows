@@ -89,14 +89,30 @@ profile_ok() {
   git -C "$suite" show "${at}:profiles/ci-gate/${r}.json" > "$out" 2>/dev/null || return 1
   bash "$ROOT/scripts/validate-ci-gate-profile.sh" "$out" "$r" >/dev/null 2>&1 || return 1
 }
+# True when workflow file $1 has a job whose `uses:` is the suite's tamper-guard reusable (block or
+# flow style; parsed, not grepped). An unparseable file is an error, not "no".
+calls_guard() {
+  local u
+  u=$(yq -r '(.jobs // {}) | to_entries | .[] | .value.uses // ""' "$1") || die "cannot parse $1" 2
+  grep -Eq "^$SUITE_REPO/\.github/workflows/ci-gate-tamper-guard\.ya?ml@" <<<"$u"
+}
 # Retired guard callers present on disk: files named ci-gate-tamper-guard*.yml|yaml that call the suite.
 guard_files() {
   local f
   for f in "$wf_dir"/ci-gate-tamper-guard*.yml "$wf_dir"/ci-gate-tamper-guard*.yaml; do
     [[ -f $f ]] || continue
-    grep -Eq "^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*['\"]?$SUITE_REPO/\.github/workflows/ci-gate-tamper-guard\.ya?ml@" "$f" && echo "$f"
+    if calls_guard "$f"; then echo "$f"; fi
   done
   return 0
+}
+# Lock keys of retired guard callers: guard-named keys whose file is gone, or still calls the suite.
+# A guard-named file that does NOT call the suite keeps its record.
+retired_lock_keys() {
+  local k
+  while IFS= read -r k; do
+    [[ -n $k ]] || continue
+    if [[ ! -f $checkout/$k ]] || calls_guard "$checkout/$k"; then echo "$k"; fi
+  done < <(yq '.workflows | keys | .[] | select(test("^\\.github/workflows/ci-gate-tamper-guard[^/]*\\.ya?ml$"))' "$lock")
 }
 lock_check_schema() {
   local v
@@ -123,12 +139,15 @@ if [[ $mode == render ]]; then
   }
   profile_ok "$sha" "$repo" "$TMP/profile.json" \
     || die "profiles/ci-gate/$repo.json is missing or invalid at $sha; refusing to render a gate that would fail closed"
-  mkdir -p "$wf_dir"
+  [[ ! -f $lock ]] || lock_check_schema   # refuse an untested lock before anything is written
+  mkdir -p "$wf_dir" || die "cannot create $wf_dir"
   changes=()
   if [[ -f $caller ]] && cmp -s "$TMP/caller.yml" "$caller"; then
     changes+=("unchanged: $CALLER_REL (pin ${sha:0:12})")
   else
-    cp "$TMP/caller.yml" "$caller.tmp.$$" && mv "$caller.tmp.$$" "$caller"
+    if ! { cp "$TMP/caller.yml" "$caller.tmp.$$" && mv "$caller.tmp.$$" "$caller"; }; then
+      rm -f -- "$caller.tmp.$$"; die "cannot write $caller"
+    fi
     changes+=("wrote: $CALLER_REL (pin ${sha:0:12})")
   fi
 
@@ -140,7 +159,7 @@ if [[ $mode == render ]]; then
       [[ -n $rel ]] || continue
       bash "$ROOT/scripts/deonboard-workflow.sh" "$checkout" "$rel" >/dev/null
       changes+=("removed lock entry: $rel")
-    done < <(yq '.workflows | keys | .[] | select(test("^\\.github/workflows/ci-gate-tamper-guard[^/]*\\.ya?ml$"))' "$lock")
+    done < <(retired_lock_keys)
     case $(lock_state) in
       empty) changes+=("unchanged: $LOCK_REL has '$CALLER_REL': []") ;;
       leaf)
@@ -216,7 +235,7 @@ if [[ -f $lock ]]; then
   while IFS= read -r k; do
     [[ -n $k ]] || continue
     flag lock-extra-entry "$LOCK_REL lists retired guard caller '$k'"
-  done < <(yq '.workflows | keys | .[] | select(test("^\\.github/workflows/ci-gate-tamper-guard[^/]*\\.ya?ml$"))' "$lock")
+  done < <(retired_lock_keys)
 else
   echo "note: no $LOCK_REL; lock checks not run"
 fi

@@ -108,6 +108,19 @@ render; expect "render removes the guard callers" 0 "removed retired guard calle
 grep -q 'tamper-guard' "$L" && bad "guard lock entry survived" || ok "guard lock entry removed"
 check; expect "check after" 0 "clean"
 
+echo "== guard detection is parsed, and a record for an unrelated same-glob file is kept =="
+mk; cp "$ROOT/tests/fixtures/actions-lock/v0.0.2.lock" "$C/.github/workflows/actions.lock"; L="$C/.github/workflows/actions.lock"
+printf 'name: g\non: pull_request_target\njobs: {guard: {uses: "hyperpolymath/proven-cicd-and-workflows/.github/workflows/ci-gate-tamper-guard.yml@%s"}}\n' "$SHA_A" > "$C/.github/workflows/ci-gate-tamper-guard-flow.yml"
+printf 'name: notes\non: push\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' > "$C/.github/workflows/ci-gate-tamper-guard-notes.yml"
+yq -i -I4 '.workflows[".github/workflows/ci-gate-tamper-guard-notes.yml"] = ["actions/checkout@v7.0.1"]' "$L"
+check; expect "flow-style guard caller is detected" 1 "DRIFT guard-caller-leftover"
+case "$OUT" in *"lock-extra-entry"*) bad "kept record for a non-caller flagged as retired -- $OUT" ;; *) ok "record of the non-caller file is not flagged" ;; esac
+render; expect "render" 0 "removed retired guard caller: .github/workflows/ci-gate-tamper-guard-flow.yml"
+[ ! -e "$C/.github/workflows/ci-gate-tamper-guard-flow.yml" ] && ok "flow-style guard file removed" || bad "flow-style guard file survived"
+[ "$(yq -o=json -I0 '.workflows[".github/workflows/ci-gate-tamper-guard-notes.yml"]' "$L")" = '["actions/checkout@v7.0.1"]' ] \
+  && ok "the non-caller's lock record is preserved" || bad "non-caller lock record was removed"
+check; expect "check after" 0 "clean"
+
 echo "== refusals (nothing is written) =="
 mk; T0=$(tree); R=hyperpolymath/no-such-repo render; expect "no profile at the SHA" 1 "missing or invalid"
 [ "$T0" = "$(tree)" ] && ok "missing profile: tree untouched" || bad "missing profile wrote files"
@@ -122,7 +135,8 @@ mk; SHA=$(printf 'a%.0s' {1..40}) render; expect "well-formed SHA that is not in
 mk; R='../etc/passwd' render; expect "malformed --repo" 2 "OWNER/NAME"
 mk; run render --suite "$WORK/nope" --suite-sha "$SHA_A" --repo "$REPO" --checkout "$C"; expect "missing suite dir" 2
 mk; cp "$ROOT/tests/fixtures/actions-lock/v0.0.2.lock" "$C/.github/workflows/actions.lock"; sed -i "s/^version: .*/version: 'v9.9.9'/" "$C/.github/workflows/actions.lock"
-render; expect "untested lock schema" 3 "untested"
+T0=$(tree); render; expect "untested lock schema" 3 "untested"
+[ "$T0" = "$(tree)" ] && ok "untested lock schema: checkout untouched (no caller written)" || bad "untested lock schema still wrote files"
 mk; run bogus; expect "bad mode" 2
 
 echo "== check on a clean tree, then each drift kind =="
