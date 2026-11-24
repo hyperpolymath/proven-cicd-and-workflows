@@ -149,6 +149,8 @@ confirm_pr() { # <n>: append it to guard_prs if it is open, into REPO, and heade
   pr=$(gh api "repos/$REPO/pulls/$1" --jq '[.state, .head.sha, (.base.repo.full_name // "")] | @tsv') \
     || die "could not read pull request #$1 for the tamper guard"
   IFS=$'\t' read -r pstate psha pbase <<< "$pr"
+  # a malformed answer is no evidence that the pull request is not ours: no verdict
+  [[ $pstate =~ ^(open|closed)$ && $psha =~ ^[0-9a-f]{40}$ ]] || die "pull request #$1 answered no usable state or head for the tamper guard"
   if [[ $pstate == open && $psha == "$HEAD_SHA" && $pbase == "$REPO" ]]; then guard_prs+=("$1"); fi
   return 0
 }
@@ -184,6 +186,7 @@ if [[ ${GUARD_NO_LOOKUP:-} != 1 ]]; then
   while IFS=$'\t' read -r n pstate psha pbase; do
     [[ -n $n ]] || continue
     pr_num_ok "$n" || die 'a pull request of this commit has a malformed number'
+    [[ $pstate =~ ^(open|closed)$ && $psha =~ ^[0-9a-f]{40}$ ]] || die "pull request #$n of this commit has no usable state or head"
     if [[ $pstate == open && $psha == "$HEAD_SHA" && $pbase == "$REPO" ]]; then guard_prs+=("$n"); fi
   done <<< "$found"
 fi

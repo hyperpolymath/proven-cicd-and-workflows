@@ -22,7 +22,8 @@
 #     most recently updated. It never skips silently.
 #  3. Runs the publisher for each SHA, with no early in_progress pending. It passes the publisher
 #     GUARD_PRS: EVERY open pull request headed by that SHA (from the listing above, forks included;
-#     several pull requests can share one head), with GUARD_NO_LOOKUP=1, since the listing is complete,
+#     several pull requests can share one head), with GUARD_NO_LOOKUP=1 ONLY when the listing completed
+#     (every page, every row usable); otherwise the publisher also runs its own commit lookup,
 #     so the publisher runs the tamper guard for exactly those, with no lookup of its own; the default
 #     branch head (unless a pull request shares it) gets none. A failure on one SHA
 #     does not stop the others, except "rate limited, no verdict": the rest would meet the same
@@ -69,16 +70,26 @@ else
   errors=$((errors + 1))
 fi
 
-# open pull requests, every page
+# open pull requests, every page. listing_complete=1 only when every page was read and every row was
+# usable: only then may the publisher skip its own commit lookup (GUARD_NO_LOOKUP=1). The tamper guard is
+# skipped only on POSITIVE evidence that no pull request shares a SHA, never because a listing failed.
+listing_complete=0
 if gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
   --jq '.[] | [.updated_at, .head.sha, "PR #\(.number)", .number] | @tsv' > "$WORK/pulls.tsv" 2> "$WORK/pulls.err"; then
+  listing_complete=1
   while IFS=$'\t' read -r upd sha src num; do
     if [[ $sha =~ ^[0-9a-f]{40}$ && -n $upd ]]; then
       printf '%s\t%s\t%s\n' "$upd" "$sha" "$src" >> "$cand"
       # tamper guard: every open pull request into REPO, fork or not (docs/CI-GATE.adoc, "Tamper guard")
-      if [[ $num =~ ^[1-9][0-9]{0,9}$ ]]; then printf '%s\t%s\n' "$sha" "$num" >> "$guardprs"; fi
+      if [[ $num =~ ^[1-9][0-9]{0,9}$ ]]; then
+        printf '%s\t%s\n' "$sha" "$num" >> "$guardprs"
+      else
+        echo "::warning::ci-gate-sweep: $src has no usable number; the publisher looks the pull requests up itself"
+        listing_complete=0
+      fi
     else
       echo "::error::ci-gate-sweep: $src has an unusable head SHA or date; it was NOT evaluated"
+      listing_complete=0   # its head is unknown, so it may share a SHA that is evaluated
       printf '%s\t%s\terror\tunusable head SHA\n' '-' "$src" >> "$rows"
       errors=$((errors + 1))
     fi
@@ -108,7 +119,9 @@ while IFS=$'\t' read -r _ sha src; do
   echo "::group::$CONTEXT for $sha ($src)"
   rc=0
   prs=$(awk -F'\t' -v s="$sha" '$1 == s { print $2 }' "$guardprs" | sort -un | paste -sd' ' -)
-  env -u GITHUB_OUTPUT -u GUARD_EVENT_PRS -u GUARD_HEAD_REPO -u GUARD_HEAD_BRANCH GUARD_NO_LOOKUP=1 GUARD_PRS="$prs" HEAD_SHA="$sha" WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/summary.md" \
+  # an incomplete listing: the publisher also runs its own commit lookup (fail closed)
+  nolookup=0; ((listing_complete == 1)) && nolookup=1
+  env -u GITHUB_OUTPUT -u GUARD_EVENT_PRS -u GUARD_HEAD_REPO -u GUARD_HEAD_BRANCH GUARD_NO_LOOKUP="$nolookup" GUARD_PRS="$prs" HEAD_SHA="$sha" WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/summary.md" \
     SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" WF_REPO="$WF_REPO" WF_SHA="$WF_SHA" \
     bash "$PUBLISH" > "$dir/out.txt" 2>&1 || rc=$?
   cat "$dir/out.txt"

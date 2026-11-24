@@ -532,6 +532,11 @@ chk "commit lookup API error even when the event hints a PR: failure, no verdict
 pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; g_pr 9 "$SHA" "$REPOK"; g_files 7 src/x.rs; g_files 9 README.adoc
 publish GUARD_EVENT_PRS="$(EVPR "$SHA")"
 chk "two clean PRs at one SHA: the normal verdict" "$(post_n 1 | cut -f1)/$RC" "success/0"
+echo "-- a malformed lookup answer is no evidence that no PR matches: no verdict --"
+pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" "$REPOK"; echo '{"number":7}' > "$G/pr.7.json"; publish GUARD_EVENT_PRS="$(EVPR "$SHA")"
+chk "GET pulls/<n> answers no state or head: failure, no verdict" "$(post_n 1 | cut -f1)/$RC/$(grep -c 'answered no usable state or head' <<<"$PUBOUT")" "failure/1/1"
+pubreset; snap 1 "$DONE"; g_init; echo '[{"number":7,"state":null,"head":{"sha":null},"base":{"repo":{"full_name":"example/repo"}}}]' > "$G/prs.json"; publish
+chk "commit lookup row with no state or head: failure, no verdict" "$(post_n 1 | cut -f1)/$RC/$(grep -c 'has no usable state or head' <<<"$PUBOUT")" "failure/1/1"
 echo "-- workflow_run from a FORK: pull_requests is empty, so the fork branch is looked up --"
 pubreset; snap 1 "$DONE"; g_init; g_pr 7 "$SHA" fork/repo; g_files 7 .github/workflows/ci-build.yml; echo '[{"number":7}]' > "$G/headprs.json"
 publish GUARD_EVENT_PRS='[]' GUARD_HEAD_REPO=fork/repo GUARD_HEAD_BRANCH='feat/x'
@@ -1049,6 +1054,24 @@ g_pr 7 "$(sha_n 30)" example/repo; g_pr 9 "$(sha_n 30)" example/repo; g_files 7 
 sweep
 chk "sweep: shared head, clean #7 and unapproved #9: failure naming the gate file" "$(last_for 30)/$(grep -P "\t$(sha_n 30)$" "$FAKEGH/posts.log" | cut -f2)" "failure/gate files changed without owner approval: .github/workflows/ci-gate.yml"
 chk "sweep: both #7 and #9 guarded, no lookup" "$(grep -c '^files 7$' "$FAKEGH/guard.calls")$(grep -c '^files 9$' "$FAKEGH/guard.calls")/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "11/0"
+pubreset; g_init
+echo "-- the sweep skips the publisher's own lookup ONLY when its PR listing is complete --"
+pubreset; g_init; set_default 40; set_pulls; sweep_sha 40 "$DONE"
+g_pr 7 "$(sha_n 40)" example/repo; g_files 7 .github/workflows/ci-gate.yml; touch "$FAKEGH/failpulls"
+sweep
+chk "PR listing fails, an unapproved PR shares the default branch head: failure via the commit lookup, not success" "$(last_for 40)/$RC" "failure/1"
+chk "PR listing fails: the publisher ran its own commit lookup" "$(grep -c '^lookup$' "$FAKEGH/guard.calls")" 1
+pubreset; g_init; set_default 40; set_pulls; sweep_sha 40 "$DONE"; touch "$FAKEGH/failpulls"
+sweep
+chk "PR listing fails, no PR at that head: the normal verdict through the lookup (the sweep still exits 1 for the listing)" "$(last_for 40)/$(cat "$FAKEGH/guard.calls")/$RC" "success/lookup/1"
+pubreset; g_init; set_default 40; set_pulls; sweep_sha 40 "$DONE"
+sweep
+chk "PR listing complete, no PR at that head: no lookup at all" "$(last_for 40)/$(gcalls)/$RC" "success/0/0"
+pubreset; g_init; set_default 40; sweep_sha 40 "$DONE"
+jq -n --arg s "$(sha_n 40)" '[{number: "x", updated_at: "2026-11-17T10:00:00Z", head: {sha: $s}}]' > "$FAKEGH/pulls.json"
+g_pr 7 "$(sha_n 40)" example/repo; g_files 7 .github/workflows/ci-gate.yml
+sweep
+chk "a listed PR without a usable number: the publisher looks up itself and finds the unapproved PR" "$(last_for 40)/$(grep -c '^lookup$' "$FAKEGH/guard.calls")" "failure/1"
 pubreset; g_init
 echo "== repository coordinate: a leading dot is a name; traversal and malformed ones are not =="
 step_script() { # <file> <step name prefix> -> the step's run: block, de-indented
