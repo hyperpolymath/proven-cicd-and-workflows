@@ -181,6 +181,17 @@ clean; T0=$(tree); run check --suite "$SUITE" --checkout "$C" --repo hyperpolyma
 mk; check; expect "check on an empty checkout" 1 "DRIFT caller-missing"
 clean; rm "$L"; check; expect "no actions.lock: lock checks reported not run" 0 "lock checks not run"
 
+echo "== an unparseable guard-named workflow is an error, never 'clean' =="
+clean_c() { clean; printf 'jobs: [unclosed\n' > "$C/.github/workflows/ci-gate-tamper-guard-bad.yml"; }
+clean_c; T0=$(tree); check; expect "check with a malformed guard-named file" 2 "cannot inspect workflows"
+case "$OUT" in *clean:*) bad "reported clean over an uninspected file" ;; *) ok "never reports clean" ;; esac
+[ "$T0" = "$(tree)" ] && ok "check wrote nothing" || bad "check wrote files"
+clean_c; rm "$C/.github/workflows/ci-gate.yml"; T0=$(tree); render; expect "render with a malformed guard-named file" 2 "cannot inspect workflows"
+[ "$T0" = "$(tree)" ] && ok "render refused before writing anything" || bad "render wrote files before failing"
+clean; yq -i -I4 '.workflows[".github/workflows/ci-gate-tamper-guard-gone.yml"] = []' "$L"
+printf 'jobs: [unclosed\n' > "$C/.github/workflows/ci-gate-tamper-guard-gone.yml"
+check; expect "check with a malformed file that has a lock record" 2 "cannot inspect workflows"
+
 echo
 echo "ci-gate-caller: $PASS passed, $FAIL failed (jq $(jq --version))"
 [ "$FAIL" -eq 0 ]

@@ -122,6 +122,13 @@ retired_lock_keys() {
     if [[ ! -f $checkout/$k ]] || calls_guard "$checkout/$k"; then echo "$k"; fi
   done < <(yq '.workflows | keys | .[] | select(test("^\\.github/workflows/ci-gate-tamper-guard[^/]*\\.ya?ml$"))' "$lock")
 }
+# collect ARRAY FUNCTION: fill ARRAY with FUNCTION's lines. Runs outside process substitution so a
+# failure inside FUNCTION (an unparseable workflow) stops the script instead of reading as "none".
+collect() {
+  local -n _arr=$1; local out
+  out=$("$2") || die "cannot inspect workflows ($2 failed); nothing was concluded" 2
+  _arr=(); [[ -z $out ]] || mapfile -t _arr <<<"$out"
+}
 lock_check_schema() {
   local v
   v=$(yq '.version' "$lock") || die "$lock is unreadable" 3
@@ -148,6 +155,8 @@ if [[ $mode == render ]]; then
   profile_ok "$sha" "$repo" "$TMP/profile.json" \
     || die "profiles/ci-gate/$repo.json is missing or invalid at $sha; refusing to render a gate that would fail closed"
   [[ ! -f $lock ]] || lock_check_schema   # refuse an untested lock before anything is written
+  collect guards guard_files              # inspect every guard-named workflow before anything is written
+  retired=(); [[ ! -f $lock ]] || collect retired retired_lock_keys
   mkdir -p "$wf_dir" || die "cannot create $wf_dir"
   changes=()
   if [[ -f $caller ]] && cmp -s "$TMP/caller.yml" "$caller"; then
@@ -159,15 +168,12 @@ if [[ $mode == render ]]; then
     changes+=("wrote: $CALLER_REL (pin ${sha:0:12})")
   fi
 
-  mapfile -t guards < <(guard_files)
   if [[ -f $lock ]]; then
-    lock_check_schema
     # Retired guard callers: drop their lock entries (deonboard prunes now-unreferenced dependencies).
-    while IFS= read -r rel; do
-      [[ -n $rel ]] || continue
+    for rel in "${retired[@]}"; do
       bash "$ROOT/scripts/deonboard-workflow.sh" "$checkout" "$rel" >/dev/null
       changes+=("removed lock entry: $rel")
-    done < <(retired_lock_keys)
+    done
     case $(lock_state) in
       empty) changes+=("unchanged: $LOCK_REL has '$CALLER_REL': []") ;;
       leaf)
@@ -219,7 +225,7 @@ fi
 # ------------------------------------------------------------------------------------------- check
 drift=0
 flag() { echo "DRIFT $1: $2"; drift=1; }
-mapfile -t guards < <(guard_files)
+collect guards guard_files
 for g in "${guards[@]}"; do flag guard-caller-leftover "${g#"$checkout"/} still calls the suite's tamper guard"; done
 
 if [[ ! -f $caller ]]; then
@@ -254,10 +260,10 @@ if [[ -f $lock ]]; then
     absent) flag lock-entry-missing "$LOCK_REL has no '$CALLER_REL' entry (gh actions-lock: not-pinned)" ;;
     leaf)   flag lock-entry-not-empty "$LOCK_REL has a leaf record under '$CALLER_REL'; it must be [] (gh actions-lock: Unused lockfile entry)" ;;
   esac
-  while IFS= read -r k; do
-    [[ -n $k ]] || continue
+  collect retired retired_lock_keys
+  for k in "${retired[@]}"; do
     flag lock-extra-entry "$LOCK_REL lists retired guard caller '$k'"
-  done < <(retired_lock_keys)
+  done
 else
   echo "note: no $LOCK_REL; lock checks not run"
 fi
