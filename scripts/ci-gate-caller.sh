@@ -41,7 +41,7 @@
 # Exit: 0 ok/clean; 1 refusal or drift; 2 usage or tool error; 3 untested actions.lock schema.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || { echo "ci-gate-caller.sh: cannot resolve its own directory" >&2; exit 2; }
 SUITE_REPO=hyperpolymath/proven-cicd-and-workflows
 CALLER_REL=.github/workflows/ci-gate.yml
 LOCK_REL=.github/workflows/actions.lock
@@ -116,11 +116,12 @@ guard_files() {
 # Lock keys of retired guard callers: guard-named keys whose file is gone, or still calls the suite.
 # A guard-named file that does NOT call the suite keeps its record.
 retired_lock_keys() {
-  local k
+  local k keys
+  keys=$(yq '.workflows | keys | .[] | select(test("^\\.github/workflows/ci-gate-tamper-guard[^/]*\\.ya?ml$"))' "$lock") || die "cannot read workflow keys of $lock" 3
   while IFS= read -r k; do
     [[ -n $k ]] || continue
     if [[ ! -f $checkout/$k ]] || calls_guard "$checkout/$k"; then echo "$k"; fi
-  done < <(yq '.workflows | keys | .[] | select(test("^\\.github/workflows/ci-gate-tamper-guard[^/]*\\.ya?ml$"))' "$lock")
+  done <<<"$keys"
 }
 # collect ARRAY FUNCTION: fill ARRAY with FUNCTION's lines. Runs outside process substitution so a
 # failure inside FUNCTION (an unparseable workflow) stops the script instead of reading as "none".
@@ -135,10 +136,12 @@ lock_check_schema() {
   case " $KNOWN_LOCK_VERSIONS " in *" $v "*) ;; *) die "actions.lock schema '$v' is untested (tested: $KNOWN_LOCK_VERSIONS)" 3 ;; esac
   [[ $(yq '.workflows | tag' "$lock") == '!!map' ]] || die "$lock has no workflows map" 3
 }
-lock_state() { # ci-gate.yml entry: absent | empty | leaf
-  if ! w=$CALLER_REL yq -e '.workflows | has(strenv(w))' "$lock" >/dev/null 2>&1; then echo absent
-  elif [[ $(w=$CALLER_REL yq -o=json -I0 '.workflows[strenv(w)]' "$lock") == '[]' ]]; then echo empty
-  else echo leaf; fi
+lock_state() { # ci-gate.yml entry: absent | empty | leaf (a yq error is an error, never "absent")
+  local has val
+  has=$(w=$CALLER_REL yq '.workflows | has(strenv(w))' "$lock") || die "cannot read $lock" 3
+  if [[ $has != true ]]; then echo absent; return 0; fi
+  val=$(w=$CALLER_REL yq -o=json -I0 '.workflows[strenv(w)]' "$lock") || die "cannot read $lock" 3
+  if [[ $val == '[]' ]]; then echo empty; else echo leaf; fi
 }
 
 # ------------------------------------------------------------------------------------------ render
@@ -174,20 +177,23 @@ if [[ $mode == render ]]; then
       bash "$ROOT/scripts/deonboard-workflow.sh" "$checkout" "$rel" >/dev/null
       changes+=("removed lock entry: $rel")
     done
-    case $(lock_state) in
+    st=$(lock_state) || die "cannot read lock state" 3
+    case $st in
       empty) changes+=("unchanged: $LOCK_REL has '$CALLER_REL': []") ;;
       leaf)
         bash "$ROOT/scripts/deonboard-workflow.sh" "$checkout" "$CALLER_REL" >/dev/null
         changes+=("replaced leaf record under $CALLER_REL in $LOCK_REL") ;;
     esac
-    if [[ $(lock_state) == absent ]]; then
+    st=$(lock_state) || die "cannot read lock state" 3
+    if [[ $st == absent ]]; then
       # Insert at its sorted position among the existing keys; no other key moves.
+      all_keys=$(yq '.workflows | keys | .[]' "$lock") || die "cannot read workflow keys of $lock" 3
       i=0
       while IFS= read -r k; do
         [[ -n $k ]] || continue
         # LC_ALL=C byte order, the order gh actions-lock writes
         [[ $(printf '%s\n%s\n' "$k" "$CALLER_REL" | LC_ALL=C sort | head -1) == "$k" && $k != "$CALLER_REL" ]] && i=$((i+1)) || break
-      done < <(yq '.workflows | keys | .[]' "$lock")
+      done <<<"$all_keys"
       w=$CALLER_REL n=$i yq -i -I4 '
         .workflows = (
           ((.workflows | to_entries) as $e
@@ -196,7 +202,8 @@ if [[ $mode == render ]]; then
         | (.workflows[strenv(w)] | key) style="single"' "$lock"
       changes+=("added '$CALLER_REL': [] to $LOCK_REL")
     fi
-    [[ $(lock_state) == empty ]] || die "internal: lock entry for $CALLER_REL is not the empty entry after edit" 1
+    st=$(lock_state) || die "cannot read lock state" 3
+    [[ $st == empty ]] || die "internal: lock entry for $CALLER_REL is not the empty entry after edit" 1
   else
     changes+=("no $LOCK_REL: lock not touched")
   fi
@@ -231,7 +238,8 @@ for g in "${guards[@]}"; do flag guard-caller-leftover "${g#"$checkout"/} still 
 if [[ ! -f $caller ]]; then
   flag caller-missing "$CALLER_REL does not exist"
 else
-  mapfile -t pins < <(sed -nE "s#^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*['\"]?$SUITE_REPO/\.github/workflows/ci-gate\.yml@([^[:space:]'\"#]+).*#\2#p" "$caller" | sort -u)
+  pins_txt=$(sed -nE "s#^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*['\"]?$SUITE_REPO/\.github/workflows/ci-gate\.yml@([^[:space:]'\"#]+).*#\2#p" "$caller" | sort -u) || die "cannot read $caller" 2
+  mapfile -t pins <<<"$pins_txt"; [[ -n $pins_txt ]] || pins=()
   if [[ ${#pins[@]} -eq 0 ]]; then
     flag pin-missing "$CALLER_REL has no 'uses: $SUITE_REPO/.github/workflows/ci-gate.yml@<sha>'"
   elif [[ ${#pins[@]} -gt 1 ]]; then
@@ -256,7 +264,8 @@ fi
 
 if [[ -f $lock ]]; then
   lock_check_schema
-  case $(lock_state) in
+  st=$(lock_state) || die "cannot read lock state" 3
+  case $st in
     absent) flag lock-entry-missing "$LOCK_REL has no '$CALLER_REL' entry (gh actions-lock: not-pinned)" ;;
     leaf)   flag lock-entry-not-empty "$LOCK_REL has a leaf record under '$CALLER_REL'; it must be [] (gh actions-lock: Unused lockfile entry)" ;;
   esac

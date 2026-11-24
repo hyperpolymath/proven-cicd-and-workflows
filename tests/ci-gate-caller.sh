@@ -186,11 +186,19 @@ clean_c() { clean; printf 'jobs: [unclosed\n' > "$C/.github/workflows/ci-gate-ta
 clean_c; T0=$(tree); check; expect "check with a malformed guard-named file" 2 "cannot inspect workflows"
 case "$OUT" in *clean:*) bad "reported clean over an uninspected file" ;; *) ok "never reports clean" ;; esac
 [ "$T0" = "$(tree)" ] && ok "check wrote nothing" || bad "check wrote files"
-clean_c; rm "$C/.github/workflows/ci-gate.yml"; T0=$(tree); render; expect "render with a malformed guard-named file" 2 "cannot inspect workflows"
+clean_c; T0=$(tree); render; expect "render with a malformed guard-named file" 2 "cannot inspect workflows"
 [ "$T0" = "$(tree)" ] && ok "render refused before writing anything" || bad "render wrote files before failing"
 clean; yq -i -I4 '.workflows[".github/workflows/ci-gate-tamper-guard-gone.yml"] = []' "$L"
 printf 'jobs: [unclosed\n' > "$C/.github/workflows/ci-gate-tamper-guard-gone.yml"
 check; expect "check with a malformed file that has a lock record" 2 "cannot inspect workflows"
+clean; cmp -s "$C/.github/workflows/ci-gate.yml" <(git -C "$SUITE" show "$SHA_A:templates/ci-gate-caller.yml" | sed "s/__CICD_SUITE_SHA__/$SHA_A/g") && ok "fixture has a valid caller and lock (so clean would be reachable)"
+printf 'version: [unclosed\nworkflows: {\n' > "$L"; T0=$(tree)
+check; expect "check with a malformed actions.lock" 3 "unreadable"
+case "$OUT" in *clean:*) bad "reported clean over an unreadable lock" ;; *) ok "malformed lock: never clean" ;; esac
+render; expect "render with a malformed actions.lock" 3 "unreadable"
+[ "$T0" = "$(tree)" ] && ok "malformed lock: nothing written" || bad "malformed lock: files written"
+clean; printf 'version: %s\nworkflows: [1, 2]\n' "'v0.0.2'" > "$L"
+check; expect "check with a lock whose workflows is not a map" 3 "no workflows map"
 
 echo
 echo "ci-gate-caller: $PASS passed, $FAIL failed (jq $(jq --version))"
