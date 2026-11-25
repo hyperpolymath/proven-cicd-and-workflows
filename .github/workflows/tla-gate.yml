@@ -1,0 +1,277 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath) <j.d.a.jewell@open.ac.uk>
+#
+# tla-gate.yml — the TLA+ model-check gate, as a reusable workflow. Enforcing.
+#
+#   detect   counts the .tla sources and the listed configs; fails when .tla
+#            files exist and the spec or a listed config is missing, or none
+#            is listed
+#   prove    installs Java 21 from the Ubuntu 24.04 archive
+#            (openjdk-21-jre-headless), fetches tla2tools.jar v1.7.4 and
+#            checks it against its SHA-256 (a mismatch deletes it and is exit
+#            2), proves the judge can say no (a holding model passes; a model
+#            that violates an invariant is refuted by that invariant and by no
+#            other name), then runs TLC: every must_pass config must complete
+#            with no error, every must_refute config must be refuted by the
+#            invariant named for it, and a must-refute config that passes
+#            fails the gate
+#   verdict  one context to require; a skipped prove with specs present is
+#            VOID, not green
+#
+# A model check is TESTED at its declared bounds, not proven. Gate scripts are
+# pinned at the caller's own `uses:` SHA — see spark-gate.yml.
+
+name: TLA+ Gate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Linux x86_64 runner label (the pins are Ubuntu 24.04 builds; use ubuntu-24.04)
+        type: string
+        required: false
+        default: ubuntu-24.04
+      working_directory:
+        description: Tree root
+        type: string
+        required: false
+        default: "."
+      spec_dir:
+        description: Directory holding the spec and its configs
+        type: string
+        required: false
+        default: "verification/proofs/tlaplus"
+      spec:
+        description: The spec file, a .tla name inside spec_dir
+        type: string
+        required: false
+        default: "Engine.tla"
+      must_pass:
+        description: Whitespace-separated configs that must model-check with no error
+        type: string
+        required: false
+        default: "Engine.cfg"
+      must_refute:
+        description: "Whitespace-separated <config>.cfg:<Invariant> entries; TLC must report that invariant violated by that config"
+        type: string
+        required: false
+        default: "Original.cfg:Guarantee OtherTarget.cfg:GuaranteeBound"
+      workers:
+        description: TLC -workers, a number or auto (1 keeps counterexamples deterministic)
+        type: string
+        required: false
+        default: "1"
+
+permissions:
+  contents: read
+
+# Every `run:` step gets bash with -e AND pipefail. GitHub's default when no
+# shell is named is `bash -e` without pipefail, which would let a failing
+# gate script hide behind the `| tee` that records its facts.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  detect:
+    name: Detect TLA+ specs
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      units: ${{ steps.facts.outputs.units }}
+    steps:
+      - name: Check out the calling repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the suite repository and commit this caller pins
+        id: suite
+        env:
+          SUITE_WORKFLOW: tla-gate.yml
+        # Inside a reusable workflow the `github` context is the CALLER's, so
+        # GITHUB_WORKFLOW_REF names the caller's workflow file — which is in
+        # the tree just checked out and holds the very `uses:` line GitHub
+        # resolved to reach this file. That SHA pins the gate scripts: one
+        # pin, held by the caller, selects both the workflow and its scripts.
+        # (`github.job_workflow_sha` is an OIDC claim, not a context property,
+        # and reading the token would need id-token: write from every caller.)
+        run: |
+          set -euo pipefail
+          command -v yq >/dev/null || { echo '::error::yq is unavailable; source pin NOT VERIFIED'; exit 2; }
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/"* ]] || exit 2
+          path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
+          case "$path" in .github/workflows/*.yml|.github/workflows/*.yaml) ;; *) exit 2 ;; esac
+          [[ "${path#.github/workflows/}" != */* && -f "$path" && ! -L "$path" ]] \
+            || { echo '::error::caller workflow is absent or is not a direct workflow file; source pin NOT VERIFIED'; exit 2; }
+          candidates=$(yq -r '.jobs[] | select(has("uses")) | .uses' "$path") \
+            || { echo '::error::caller workflow cannot be parsed; source pin NOT VERIFIED'; exit 2; }
+          refs=''
+          while IFS= read -r ref; do
+            # Other reusable workflows do not select this gate's source.
+            [[ "$ref" == */.github/workflows/"$SUITE_WORKFLOW"* ]] || continue
+            case "$ref" in
+              hyperpolymath/cicd-suite/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd-and-workflows/.github/workflows/"$SUITE_WORKFLOW"@*)
+                repository=${ref%%/.github/workflows/*}
+                sha=${ref##*@}
+                [[ "$sha" =~ ^[0-9a-f]{40}$ && "$ref" == "$repository/.github/workflows/$SUITE_WORKFLOW@$sha" ]] \
+                  || { echo '::error::suite caller must pin one complete 40-hex SHA; source pin NOT VERIFIED'; exit 2; }
+                refs+="$repository@$sha"$'\n'
+                ;;
+              *) echo '::error::unexpected suite source reference; source pin NOT VERIFIED'; exit 2 ;;
+            esac
+          done <<< "$candidates"
+          refs=$(printf '%s' "$refs" | sort -u)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          [[ "$n" -eq 1 ]] \
+            || { echo "::error::$path selects $n distinct suite repository/commit pairs; exactly one is required. NO CHECK WAS PERFORMED."; exit 2; }
+          repository=${refs%@*}
+          sha=${refs##*@}
+          printf 'repository=%s\nsha=%s\n' "$repository" "$sha" >> "$GITHUB_OUTPUT"
+          echo "Suite source pinned at $repository@$sha by $path"
+      - name: Check out the selected suite at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.suite.outputs.repository }}
+          ref: ${{ steps.suite.outputs.sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Refuse gate scripts from an unverified cicd-suite commit
+        env:
+          EXPECTED: ${{ steps.suite.outputs.sha }}
+          EXPECTED_REPOSITORY: ${{ steps.suite.outputs.repository }}
+        run: bash .cicd-suite/scripts/verify-suite-checkout.sh
+      - name: Facts
+        id: facts
+        env:
+          TLA_GATE_PHASE: detect
+          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+          SPEC_DIR: ${{ inputs.spec_dir }}
+          SPEC: ${{ inputs.spec }}
+          MUST_PASS: ${{ inputs.must_pass }}
+          MUST_REFUTE: ${{ inputs.must_refute }}
+          WORKERS: ${{ inputs.workers }}
+        run: bash .cicd-suite/actions/tla-check/check.sh | tee -a "$GITHUB_OUTPUT"
+
+  prove:
+    name: TLC model check
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 30
+    needs: detect
+    if: ${{ needs.detect.outputs.units != '0' && needs.detect.outputs.units != '' }}
+    permissions:
+      contents: read
+    env:
+      JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+    steps:
+      - name: Check out the calling repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the suite repository and commit this caller pins
+        id: suite
+        env:
+          SUITE_WORKFLOW: tla-gate.yml
+        # Inside a reusable workflow the `github` context is the CALLER's, so
+        # GITHUB_WORKFLOW_REF names the caller's workflow file — which is in
+        # the tree just checked out and holds the very `uses:` line GitHub
+        # resolved to reach this file. That SHA pins the gate scripts: one
+        # pin, held by the caller, selects both the workflow and its scripts.
+        # (`github.job_workflow_sha` is an OIDC claim, not a context property,
+        # and reading the token would need id-token: write from every caller.)
+        run: |
+          set -euo pipefail
+          command -v yq >/dev/null || { echo '::error::yq is unavailable; source pin NOT VERIFIED'; exit 2; }
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/"* ]] || exit 2
+          path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
+          case "$path" in .github/workflows/*.yml|.github/workflows/*.yaml) ;; *) exit 2 ;; esac
+          [[ "${path#.github/workflows/}" != */* && -f "$path" && ! -L "$path" ]] \
+            || { echo '::error::caller workflow is absent or is not a direct workflow file; source pin NOT VERIFIED'; exit 2; }
+          candidates=$(yq -r '.jobs[] | select(has("uses")) | .uses' "$path") \
+            || { echo '::error::caller workflow cannot be parsed; source pin NOT VERIFIED'; exit 2; }
+          refs=''
+          while IFS= read -r ref; do
+            # Other reusable workflows do not select this gate's source.
+            [[ "$ref" == */.github/workflows/"$SUITE_WORKFLOW"* ]] || continue
+            case "$ref" in
+              hyperpolymath/cicd-suite/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd-and-workflows/.github/workflows/"$SUITE_WORKFLOW"@*)
+                repository=${ref%%/.github/workflows/*}
+                sha=${ref##*@}
+                [[ "$sha" =~ ^[0-9a-f]{40}$ && "$ref" == "$repository/.github/workflows/$SUITE_WORKFLOW@$sha" ]] \
+                  || { echo '::error::suite caller must pin one complete 40-hex SHA; source pin NOT VERIFIED'; exit 2; }
+                refs+="$repository@$sha"$'\n'
+                ;;
+              *) echo '::error::unexpected suite source reference; source pin NOT VERIFIED'; exit 2 ;;
+            esac
+          done <<< "$candidates"
+          refs=$(printf '%s' "$refs" | sort -u)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          [[ "$n" -eq 1 ]] \
+            || { echo "::error::$path selects $n distinct suite repository/commit pairs; exactly one is required. NO CHECK WAS PERFORMED."; exit 2; }
+          repository=${refs%@*}
+          sha=${refs##*@}
+          printf 'repository=%s\nsha=%s\n' "$repository" "$sha" >> "$GITHUB_OUTPUT"
+          echo "Suite source pinned at $repository@$sha by $path"
+      - name: Check out the selected suite at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.suite.outputs.repository }}
+          ref: ${{ steps.suite.outputs.sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Refuse gate scripts from an unverified cicd-suite commit
+        env:
+          EXPECTED: ${{ steps.suite.outputs.sha }}
+          EXPECTED_REPOSITORY: ${{ steps.suite.outputs.repository }}
+        run: bash .cicd-suite/scripts/verify-suite-checkout.sh
+      - name: Install Java 21 (Ubuntu 24.04 archive; the pin is asserted by the gate)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends openjdk-21-jre-headless
+          "$JAVA" -version
+      - name: Planted controls, then the caller's TLA+ configs
+        env:
+          TLA_GATE_PHASE: prove
+          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+          SPEC_DIR: ${{ inputs.spec_dir }}
+          SPEC: ${{ inputs.spec }}
+          MUST_PASS: ${{ inputs.must_pass }}
+          MUST_REFUTE: ${{ inputs.must_refute }}
+          WORKERS: ${{ inputs.workers }}
+        run: bash .cicd-suite/actions/tla-check/check.sh
+
+  verdict:
+    name: TLA+ verdict
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    needs: [detect, prove]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+    env:
+      UNITS: ${{ needs.detect.outputs.units }}
+      R_DETECT: ${{ needs.detect.result }}
+      R_PROVE: ${{ needs.prove.result }}
+    steps:
+      - name: Adjudicate
+        run: |
+          set -euo pipefail
+          fail=0
+          [ "$R_DETECT" = success ] || { echo "::error::detect: $R_DETECT"; fail=1; }
+          case "$R_PROVE" in
+            success) echo "  ok       prove ($UNITS unit(s))" ;;
+            failure|cancelled) echo "::error::prove: $R_PROVE"; fail=1 ;;
+            skipped)
+              if [ "${UNITS:-0}" != 0 ] && [ -n "${UNITS:-}" ]; then
+                echo "::error::prove was SKIPPED although $UNITS unit(s) exist — VOID, not green."; fail=1
+              elif [ "$R_DETECT" = success ]; then
+                echo "::notice::No TLA+ configs in this tree: nothing was checked. This verdict is silent, not green-as-assurance."
+              else
+                echo "::error::prove was skipped because detect did not succeed — NO CHECK WAS PERFORMED."; fail=1
+              fi ;;
+            *) echo "::error::prove: unknown result '$R_PROVE'"; fail=1 ;;
+          esac
+          [ "$fail" -eq 0 ] || { echo "::error::TLA+ verdict: RED."; exit 1; }
+          echo "TLA+ verdict: GREEN."
