@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: MPL-2.0
+name: 'Agda Kernel Gate'
+description: >-
+  Agda proof gate: detect counts the .agda sources and refuses sources the
+  gate does not cover; prove asserts the pinned Agda 2.6.3 (package and
+  SHA-256), runs planted controls (a true module accepted, a false one refused
+  on its marked line, a postulate refused under --safe), then checks every
+  module the MANIFEST lists under --safe --without-K --cubical-compatible
+  --no-libraries --ignore-interfaces --double-check, fails on any .agda file
+  the MANIFEST does not list, and requires every reject fixture to be refused
+  with a type error on its marked line. The reusable workflow
+  .github/workflows/agda-gate.yml installs Agda and runs both phases.
+inputs:
+  phase:
+    description: 'detect | prove'
+    required: true
+  working_directory:
+    description: 'Tree root'
+    required: false
+    default: '.'
+  manifest:
+    description: 'MANIFEST listing the modules to check: <source-root>|<module>|gated|quarantine|<note>'
+    required: false
+    default: 'verification/proofs/agda/MANIFEST'
+  proof_dir:
+    description: 'Directory scanned for .agda files the MANIFEST does not list'
+    required: false
+    default: 'verification/proofs/agda'
+  include_dirs:
+    description: 'Whitespace-separated extra include directories (agda -i)'
+    required: false
+    default: 'verification/proofs/agda'
+  siblings_script:
+    description: 'Caller-supplied script that fetches pinned siblings; empty for none'
+    required: false
+    default: 'scripts/fetch-siblings.sh'
+  siblings_include_glob:
+    description: 'Glob of sibling source directories put on the include path'
+    required: false
+    default: '_build/dependencies/*/src'
+  reject_dir:
+    description: 'Directory of fixtures that must each be refused on the line marked "-- refused here"; empty for none'
+    required: false
+    default: 'tests/reject'
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Agda gate phase
+      shell: bash
+      env:
+        AGDA_GATE_PHASE: ${{ inputs.phase }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        MANIFEST: ${{ inputs.manifest }}
+        PROOF_DIR: ${{ inputs.proof_dir }}
+        INCLUDE_DIRS: ${{ inputs.include_dirs }}
+        SIBLINGS_SCRIPT: ${{ inputs.siblings_script }}
+        SIBLINGS_INCLUDE_GLOB: ${{ inputs.siblings_include_glob }}
+        REJECT_DIR: ${{ inputs.reject_dir }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh"

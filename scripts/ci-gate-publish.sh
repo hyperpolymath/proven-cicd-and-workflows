@@ -7,6 +7,8 @@
 # Environment (every value arrives through env:, never interpolated into a script):
 #   REPO HEAD_SHA CONTEXT TIMEOUT_MINUTES GATE_NAME   what and where to publish
 #   SUITE            directory holding scripts/, profiles/ fetched from the suite at one commit
+#   CI_GATE_STATUS_LIB  the status writer written by ci-gate.yml ("Write the status writer"); every
+#                    status goes through its post_status (de-duplicated, retried when rate limited)
 #   WORK             scratch directory (default: a fresh mktemp -d)
 #   SERVER_URL RUN_ID WF_REPO WF_SHA                    for target_url and the step summary
 #   CI_GATE_NOW      test hook: epoch seconds instead of `date +%s`
@@ -38,7 +40,9 @@
 #  f. Every write (post(), die() included) first reads the combined status of the commit and skips
 #     a POST that would repeat the standing status for this context (same state, same description
 #     after the clip): GitHub keeps at most 1000 statuses per SHA and context. A failed or malformed
-#     read writes anyway. A head whose verdict keeps changing can still reach the cap.
+#     read writes anyway. A head whose verdict keeps changing can still reach the cap. A rate-limited
+#     POST is retried (the writer's rules); exhausted, the job fails with "rate limited, no verdict"
+#     and die() writes nothing more, since that write would meet the same limit.
 #  g. Fail closed: verdict exit code and state must agree; any API or input error posts a
 #     failure status and exits 1; descriptions are at most 140 characters.
 set -uo pipefail
@@ -46,7 +50,7 @@ MAX_ROUNDS=5
 WAIT_SECONDS=${WAIT_SECONDS:-0}; POLL_SECONDS=${POLL_SECONDS:-20}   # pull_request wait; 0 = evaluate once
 SUITE=${SUITE:-}; WORK=${WORK:-}
 SERVER_URL=${SERVER_URL:-https://github.com}; RUN_ID=${RUN_ID:-0}; WF_REPO=${WF_REPO:-}; WF_SHA=${WF_SHA:-}
-for v in REPO HEAD_SHA CONTEXT TIMEOUT_MINUTES GATE_NAME SUITE; do
+for v in REPO HEAD_SHA CONTEXT TIMEOUT_MINUTES GATE_NAME SUITE CI_GATE_STATUS_LIB; do
   [[ -n ${!v:-} ]] || { echo "::error::ci-gate-publish: $v is not set; NO VERDICT WAS PRODUCED"; exit 1; }
 done
 [[ $HEAD_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::ci-gate-publish: HEAD_SHA is not a 40-hex commit"; exit 1; }
@@ -55,39 +59,32 @@ done
 [[ $REPO =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && ${REPO#*/} != . && ${REPO#*/} != .. ]] \
   || { echo "::error::ci-gate-publish: REPO is not an owner/name coordinate; NO VERDICT WAS PRODUCED"; exit 1; }
 mkdir -p "$WORK" || exit 1
+# shellcheck source=/dev/null
+source "$CI_GATE_STATUS_LIB" && declare -F post_status > /dev/null \
+  || { echo "::error::ci-gate-publish: the status writer $CI_GATE_STATUS_LIB is unreadable; NO VERDICT WAS PRODUCED"; exit 1; }
 PROFILE="$SUITE/profiles/ci-gate/$REPO.json"
 published=0
 # Invocation-local cache: never reuse data left by a previous publisher or sweep head.
 declare -A completed_keys=() completed_jobs=()
 poll_cost=10
 
-clip() { jq -rn --arg d "$1" 'if ($d | length) > 140 then $d[0:139] + "…" else $d end'; }  # by characters, whatever the locale
+# By characters, whatever the locale. A character outside the BMP (an emoji such as a red circle in
+# a job or workflow name) becomes '?': GitHub's statuses API answers HTTP 422 "Description doesn't
+# accept 4-byte Unicode", which would make the gate publish no verdict. It is one character for one,
+# so the 140-character count is unchanged.
+clip() { local text=$1; jq -rn --arg d "$text" '($d | explode | map(if . > 65535 then 63 else . end) | implode) | if length > 140 then .[0:139] + "…" else . end'; }
 
-current_matches() { # <state> <clipped description> -> prints "same" only if the combined status holds exactly this for $CONTEXT
-  local r
-  r=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status?per_page=100" --jq '.statuses[]' 2> /dev/null \
-    | jq -rs --arg c "$CONTEXT" --arg s "$1" --arg d "$2" \
-      'if type == "array" and any(.[]; type == "object" and .context == $c and .state == $s and (.description // "") == $d) then "same" else "differs" end' 2> /dev/null) || return 0
-  printf '%s\n' "$r"
-}
-
-post() { # <state> <description> — one commit status; returns gh's exit code
+post() { # <state> <description> — one commit status through the writer; 0 written or skipped
   # GitHub keeps at most 1000 statuses per SHA and context, after which every write fails (die()
-  # included). A write that would repeat the status already standing for this context (same state,
-  # same description; target_url is not compared) is skipped and counts as published. A failed or
-  # malformed read of the current status falls toward writing.
-  local desc; desc=$(clip "$2")
-  if [[ $(current_matches "$1" "$desc") == same ]]; then
-    echo "ci-gate: status already $1 with this description on $HEAD_SHA; write skipped (1000-status cap)"
-    return 0
-  fi
-  gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
-    -f state="$1" -f context="$CONTEXT" -f description="$desc" \
-    -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null
+  # included). The writer skips a write that would repeat the status already standing for this
+  # context (same state, same description; target_url is not compared), which counts as published;
+  # a failed or malformed read of the current status falls toward writing.
+  post_status "$1" "$(clip "$2")"
 }
 
 die() { # <description> — no verdict could be produced: failure status, red job
   echo "::error::ci-gate: $1; NO VERDICT WAS PRODUCED"
+  ((CI_GATE_RATE_LIMITED == 0)) || exit 1
   post failure "ci-gate: $1" && finish_output
   exit 1
 }

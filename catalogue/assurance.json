@@ -168,6 +168,42 @@
       "consumer_receipts": []
     },
     {
+      "id": "agda",
+      "test_paths": [
+        "actions/agda-check/test.sh"
+      ],
+      "coverage": "controls-linked",
+      "evidence_note": "test.sh runs the real pinned Agda 2.6.3 against planted defects and kills mutants of the planted controls. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Provenance: this row is attributed to commit ded4561153520157b0f42cd86a596c69fa101a26, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Language Gates Self-Test run 43949978719, on 7593837, ran all four test.sh suites with the real tools and they passed; the current head is pending its own CI. No consumer receipt.",
+      "consumer_receipts": []
+    },
+    {
+      "id": "rocq",
+      "test_paths": [
+        "actions/rocq-check/test.sh"
+      ],
+      "coverage": "controls-linked",
+      "evidence_note": "test.sh runs the real pinned coqc and coqchk 8.18.0 against planted defects and forgeries (a Notation that forges coqc output, disabled guard, universe and positivity checking, an Admitted lemma nobody prints, a sealed module, a functor body) and kills mutants of the judgement. Run against hvn-dehallucinator main 94b0f4e with default inputs and its 26 required names, locally: passes, module-wide. Provenance: this row is attributed to commit dd4db8f7c7a4af015ffde65ceff5a4eb96372fb6, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Language Gates Self-Test run 43949978719, on 7593837, ran all four test.sh suites with the real tools and they passed; the current head is pending its own CI. No consumer receipt.",
+      "consumer_receipts": []
+    },
+    {
+      "id": "lean-axioms",
+      "test_paths": [
+        "actions/lean-axioms-check/test.sh"
+      ],
+      "coverage": "controls-linked",
+      "evidence_note": "test.sh runs the real pinned Lean 4.15.0 and the gate checker against planted defects and forgeries (#eval, elab_rules, debug.skipKernelTC, an axiom used by an unprinted theorem, fake and hand-written injEq lemmas) and kills mutants of the judgement. Run against hvn-dehallucinator main 94b0f4e with its 26 required names and no allowed axioms, locally: passes; 14 generated injEq theorems (propext) are verified identical to Lean's own and excused as roots. Provenance: this row is attributed to commit dd4db8f7c7a4af015ffde65ceff5a4eb96372fb6, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Language Gates Self-Test run 43949978719, on 7593837, ran all four test.sh suites with the real tools and they passed; the current head is pending its own CI. No consumer receipt.",
+      "consumer_receipts": []
+    },
+    {
+      "id": "tla",
+      "test_paths": [
+        "actions/tla-check/test.sh"
+      ],
+      "coverage": "controls-linked",
+      "evidence_note": "test.sh runs the real pinned TLC v1.7.4 on Java 21 against planted defects, an Assert forgery, a PrintT forgery and an initial-state refutation, and kills mutants of the judgement. Run against hvn-dehallucinator main 94b0f4e with default inputs, locally. Provenance: this row is attributed to commit 5f20cce4fbab15bd9e07f815369663c483e132fd, which holds the test script linked here; the matrix-level inspected_source predates these four scripts. Language Gates Self-Test run 43949978719, on 7593837, ran all four test.sh suites with the real tools and they passed; the current head is pending its own CI. No consumer receipt.",
+      "consumer_receipts": []
+    },
+    {
       "id": "proof-runner",
       "test_paths": [
         "tests/pass-on-absence.sh"

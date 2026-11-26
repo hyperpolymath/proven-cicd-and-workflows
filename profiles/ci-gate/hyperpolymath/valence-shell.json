@@ -1,0 +1,1 @@
+{"checks":[{"job":"docs/ECHO-TYPES-OCHRANCE-BRIDGE forbidden-phrases","workflow":".github/workflows/bridge-forbidden-phrases.yml"},{"job":"Empty-linter (invisible characters)","workflow":".github/workflows/dogfood-gate.yml"}],"repository":"hyperpolymath/valence-shell","schema_version":2}

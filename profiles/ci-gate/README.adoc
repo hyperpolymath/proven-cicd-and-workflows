@@ -30,6 +30,18 @@ triggers, `if:` conditions and `continue-on-error`.
 |`hyperpolymath/mathesis` |`2100dfa171a73c821de843fee5f044849f12ff3f` (PR 96) |`261e6dc2e9b683abb48278d518d463def773fcb6`
 |`hyperpolymath/rsr-template-repo` |`b7ad304a4433f318e478c48d09704d5f753653d8` (PR 431) |`0044ad92f9e6ef258b89f3e9b5ee7b748a4db2d2` (103 runs, two pages read)
 |`hyperpolymath/proven-cicd-and-workflows` |`eaf59c629a80efd30c59e44b09374ecbef55615a` (PR 139) |`9eb0bbf9bd80b7964ce5b9957e75821b3cd4a55b`
+|`hyperpolymath/tsunami-breaker` (read 2026-11-19, authenticated API, workflow runs) |`705dfeeb2425522847276d7771c0c40284636e4e` (PR 13) |`957ea0e4720719652c3cc4bf71af751a807aa65d`
+|`hyperpolymath/ijson-jcs` (2026-11-23, see "Onboarded 2026-11-23") |`bdb743e32b2c6cb2b6b2b217f8ab9d793e86495e` (PR 36) |`1735d68768920f6f59667c9ba2c84769d8d45336`
+|`hyperpolymath/echo-types` |`de132588e6930c286508dda508117a413ec45ae4` (PR 384; PR 383 `ffe54b73` agrees) |`140002f1079a2527301735a3621b169b75df4622`
+|`hyperpolymath/choreographic-types` |`a5b49985b32ca494d314700af79242b9aaf61753` (PR 49; PR 48 `e53cd4ff` cross-checked) |`a7c45138ee9ad59d278d26140ae22a96009593f3`
+|`hyperpolymath/trope-checker` |`127e77d333fb17ed3fabddc3426ac9fb43386291` (PR 131; PR 130 `90a1a22c`) |`0dceab68459d46b2cda22137c261023223c30e9a`
+|`hyperpolymath/hermeneia` |`e8284a87edbd2cd239f505fc2f02c43ce4e405c0` (PR 87, merged; newer PR heads are bot PRs whose every workflow ended in `startup_failure`) |`a36c866ab9fa6ab2866cc7adff26b80d0d9e48b1`
+|`hyperpolymath/marches` |`48d2b677130c3e077529c27eca44d5bc1343542e` (PR 65; PR 63 `e3cf2ad`) |`08f6a79b6a890acdb80be37e4a92c8f8819cc832`
+|`hyperpolymath/palimpsest-license` |`5b1a87525f0959d3788ff265a4f820201465495e` (PR 196) |`81a231564ba3cb400b4da44c46907c5149f9e92a`
+|`hyperpolymath/valence-shell` |`7f23ceabe56370fe1b781b9b8f0a76cf574bee01` (PR 240) |`fa4d7832b4c498bcbe8cfbc90b8cbc643ba85fbb`
+|`hyperpolymath/echidnabot` |`0d6f6872572f6963e70c8e236d1d3b8c27505032` (PR 211; PR 214 `146b4715` agrees) |`7a5b8c48ffef8236b06b7174d855d88124b7f380`
+|`hyperpolymath/panic-attack` |`ef1842e951b3b3df72ca8680fc3ca0b8579ac59d` (PR 306) |`7b9f145c2194eb0d46ace82a5a4518db5db38a5e`
+|`catachresis-colloquium/enaction-engine` |`ca71493265d2b8ca067271f67e2706e8a20bd3c1` (PR 139, merged) |`8bf43d18159cd4b612ebe0804113161d4cf5f4cf`
 |===
 
 Each name below was migrated to one entry per producing workflow, using the `path` of the workflow runs read at the two commits above (the producers were identical at both). Included in all three: `estate-rules`, `Estate Governance Policy`, `Central Estate CI/CD Audit`,
@@ -43,6 +55,7 @@ Additionally:
 * resource-algebra: `Core proofs and expected rejections`, `Rocq recheck leg`, `Lean recheck leg` (`proofs.yml`), `Rust standalone tools and workspace gate`.
 * mathesis: `Agda, Rocq and Lean in the pinned Guix` (`agda-proof-policy.yml`). It was red on the `main` commit read, so the gate will correctly refuse pull requests until `main` is green.
 * rsr-template-repo: `Rust standalone tools and workspace gate`, `scan / rust-secrets`, `mint-gates`.
+* tsunami-breaker: `Rust standalone tools and workspace gate`, `scan / rust-secrets`. `mint-gates` (`quality.yml`) is NOT listed: that workflow ended as `startup_failure` on the pull request head read, because it calls an action that the organisation policy refuses (fixed in the template by rsr-template-repo#456, not yet taken by tsunami-breaker). For this repository the read was of workflow runs and their conclusions; the job names were taken from the workflow files at the pull request head.
 
 == Renamed in-workflow aggregators
 
@@ -63,6 +76,28 @@ Each is a renamed in-workflow aggregator and exists only once the consumer renam
 * Ambiguous names: `check` (two jobs, `guix-policy.yml` and `security-policy.yml`), `lint`, `docs`, `build`, `publish`, `triage`, `gate`, `deploy`.
 * Conditional: `Workflow Security Linter` / `lint-workflows` (workflow-path filter), `analyze (actions, none)` (CodeQL matrix names can change; code scanning reports the same results), `Analyze (...)` in rsr-template-repo, `Dependabot`, `canary`, `validate` (scheduled or dispatch only).
 * A job called `CI/gate` was seen on resource-algebra and mathesis (`main`). It is never listed: the validator forbids it. Its renamed successors are listed above.
+
+== Onboarded 2026-11-23
+
+Eleven repositories whose ruleset required `CI/gate` with no producer, so every pull request (and in enaction-engine every tag) was blocked. In each, the gap was confirmed before anything was added: the ruleset requires `CI/gate`, no workflow mentions it, and no status of that name exists on `main` or a recent pull request head. The lists were read from the authenticated API (`actions/runs?head_sha=`, then each run's `jobs?filter=latest`, the newest run per workflow and event) at the two commits in the table above, under the rule at the top of this section, and each was checked with `validate-ci-gate-profile.sh`. A job name produced by a reusable workflow is the check-run name `<caller job> / <called job>`, listed under the CALLER workflow file.
+
+The exclusions in "Excluded, and why" apply unchanged. The CodeQL matrix jobs (`analyze (...)`, `CodeQL Analysis (...)`), the advisory dogfood validators (`Groove manifest check`, `Validate DEED manifests`, `Validate A2ML manifests`, `Validate K9 contracts`, `Validate eclexiaiser manifest`, `Dogfooding compliance summary`) and `SonarQube` are left out of every profile here, even where they passed. `check` is listed where it appears: schema v2 pins it to its workflow, so the name is no longer ambiguous. Beyond those:
+
+* Never listed because they cannot pass today. A workflow that ends in `startup_failure`, or is red, on the `main` commit read cannot be required without failing every pull request:
+** ijson-jcs: `rust-ci.yml` (push run on `main` ended in `startup_failure`, run 42891788979).
+** echidnabot: `rust-ci.yml`, `codeql.yml`, `governance.yml`, `hypatia-scan.yml` and `mirror.yml` (`startup_failure` on `main`); `cargo-audit.yml` (red on `main`).
+** choreographic-types: `main-estate-audit.yml` (failure on `main` with no jobs, run 43941561150); Scorecard (`startup_failure`).
+** trope-checker: `quality.yml` (code-quality red on `main` and on both pull requests), `hypatia-scan.yml` (red on `main`), `trope-check.yml` and `proofs.yml` (push trigger path-filtered, so they did not run on `main`), `fork-governance.yml` (pull-request only, red on both heads). `quality` and `trope-check` are tiered "Gate" in that repository's `ci/CI-CRITICALITY.toml`, so the owner may add them once `main` runs them green.
+** palimpsest-license: `governance.yml`, `secret-scanner.yml`, `hypatia-scan.yml`, `mirror.yml` (failing on `main`).
+** valence-shell: `governance.yml`, `secret-scanner.yml`, `rust-cli`, `validation`, `lean-verification`, `echidna-validation`, `compilation_tests`, `mirror`, `casket-pages` (`startup_failure` on `main` and on every recent pull request head). This leaves the gate THIN: two checks. Its real build, test and proof workflows are not in it until they start.
+** marches: the `actions-lock.yml` relock (path-filtered, scheduled, red on `main`).
+** panic-attack: `squabble-gate.yml` (scheduled, red on `main`).
+** enaction-engine: `oikosbot.yml`, `hypatia-scan.yml`, `mirror.yml`, `governance.yml` (`startup_failure`); `sonarcloud-queue-gate.yml` (red on the pull request head); and `lint-workflows`, because the gate caller carries the template's `MPL-2.0` header and that repository's linter requires `AGPL-3.0-or-later` on workflows. That is a licence question for the owner. Add `lint-workflows` back once it is settled and green on `main`.
+* Can fail for a reason no pull request caused: panic-attack `Cargo Audit` reads the advisory database. It passed on `main` on 2026-11-16 and failed on a pull request that only added a workflow file. Same reasoning as `Canon lockstep`.
+* Pull-request only, path-filtered, scheduled or plumbing, as in the general list: e.g. `e2e.yml` (path filters), `cflite_pr` (pull request only), `Detect Cargo.toml` and `detect-relevant-changes` (plumbing; panic-attack's aggregator `chapel-ci-gate` is listed), `governance / Debt ratchet` and `Exemption ratchet` (skipped on the `main` push), `governance / Live Actions policy (credentialed advisory)`.
+* `estate-rules` (trope-checker) failed on PR 131 and `estate-audit / manifests` failed on PR 130 (a runner that could not install `just`). Both passed on `main` and on the other head and are listed: those were real pull-request failures, not checks that cannot pass.
+
+Seen across these repositories and NOT a gate property: pull requests opened by bots (ijson-jcs 37 and 38, hermeneia 89 and 90, marches 66, panic-attack 308) end with every workflow in `startup_failure`. The gate fails such a pull request closed, which is correct. The cause is unverified (an Actions policy or a missing `actions.lock` entry are the candidates) and is owner follow-up.
 
 == The suite's own profile (`hyperpolymath/proven-cicd-and-workflows.json`)
 

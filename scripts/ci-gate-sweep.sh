@@ -21,7 +21,8 @@
 #     prints a ::warning:: naming how many were skipped. The default branch head counts as the
 #     most recently updated. It never skips silently.
 #  3. Runs the publisher for each SHA, with no early in_progress pending. A failure on one SHA
-#     does not stop the others.
+#     does not stop the others, except "rate limited, no verdict": the rest would meet the same
+#     limit, so they are listed as not evaluated and the next sweep takes them.
 #  4. Writes a table (SHA, source, state, description) to the step summary and exits non-zero if
 #     any SHA ended in failure or error, or if a listing could not be read.
 #
@@ -115,6 +116,14 @@ while IFS=$'\t' read -r _ sha src; do
     state=error; desc='no verdict line in the publisher output'; errors=$((errors + 1))
   fi
   printf '%s\t%s\t%s\t%s\n' "$sha" "$src" "$state" "$desc" >> "$rows"
+  if grep -qF 'rate limited, no verdict' "$dir/out.txt"; then
+    left=$(($(grep -c . "$WORK/todo.tsv") - n))
+    if ((left > 0)); then
+      echo "::warning::ci-gate-sweep: rate limited; the $left remaining head SHA(s) were NOT evaluated by this sweep"
+      printf '%s\t%s\tskipped\t%s not evaluated: rate limited\n' '-' 'rate limited' "$left" >> "$rows"
+    fi
+    break
+  fi
 done < "$WORK/todo.tsv"
 
 # 4. the table, and the exit code
