@@ -208,6 +208,14 @@ bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" quoted-esac.sh >"$tmp/quoted-
 want=$'SF:quoted-esac.sh\nDA:2,0\nDA:4,0\nDA:6,0\nDA:8,0\nLF:4\nLH:0\nend_of_record'
 check "tracer: quoted esac and escaped separators leave later patterns as structure" \
   "tracer lcov: $(tr '\n' ' ' <"$tmp/quoted-esac.lcov")" test "$(cat "$tmp/quoted-esac.lcov")" = "$want"
+# Quoted text that reads like a case opener does not open a case, so the
+# unexecuted subshell on the next line stays an uncovered statement.
+printf '%s\n' '#!/usr/bin/env bash' "exit 0; printf '%s\\n' '; case x in ' in" '(echo)' >"$tmp/repo/quoted-case.sh"
+bash "$tracer" run "$tmp/qcase-trace" bash "$tmp/repo/quoted-case.sh" >/dev/null
+bash "$tracer" lcov "$tmp/repo" "$tmp/qcase-trace" quoted-case.sh >"$tmp/quoted-case.lcov"
+want=$'SF:quoted-case.sh\nDA:2,1\nDA:3,0\nLF:2\nLH:1\nend_of_record'
+check "tracer: a quoted case opener leaves the next line a statement" \
+  "tracer lcov: $(tr '\n' ' ' <"$tmp/quoted-case.lcov")" test "$(cat "$tmp/quoted-case.lcov")" = "$want"
 # A here-document body line that reads FILE, a tab, and nothing else is source
 # text, not a file boundary, so the unexecuted line after exit stays uncovered.
 printf '%s\n' '#!/usr/bin/env bash' 'cat <<EOF' $'FILE\t' 'EOF' 'exit 0' 'echo never' >"$tmp/repo/marker.sh"

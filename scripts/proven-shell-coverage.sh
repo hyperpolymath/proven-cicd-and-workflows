@@ -194,15 +194,16 @@ HOOK
         # its first arm (case $1 in x) echo x ;;); a pattern then starts on
         # the next line only after in, ;;, ;& or ;;&.
         if (t != "") {
-          opener = (t ~ /(^|[;&|({][ \t]*|(^|[ \t;])(if|then|do|else|elif|while|until|!)[ \t]+)case[ \t].*[ \t]in([ \t].*)?$/)
+          # Mask quoted and escaped characters without joining adjacent
+          # tokens, so quoted text never opens or closes a case.
+          syntax = ""
+          for (i = 1; i <= length(code); i++)
+            syntax = syntax (substr(plain, i, 1) == "1" ? substr(code, i, 1) : "Q")
+          gsub(/^[ \t]+|[ \t]+$/, "", syntax)
+          opener = (syntax ~ /(^|[;&|({][ \t]*|(^|[ \t;])(if|then|do|else|elif|while|until|!)[ \t]+)case[ \t].*[ \t]in([ \t].*)?$/)
           ncase += opener
           pat = 0
           if (ncase) {
-            # Mask quoted and escaped characters without joining adjacent tokens.
-            syntax = ""
-            for (i = 1; i <= length(code); i++)
-              syntax = syntax (substr(plain, i, 1) == "1" ? substr(code, i, 1) : "Q")
-            gsub(/^[ \t]+|[ \t]+$/, "", syntax)
             if (syntax ~ /(^|[;&|][ \t]*)esac([ \t;&|<>)].*)?$/) ncase--
             pat = (ncase && (opener && syntax ~ /[ \t]in$/ || syntax ~ /(;;|;&|;;&)$/))
           }
