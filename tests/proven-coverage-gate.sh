@@ -177,6 +177,43 @@ printf '%s\n%s' '#!/usr/bin/env bash' 'echo a' >"$tmp/repo/nonl.sh"
 bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" nonl.sh heredoc.sh >"$tmp/nonl.lcov"
 check "tracer: a file without a final newline keeps the next record" "tracer lcov: $(tr '\n' ' ' <"$tmp/nonl.lcov")" \
   grep -qx 'SF:heredoc.sh' "$tmp/nonl.lcov"
+# A case opener may carry its first arm; the next pattern is still structure.
+cat >"$tmp/repo/arm-case.sh" <<'SH'
+#!/usr/bin/env bash
+for a in x y; do
+  case "$a" in x) echo x ;;
+    y)
+      echo y ;;
+  esac
+done
+case z in z) echo z ;; esac
+SH
+bash "$tracer" run "$tmp/arm-trace" bash "$tmp/repo/arm-case.sh" >/dev/null
+bash "$tracer" lcov "$tmp/repo" "$tmp/arm-trace" arm-case.sh >"$tmp/arm-case.lcov"
+want=$'SF:arm-case.sh\nDA:2,1\nDA:3,1\nDA:5,1\nDA:8,1\nLF:4\nLH:4\nend_of_record'
+check "tracer: a case opener with an inline first arm leaves later patterns as structure" \
+  "tracer lcov: $(tr '\n' ' ' <"$tmp/arm-case.lcov")" test "$(cat "$tmp/arm-case.lcov")" = "$want"
+# A here-document body line that reads FILE, a tab, and nothing else is source
+# text, not a file boundary, so the unexecuted line after exit stays uncovered.
+printf '%s\n' '#!/usr/bin/env bash' 'cat <<EOF' $'FILE\t' 'EOF' 'exit 0' 'echo never' >"$tmp/repo/marker.sh"
+bash "$tracer" run "$tmp/marker-trace" bash "$tmp/repo/marker.sh" >/dev/null
+bash "$tracer" lcov "$tmp/repo" "$tmp/marker-trace" marker.sh >"$tmp/marker.lcov"
+want=$'SF:marker.sh\nDA:2,1\nDA:5,1\nDA:6,0\nLF:3\nLH:2\nend_of_record'
+check "tracer: source text cannot pass for a file boundary" \
+  "tracer lcov: $(tr '\n' ' ' <"$tmp/marker.lcov")" test "$(cat "$tmp/marker.lcov")" = "$want"
+# A traced nested/same.sh credits only itself, never a requested same.sh;
+# an unmodified copy run from another directory still credits same.sh.
+mkdir -p "$tmp/repo/nested" "$tmp/copy"
+printf '%s\n' '#!/usr/bin/env bash' 'echo same' | tee "$tmp/repo/same.sh" "$tmp/copy/same.sh" >"$tmp/repo/nested/same.sh"
+bash "$tracer" run "$tmp/nested-trace" bash "$tmp/repo/nested/same.sh" >/dev/null
+bash "$tracer" lcov "$tmp/repo" "$tmp/nested-trace" same.sh nested/same.sh >"$tmp/nested.lcov"
+want=$'SF:same.sh\nDA:2,0\nLF:1\nLH:0\nend_of_record\nSF:nested/same.sh\nDA:2,1\nLF:1\nLH:1\nend_of_record'
+check "tracer: a nested trace path is not credited to a shorter requested file" \
+  "tracer lcov: $(tr '\n' ' ' <"$tmp/nested.lcov")" test "$(cat "$tmp/nested.lcov")" = "$want"
+bash "$tracer" run "$tmp/copy-trace" bash "$tmp/copy/same.sh" >/dev/null
+bash "$tracer" lcov "$tmp/repo" "$tmp/copy-trace" same.sh nested/same.sh >"$tmp/copy.lcov"
+check "tracer: an unmodified copy elsewhere still credits the original" \
+  "tracer lcov: $(tr '\n' ' ' <"$tmp/copy.lcov")" grep -qzP 'SF:same.sh\nDA:2,1\n' "$tmp/copy.lcov"
 
 sha() { sed -n "$2p" "$tmp/repo/$1" | sha256sum | cut -c1-12; }
 lcov=$tmp/probe.lcov

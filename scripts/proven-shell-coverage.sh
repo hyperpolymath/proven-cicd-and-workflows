@@ -26,7 +26,9 @@
 #   - A process started with env -i, by sh, or by bash -c loses the hook and
 #     reports nothing; its lines show as uncovered, never as falsely covered.
 #   - Trace paths are matched to FILE by suffix, so an unmodified copy of a
-#     script run from a temporary directory counts for the original. A test
+#     script run from a temporary directory counts for the original. A trace
+#     path is credited only to the longest FILE it matches, so a traced
+#     nested/a.sh never counts for a.sh. A test
 #     that runs a modified copy (sed on the script) must use a different file
 #     name, or its hits are credited to the original.
 set -euo pipefail
@@ -55,11 +57,14 @@ HOOK
     [[ -d $root && -f $trace ]] || usage
     for file in "$@"; do
       [[ -f $root/$file ]] || { echo "proven-shell-coverage: no file $file" >&2; exit 2; }
-      printf 'FILE\t%s\n' "$file"
-      cat -- "$root/$file"
-      # A file without a final newline would glue the next FILE marker to its last line.
+      # Records: F then a file name starts a file; > then text is a source
+      # line, so no source text (a here-document body included) can pass
+      # for a file boundary.
+      printf 'F%s\n' "$file"
+      sed 's/^/>/' -- "$root/$file"
+      # A file without a final newline would glue the next marker to its last line.
       [[ ! -s $root/$file || -z $(tail -c 1 -- "$root/$file") ]] || echo
-    done | awk -v trace="$trace" '
+    done | PROVEN_COV_FILES=$(printf '%s\x1e' "$@") awk -v trace="$trace" '
       BEGIN {
         # hit[path suffix, line]: every (source, line) bash reported.
         while ((getline row < trace) > 0) {
@@ -68,6 +73,19 @@ HOOK
           src = f[2]; sub(/^(\.\/)+/, "", src)
           if (!(src in seen)) { seen[src] = 1; srcs[++nsrc] = src }
           hit[src, f[3]] = 1
+        }
+        # owner[src]: the requested file a trace path is credited to, the
+        # longest one that equals it or ends it after a /. A traced
+        # nested/a.sh never credits a.sh; a copy in a temporary directory
+        # still credits the original.
+        nreq = split(ENVIRON["PROVEN_COV_FILES"], req, /\x1e/)
+        for (s = 1; s <= nsrc; s++) {
+          for (r = 1; r <= nreq; r++) {
+            q = req[r]
+            if (q == "" || length(q) <= length(owner[srcs[s]])) continue
+            if (srcs[s] == q || substr(srcs[s], length(srcs[s]) - length(q)) == "/" q)
+              owner[srcs[s]] = q
+          }
         }
       }
       function flush(   i, first, any) {
@@ -118,21 +136,20 @@ HOOK
         if (pat && t ~ /^\(?[ \t]*[^ \t()=|]*[^ \t()=|\\]([ \t]*\|[ \t]*[^ \t()=|]*[^ \t()=|\\])*[ \t]*\)([ \t]*;;)?$/) return 1
         return 0
       }
-      /^FILE\t/ {
+      /^F/ {
         flush()
-        file = substr($0, 6); lineno = 0; ngroups = 0; total = 0; covered = 0
+        file = substr($0, 2); lineno = 0; ngroups = 0; total = 0; covered = 0
         open = 0; sp = 0; nh = 0; hc = 0; cont = 0; ncase = 0; pat = 0
         delete exec
         nmatch = 0
         for (s = 1; s <= nsrc; s++) {
-          if (srcs[s] == file || substr(srcs[s], length(srcs[s]) - length(file)) == "/" file)
-            match_src[++nmatch] = srcs[s]
+          if (owner[srcs[s]] == file) match_src[++nmatch] = srcs[s]
         }
         next
       }
       {
         lineno++
-        line = $0
+        line = substr($0, 2)
         # Pending here-documents (hq[hc..nh]) are read in order; shell
         # scanning resumes after the last one ends.
         if (hc <= nh && nh > 0) {
@@ -173,11 +190,14 @@ HOOK
         # Case context: a pattern may start after case ... in or after ;;, ;&
         # or ;;&, until esac closes the innermost case. case and esac may
         # follow a command boundary (; & | ( {) or a keyword on the same line
-        # (if true; then case x in, x) echo ;; esac).
+        # (if true; then case x in, x) echo ;; esac). The opener may carry
+        # its first arm (case $1 in x) echo x ;;); a pattern then starts on
+        # the next line only after in, ;;, ;& or ;;&.
         if (t != "") {
+          opener = (t ~ /(^|[;&|({][ \t]*|(^|[ \t;])(if|then|do|else|elif|while|until|!)[ \t]+)case[ \t].*[ \t]in([ \t].*)?$/)
+          ncase += opener
           if (ncase && t ~ /(^|[;&|][ \t]*)esac([ \t;&|<>)].*)?$/) ncase--
-          if (t ~ /(^|[;&|({][ \t]*|(^|[ \t;])(if|then|do|else|elif|while|until|!)[ \t]+)case[ \t].*[ \t]in$/) { ncase++; pat = 1 }
-          else pat = (ncase && t ~ /(;;|;&|;;&)$/)
+          pat = (ncase && (opener && t ~ /[ \t]in$/ || t ~ /(;;|;&|;;&)$/))
         }
         # A here-document opens at a plain << that no < precedes (<<< is a
         # here-string), that is not escaped and not inside quotes or
