@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MPL-2.0
+# Manifest for this repository (schema proven/manifest/v1); see docs/PROVEN-ADOPTION.adoc.
+schema = "proven/manifest/v1"
+
+# Shell is the repository's test language: tests/{unit,smoke,build,p2p}.sh are
+# picked up by convention, so no command is declared here.
+
+[languages.ignore.elixir]
+reason = "scripts/coverdata-to-lcov.exs is a single standalone script, not a mix project; it is exercised by tests/proven-coverage-collect.sh"
+
+[languages.ignore.idris2]
+reason = "the Idris2 kernels (*.ipkg) build and run in assurance-kernel.yml and proven-lock-gate, which install the Idris2 toolchain; the umbrella cannot provision idris2 in release 0.1"
+
+[languages.ignore.python]
+reason = "scripts/proven-*.py are stdlib-only CLI tools; they are exercised end to end by tests/proven-umbrella.sh, tests/smoke.sh and tests/p2p.sh (shell)"
+
+# The one Rust crate, actions/creusot-check/source-facts, has no tests yet.
+# PR #162 adds them; until it merges these are visible, expiring waivers, not N/A.
+[categories.unit.rust.waiver]
+reason = "source-facts has no tests on main; hyperpolymath/proven-cicd-and-workflows#162 adds them"
+until = "2026-12-10"
+[categories.smoke.rust.waiver]
+reason = "as unit: #162"
+until = "2026-12-10"
+[categories.p2p.rust.waiver]
+reason = "as unit: #162"
+until = "2026-12-10"

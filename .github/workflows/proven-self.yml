@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MPL-2.0
+# Dogfood (DOG-01): this repository's own CI runs through its own umbrella.
+name: Proven
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  proven:
+    uses: ./.github/workflows/proven.yml
