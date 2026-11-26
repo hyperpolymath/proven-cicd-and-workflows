@@ -142,6 +142,20 @@ def die(msg: str, code: int = 2):
     sys.exit(code)
 
 
+def safe_root(arg: str) -> str:
+    """Resolve the repository argument to an absolute directory."""
+    root = os.path.realpath(arg)
+    if "\0" in arg or not os.path.isdir(root):
+        die(f"{arg} is not a directory")
+    return root
+
+
+def safe_join(root: str, name: str):
+    """Join name under root; None if it would escape root."""
+    path = os.path.realpath(os.path.join(root, name))
+    return path if path.startswith(root + os.sep) else None
+
+
 def list_files(root: str):
     try:
         out = subprocess.run(["git", "-C", root, "ls-files", "-z"],
@@ -165,16 +179,16 @@ def skipped(path: str) -> bool:
 
 def just_recipes(root: str):
     for name in ("justfile", "Justfile", ".justfile"):
-        p = os.path.join(root, name)
-        if os.path.isfile(p):
+        p = safe_join(root, name)
+        if p and os.path.isfile(p):
             with open(p, encoding="utf-8", errors="replace") as fh:
                 return set(re.findall(r"^([A-Za-z0-9_-]+)[^:\n=]*:(?!=)", fh.read(), re.M))
     return set()
 
 
 def load_manifest(root: str, errors: list):
-    p = os.path.join(root, ".proven.toml")
-    if not os.path.isfile(p):
+    p = safe_join(root, ".proven.toml")
+    if not p or not os.path.isfile(p):
         errors.append("manifest-missing: .proven.toml is required (it may be minimal: schema only)")
         return {}
     try:
@@ -188,123 +202,97 @@ def load_manifest(root: str, errors: list):
     return m
 
 
-def main():
-    args = sys.argv[1:]
-    if not args:
-        die("usage: proven-detect.py REPO_DIR [--today YYYY-MM-DD]")
-    root = args[0]
-    today = datetime.date.today()
-    cats = list(KNOWN_CATEGORIES)
-    i = 1
-    while i < len(args):
-        if args[i] == "--today":
-            today = datetime.date.fromisoformat(args[i + 1]); i += 2
-        elif args[i] == "--categories":
-            cats = [c for c in args[i + 1].split(",") if c]; i += 2
-        else:
-            die(f"unknown argument {args[i]}")
-    if not os.path.isdir(root):
-        die(f"{root} is not a directory")
-
-    errors: list[str] = []
-    m = load_manifest(root, errors)
-    files = [f for f in list_files(root) if not skipped(f)]
-
-    langs: dict[str, str] = {}  # language -> directory of first marker
+def marker_languages(files):
+    langs: dict[str, str] = {}
     for f in files:
         base = os.path.basename(f)
-        lang = MARKERS.get(base)
-        if lang is None:
-            _, ext = os.path.splitext(base)
-            lang = SUFFIX_MARKERS.get(ext)
+        lang = MARKERS.get(base) or SUFFIX_MARKERS.get(os.path.splitext(base)[1])
         if lang:
             langs.setdefault(lang, os.path.dirname(f) or ".")
-    ext_langs: set[str] = set()
-    for f in files:
-        _, ext = os.path.splitext(f)
-        lang = SOURCE_EXT.get(ext)
-        if lang:
-            ext_langs.add(lang)
+    return langs
+
+
+def read_ignores(m, errors):
     ignores = {}
     for ext, v in (m.get("languages", {}).get("ignore", {}) or {}).items():
         if not isinstance(v, dict) or not str(v.get("reason", "")).strip():
             errors.append(f"language-ignore-no-reason: [languages.ignore.{ext}] needs a written reason")
         else:
             ignores[ext] = v["reason"]
-    declared = set((m.get("languages", {}).get("declare", []) or []))
+    return ignores
+
+
+def detect_languages(files, m, ignores):
+    langs = marker_languages(files)
+    declared = set(m.get("languages", {}).get("declare", []) or [])
+    ext_langs = {SOURCE_EXT[e] for e in (os.path.splitext(f)[1] for f in files) if e in SOURCE_EXT}
     for lang in sorted(ext_langs):
         if lang in langs or lang in declared:
             continue
         if any(c in langs for c in EXT_COVERED_BY.get(lang, ())):
             continue
-        if lang == "shell" or lang in PROVISIONED:
-            langs.setdefault(lang, ".")
-            continue
-        # A source language with no marker: only the manifest can account for it.
         if lang in ignores or f".{lang}" in ignores:
             continue
         langs.setdefault(lang, ".")
+    return langs
 
-    cmeta = m.get("categories", {}) or {}
-    for name in cmeta:
-        if name not in KNOWN_CATEGORIES:
-            errors.append(f"category-unknown: [categories.{name}] is not a category this release knows "
-                          f"(known: {', '.join(KNOWN_CATEGORIES)}); an unknown name is never ignored")
-    recipes = just_recipes(root)
-    filenames = set(files)
 
-    jobs, na_list, waivers = [], [], []
-    for lang in sorted(langs):
-        if lang in ignores:
-            continue
-        for cat in cats:
-            entry = cmeta.get(cat, {}) or {}
-            per = entry.get(lang, {}) if isinstance(entry.get(lang), dict) else {}
-            na = per.get("na", entry.get("na"))
-            if na is not None:
-                if not str(na).strip():
-                    errors.append(f"na-no-reason: {cat}/{lang} is N/A with an empty reason")
-                else:
-                    na_list.append({"category": cat, "lang": lang, "reason": na})
-                continue
-            wv = per.get("waiver", entry.get("waiver"))
-            if wv is not None:
-                reason = str(wv.get("reason", "")).strip() if isinstance(wv, dict) else ""
-                until = wv.get("until") if isinstance(wv, dict) else None
-                try:
-                    exp = datetime.date.fromisoformat(str(until))
-                except ValueError:
-                    exp = None
-                if not reason or exp is None:
-                    errors.append(f"waiver-invalid: {cat}/{lang} waiver needs reason and until=YYYY-MM-DD")
-                elif exp < today:
-                    errors.append(f"waiver-expired: {cat}/{lang} waiver expired {exp}: {reason}")
-                else:
-                    waivers.append({"category": cat, "lang": lang, "reason": reason, "until": str(exp)})
-                continue
-            cmd, source = per.get("command", entry.get("command")), "manifest"
-            if cmd is not None and not str(cmd).strip():
-                errors.append(f"command-empty: {cat}/{lang} manifest command is empty")
-                continue
-            if cmd is None:
-                for r in JUST_RECIPES[cat]:
-                    if r in recipes:
-                        cmd, source = f"just {r}", "justfile"
-                        break
-            if cmd is None:
-                for cf in CONVENTION_FILES[cat]:
-                    if cf in filenames:
-                        cmd, source = f"bash {cf}", "convention"
-                        break
-            if cmd is None and DEFAULTS.get(lang, {}).get(cat):
-                cmd, source = DEFAULTS[lang][cat], "default"
-            if cmd is None:
-                errors.append(f"missing-runner: {cat}/{lang}: no command (manifest, justfile recipe, "
-                              f"tests/{cat}.sh or language default), no N/A reason, no waiver")
-                continue
-            jobs.append({"id": f"{cat}-{lang}", "category": cat, "lang": lang,
-                         "dir": langs[lang], "command": cmd, "source": source})
+def check_waiver(wv, cat, lang, today, errors, waivers):
+    reason = str(wv.get("reason", "")).strip() if isinstance(wv, dict) else ""
+    until = wv.get("until") if isinstance(wv, dict) else None
+    try:
+        exp = datetime.date.fromisoformat(str(until))
+    except ValueError:
+        exp = None
+    if not reason or exp is None:
+        errors.append(f"waiver-invalid: {cat}/{lang} waiver needs reason and until=YYYY-MM-DD")
+    elif exp < today:
+        errors.append(f"waiver-expired: {cat}/{lang} waiver expired {exp}: {reason}")
+    else:
+        waivers.append({"category": cat, "lang": lang, "reason": reason, "until": str(exp)})
 
+
+def resolve_command(entry, per, cat, lang, recipes, filenames):
+    cmd = per.get("command", entry.get("command"))
+    if cmd is not None:
+        return cmd, "manifest"
+    for r in JUST_RECIPES[cat]:
+        if r in recipes:
+            return f"just {r}", "justfile"
+    for cf in CONVENTION_FILES[cat]:
+        if cf in filenames:
+            return f"bash {cf}", "convention"
+    default = DEFAULTS.get(lang, {}).get(cat)
+    return (default, "default") if default else (None, "")
+
+
+def plan_category(cat, lang, cmeta, ctx):
+    """Returns (job|None, na|None); appends to ctx errors/waivers."""
+    entry = cmeta.get(cat, {}) or {}
+    per = entry.get(lang, {}) if isinstance(entry.get(lang), dict) else {}
+    na = per.get("na", entry.get("na"))
+    if na is not None:
+        if not str(na).strip():
+            ctx["errors"].append(f"na-no-reason: {cat}/{lang} is N/A with an empty reason")
+            return None, None
+        return None, {"category": cat, "lang": lang, "reason": na}
+    wv = per.get("waiver", entry.get("waiver"))
+    if wv is not None:
+        check_waiver(wv, cat, lang, ctx["today"], ctx["errors"], ctx["waivers"])
+        return None, None
+    cmd, source = resolve_command(entry, per, cat, lang, ctx["recipes"], ctx["filenames"])
+    if cmd is None:
+        ctx["errors"].append(f"missing-runner: {cat}/{lang}: no command (manifest, justfile recipe, "
+                             f"tests/{cat}.sh or language default), no N/A reason, no waiver")
+        return None, None
+    if not str(cmd).strip():
+        ctx["errors"].append(f"command-empty: {cat}/{lang} manifest command is empty")
+        return None, None
+    return {"id": f"{cat}-{lang}", "category": cat, "lang": lang,
+            "dir": ctx["langs"][lang], "command": cmd, "source": source}, None
+
+
+def plan_benches(m, errors):
     benches = []
     for name, b in (m.get("bench", {}) or {}).items():
         if not isinstance(b, dict) or not str(b.get("command", "")).strip():
@@ -313,10 +301,54 @@ def main():
         benches.append({"name": name, "command": b["command"], "metric": b.get("metric", "seconds"),
                         "lower_is_better": bool(b.get("lower_is_better", True)),
                         "baselining": bool(b.get("baselining", False))})
+    return benches
 
-    plan = {"ok": not errors, "errors": errors, "languages": sorted(langs),
-            "jobs": jobs, "waivers": waivers, "na": na_list, "benches": benches,
+
+def parse_args(args):
+    today, cats, i = datetime.date.today(), list(KNOWN_CATEGORIES), 1
+    while i < len(args):
+        if args[i] == "--today" and i + 1 < len(args):
+            today = datetime.date.fromisoformat(args[i + 1])
+        elif args[i] == "--categories" and i + 1 < len(args):
+            cats = [c for c in args[i + 1].split(",") if c]
+        else:
+            die(f"unknown argument {args[i]}")
+        i += 2
+    return today, cats
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        die("usage: proven-detect.py REPO_DIR [--today YYYY-MM-DD]")
+    root = safe_root(args[0])
+    today, cats = parse_args(args)
+    errors: list[str] = []
+    m = load_manifest(root, errors)
+    files = [f for f in list_files(root) if not skipped(f)]
+    ignores = read_ignores(m, errors)
+    langs = detect_languages(files, m, ignores)
+    cmeta = m.get("categories", {}) or {}
+    for name in cmeta:
+        if name not in KNOWN_CATEGORIES:
+            errors.append(f"category-unknown: [categories.{name}] is not a category this release knows "
+                          f"(known: {', '.join(KNOWN_CATEGORIES)}); an unknown name is never ignored")
+    ctx = {"errors": errors, "waivers": [], "today": today, "langs": langs,
+           "recipes": just_recipes(root), "filenames": set(files)}
+    jobs, na_list = [], []
+    for lang in sorted(langs):
+        if lang in ignores:
+            continue
+        for cat in cats:
+            job, na = plan_category(cat, lang, cmeta, ctx)
+            if job:
+                jobs.append(job)
+            if na:
+                na_list.append(na)
+    plan = {"ok": not errors, "errors": errors, "languages": sorted(langs), "jobs": jobs,
+            "waivers": ctx["waivers"], "na": na_list, "benches": plan_benches(m, errors),
             "categories": cats}
+    plan["ok"] = not errors
     json.dump(plan, sys.stdout, indent=2, sort_keys=True)
     print()
     sys.exit(0 if plan["ok"] else 1)

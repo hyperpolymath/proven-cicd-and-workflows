@@ -11,8 +11,14 @@ try:
 except ModuleNotFoundError:
     print("::error::PyYAML unavailable; integrity NOT CHECKED"); sys.exit(2)
 
-root, caller = sys.argv[1], sys.argv[2]
+root = os.path.realpath(sys.argv[1])
+if not os.path.isdir(root):
+    print("::error::repository directory not found"); sys.exit(2)
 os.chdir(root)
+caller = os.path.realpath(os.path.join(root, sys.argv[2]))
+if not caller.startswith(root + os.sep):
+    print("::error::caller workflow path escapes the repository"); sys.exit(2)
+caller = os.path.relpath(caller, root)
 bad = []
 def err(m): bad.append(m); print(f"::error::ER-A8: {m}")
 

@@ -15,6 +15,7 @@ case $lang in
   node)   prep="npm ci" ;;
   go)     prep="go mod download" ;;
   python) prep="python -m pip install -q -e . 2>/dev/null || python -m pip install -q -r requirements.txt 2>/dev/null || true; python -m pip install -q pytest" ;;
+  *) ;;
 esac
 if [[ -n $prep ]]; then
   ( cd "$dir" && bash -o pipefail -c "$prep" ) || { echo "::error::proven $cat/$lang: dependency preparation failed"; exit 1; }
@@ -34,6 +35,7 @@ case $lang in
   go)     grep -E '^(ok|PASS)' "$out" | grep -qv 'no tests to run' && ran=yes || ran=no ;;
   python) grep -qE '[1-9][0-9]* passed' "$out" && ran=yes || ran=no ;;
   node)   grep -qE '(tests? |pass |# pass )[1-9][0-9]*|[1-9][0-9]* (passing|passed|pass)' "$out" && ran=yes || ran=no ;;
+  *) ;;
 esac
 if [[ $ran == no ]]; then
   echo "::error::proven $cat/$lang: the command passed but ran zero tests; that is not a pass"; exit 1

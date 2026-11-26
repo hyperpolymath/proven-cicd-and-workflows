@@ -11,7 +11,8 @@ bad() { printf '  FAIL %s\n' "$1"; FAIL=$((FAIL+1)); }
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 detect() { python3 "$ROOT/scripts/proven-detect.py" "$@"; }
 expect() { # name expected-rc got-rc
-  [[ $2 == "$3" ]] && ok "$1" || bad "$1 (want rc $2, got $3)"
+  local name=$1 want=$2 got=$3
+  [[ $want == "$got" ]] && ok "$name" || bad "$name (want rc $want, got $got)"
 }
 mk() { rm -rf "$W/r"; mkdir -p "$W/r"; ( cd "$W/r" && git init -q . ); }
 
