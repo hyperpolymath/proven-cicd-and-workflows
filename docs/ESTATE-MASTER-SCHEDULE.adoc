@@ -27,6 +27,13 @@ hand-wired per repo, and nothing passes on absence.
 | Adoption doc, check names, org allow-list | in PR | `docs/PROVEN-ADOPTION.adoc`
 |===
 
+== Hub rulings (round 2)
+
+* Org allow-list is applied from the owner's laptop after v0.1.0 is tagged; the tag message carries the caller snippet, a minimal `.proven.toml` and the final list.
+* This file is the canonical estate master schedule; F1 and echidna point here.
+* `main` here requires signed commits. A GitHub squash merge is signed by GitHub, so no owner-signed commit is needed for #168.
+* v0.2 priorities: `just`, julia, deno, idris2, gleam, ocaml, setup-beam on ubuntu-24.04, the `invalid lockfile pin` fix, and the SPDX-versus-actions-lock first-line clash in lint-workflows.
+
 == Next
 
 . Release v0.1.0, send the hub the SHA, check name and allow-list.

@@ -106,6 +106,38 @@ Already required by the existing gates and unchanged:
 `dtolnay/rust-toolchain@*`, `swatinem/rust-cache@*`, `taiki-e/install-action@*`,
 `actions/setup-node@*`. A refreshed list is in this file with every release.
 
+=== Estate standards reusable workflows (found by searching the estate)
+
+Both owners appear in the estate, because the `hyperpolymath/standards` name
+redirects to `metadatastician/standards` and a redirected reusable call can
+fail. List both spellings until every caller points at the canonical owner:
+
+[source]
+----
+{metadatastician,hyperpolymath}/standards/.github/workflows/governance-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/secret-scanner-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/scorecard-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/hypatia-scan-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/mirror-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/rust-ci-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/codeql-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/elixir-ci-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/deno-ci-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/changelog-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/rsr-antipattern-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/spark-theatre-gate.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/deed-conformance.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/k9-conformance.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/ci-pipeline.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/governance.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/affinescript-verify.yml@*
+----
+
+The braces are shorthand: the allow-list takes one line per owner. Entries seen
+once or twice (`gov.yml`, `x.yml`, a `rust-ciXreusable.yml` typo) look like
+mistakes in callers and are left out on purpose; a caller that uses one fails
+and gets fixed.
+
 == 5. What a release adds
 
 Release 0.1.0: plan, ER-A8 integrity, proven lock gate, sweep 1 (unit, smoke,
