@@ -85,6 +85,8 @@ mkint; sed -i 's|^  pull_request:|  pull_request:\n    paths: [src/**]|' "$W/r/.
 mkint; printf 'name: x\non: push\njobs:\n  a:\n    runs-on: x\n    continue-on-error: "true"\n    steps: []\n' > "$W/r/.github/workflows/proven-extra.yaml"; integ; expect "quoted continue-on-error in proven*.yaml fails" 1 $?
 mkint; sed -i 's|^  proven:|  other:|' "$W/r/.github/workflows/proven.yml"; integ; expect "a renamed caller job id fails" 1 $?
 mkint; sed -i 's|^  pull_request:||;s|^  merge_group:||' "$W/r/.github/workflows/proven.yml"; integ; expect "no pull_request trigger fails" 1 $?
+mkint; sed -i 's|^    uses:|    needs: pre\n    uses:|' "$W/r/.github/workflows/proven.yml"; integ; expect "needs: on the caller job fails" 1 $?
+mkint; sed -i 's|^    types: \[.*|    types: [closed]|' "$W/r/.github/workflows/proven.yml"; integ; expect "restrictive pull_request types fail" 1 $?
 mkint; rm "$W/r/.github/workflows/proven.yml"; integ; expect "missing caller fails" 1 $?
 
 echo "proven-umbrella: $PASS passed, $FAIL failed"

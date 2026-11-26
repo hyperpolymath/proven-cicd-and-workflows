@@ -88,7 +88,7 @@ pub fn run(args: &[String]) -> i32 {
         return 2;
     }
     let base = last10.iter().sum::<f64>() / last10.len() as f64;
-    if base <= 0.0 {
+    if !base.is_finite() || base <= 0.0 {
         // a zero or negative baseline cannot express a percentage regression
         println!("{}", json!({"class": "NoBaseline", "baseline": base}));
         return 2;
@@ -136,5 +136,6 @@ mod tests {
         assert_eq!(a(&["nan", "--history", "100"]), 2);
         assert_eq!(a(&["100", "--history", "nan,100"]), 2);
         assert_eq!(a(&["5", "--history=-10"]), 2);
+        assert_eq!(a(&["1.7e308", "--history=1e308,1e308"]), 2);
     }
 }

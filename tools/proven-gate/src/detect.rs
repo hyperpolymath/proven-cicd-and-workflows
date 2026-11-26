@@ -162,6 +162,18 @@ fn ext(base: &str) -> &str {
     }
 }
 
+// A written reason must be a TOML string; booleans and numbers are never coerced into one.
+fn reason_of(t: &Table, what: &str, errors: &mut Vec<String>) -> Option<String> {
+    match t.get("reason") {
+        Some(T::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+        Some(T::String(_)) | None => None,
+        Some(_) => {
+            errors.push(format!("reason-not-string: {what} reason must be a non-empty string"));
+            None
+        }
+    }
+}
+
 fn tstr(v: &T) -> String {
     match v {
         T::String(s) => s.clone(),
@@ -169,19 +181,38 @@ fn tstr(v: &T) -> String {
     }
 }
 
-fn list_files(root: &Path) -> Vec<String> {
-    fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) {
-        let Ok(rd) = fs::read_dir(dir) else { return };
-        for e in rd.flatten() {
+fn list_files(root: &Path, errors: &mut Vec<String>) -> Vec<String> {
+    fn walk(dir: &Path, rel: &str, out: &mut Vec<String>, errors: &mut Vec<String>) {
+        let rd = match fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                errors.push(format!("traversal-error: cannot read {}: {e}", dir.display()));
+                return;
+            }
+        };
+        for e in rd {
+            let e = match e {
+                Ok(e) => e,
+                Err(err) => {
+                    errors.push(format!("traversal-error: entry in {}: {err}", dir.display()));
+                    continue;
+                }
+            };
             let name = e.file_name().to_string_lossy().into_owned();
             let path = e.path();
-            let Ok(ft) = e.file_type() else { continue };
+            let ft = match e.file_type() {
+                Ok(ft) => ft,
+                Err(err) => {
+                    errors.push(format!("traversal-error: {}: {err}", path.display()));
+                    continue;
+                }
+            };
             let is_dir = ft.is_dir();
             let link_to_dir = ft.is_symlink() && fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
             let relpath = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
             if is_dir {
                 if !is_skipped_dir(&name) {
-                    walk(&path, &relpath, out);
+                    walk(&path, &relpath, out, errors);
                 }
             } else if !link_to_dir {
                 out.push(relpath);
@@ -189,7 +220,7 @@ fn list_files(root: &Path) -> Vec<String> {
         }
     }
     let mut out = Vec::new();
-    walk(root, "", &mut out);
+    walk(root, "", &mut out, errors);
     out.sort();
     out
 }
@@ -253,19 +284,12 @@ fn sub<'a>(t: &'a Table, k: &str) -> Option<&'a Table> {
 
 fn marker_languages(files: &[String]) -> (BTreeMap<String, String>, BTreeMap<String, Vec<String>>) {
     let mut roots: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let workspaces: Vec<&str> =
-        files.iter().filter(|f| basename(f) == "go.work").map(|f| dirname(f)).collect();
     let mut sorted: Vec<&String> = files.iter().collect();
     sorted.sort_by_key(|f| (f.matches('/').count(), f.to_string()));
     for f in sorted {
         let base = basename(f);
         let Some(lang) = marker(base).or_else(|| suffix_marker(ext(base))) else { continue };
         let d = dirname(f);
-        if lang == "go"
-            && workspaces.iter().any(|w| *w != d && (*w == "." || d.starts_with(&format!("{w}/"))))
-        {
-            continue; // a module inside a go.work workspace is covered by the workspace root
-        }
         let v = roots.entry(lang.to_string()).or_default();
         if !v.iter().any(|x| x == d) {
             v.push(d.to_string());
@@ -279,11 +303,11 @@ fn read_ignores(m: &Table, errors: &mut Vec<String>) -> BTreeMap<String, String>
     let mut ignores = BTreeMap::new();
     if let Some(ig) = sub(m, "languages").and_then(|l| sub(l, "ignore")) {
         for (name, v) in ig {
-            let reason = v.as_table().and_then(|t| t.get("reason")).map(tstr).unwrap_or_default();
-            if reason.trim().is_empty() {
-                errors.push(format!("language-ignore-no-reason: [languages.ignore.{name}] needs a written reason"));
-            } else {
-                ignores.insert(name.clone(), reason);
+            match v.as_table().and_then(|t| reason_of(t, &format!("[languages.ignore.{name}]"), errors)) {
+                Some(reason) => {
+                    ignores.insert(name.clone(), reason);
+                }
+                None => errors.push(format!("language-ignore-no-reason: [languages.ignore.{name}] needs a written reason")),
             }
         }
     }
@@ -341,7 +365,7 @@ struct Ctx {
 
 fn check_waiver(wv: &T, cat: &str, lang: &str, ctx: &mut Ctx) {
     let t = wv.as_table();
-    let reason = t.and_then(|t| t.get("reason")).map(tstr).unwrap_or_default();
+    let reason = t.and_then(|t| reason_of(t, &format!("{cat}/{lang} waiver"), &mut ctx.errors)).unwrap_or_default();
     let exp = t.and_then(|t| t.get("until")).and_then(|u| date::parse(&tstr(u)));
     match exp {
         Some(exp) if !reason.trim().is_empty() => {
@@ -395,13 +419,23 @@ fn plan_category(cat: &str, lang: &str, cmeta: &Table, ctx: &mut Ctx) -> (Vec<Va
     let empty = Table::new();
     let entry = sub(cmeta, cat).unwrap_or(&empty);
     let per = sub(entry, lang).unwrap_or(&empty);
+    // A language-specific command never loses silently to an inherited category-level N/A or waiver:
+    // the conflict is a named error, so every configured command either runs or is reported.
+    if per.get("command").is_some() && (entry.get("na").is_some() || entry.get("waiver").is_some()) && per.get("na").is_none() && per.get("waiver").is_none() {
+        ctx.errors.push(format!(
+            "exemption-conflict: {cat}/{lang} has its own command but the category is N/A or waived; give it its own na or waiver, or drop the category-level exemption"
+        ));
+        return (vec![], None);
+    }
     if let Some(na) = per.get("na").or_else(|| entry.get("na")) {
-        let reason = tstr(na);
-        if reason.trim().is_empty() {
-            ctx.errors.push(format!("na-no-reason: {cat}/{lang} is N/A with an empty reason"));
-            return (vec![], None);
+        match na {
+            T::String(s) if !s.trim().is_empty() => {
+                return (vec![], Some(json!({"category": cat, "lang": lang, "reason": s})));
+            }
+            T::String(_) => ctx.errors.push(format!("na-no-reason: {cat}/{lang} is N/A with an empty reason")),
+            _ => ctx.errors.push(format!("na-not-string: {cat}/{lang} na must be a non-empty reason string")),
         }
-        return (vec![], Some(json!({"category": cat, "lang": lang, "reason": reason})));
+        return (vec![], None);
     }
     if let Some(wv) = per.get("waiver").or_else(|| entry.get("waiver")) {
         check_waiver(wv, cat, lang, ctx);
@@ -491,7 +525,7 @@ pub fn run(args: &[String]) -> i32 {
     }
     let mut errors = Vec::new();
     let m = load_manifest(&root, &mut errors);
-    let files = list_files(&root);
+    let files = list_files(&root, &mut errors);
     let ignores = read_ignores(&m, &mut errors);
     let (langs, roots) = detect_languages(&files, &m, &ignores);
     let empty = Table::new();
@@ -582,6 +616,21 @@ mod tests {
             ],
         );
         assert_eq!(plan(&d, "2026-01-01").0, 0);
+    }
+
+    #[test]
+    fn non_string_reason_and_conflicting_exemptions_fail() {
+        let m = "schema = \"proven/manifest/v1\"\n";
+        let d = tmp("naf", &[(".proven.toml", &format!("{m}[categories.unit]\nna = false\n[categories.smoke]\nna = \"n\"\n[categories.build]\nna = \"n\"\n[categories.p2p]\nna = \"n\"\n")), ("a.sh", "")]);
+        assert_eq!(plan(&d, "2026-01-01").0, 1);
+        let d = tmp("conf", &[(".proven.toml", &format!("{m}[categories.unit]\nna = \"n\"\n[categories.unit.shell]\ncommand = \"true\"\n[categories.smoke]\nna = \"n\"\n[categories.build]\nna = \"n\"\n[categories.p2p]\nna = \"n\"\n")), ("a.sh", "")]);
+        assert_eq!(plan(&d, "2026-01-01").0, 1);
+    }
+
+    #[test]
+    fn go_workspace_keeps_module_roots() {
+        let (_, roots) = marker_languages(&["go.work".into(), "svc/go.mod".into(), "svc/a.go".into()]);
+        assert_eq!(roots["go"], vec!["svc".to_string()]);
     }
 
     #[test]

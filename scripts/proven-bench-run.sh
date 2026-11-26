@@ -34,6 +34,14 @@ fi
 if [[ ${GITHUB_EVENT_NAME:-} == push && -n ${GH_TOKEN:-} ]]; then
   PR_LABELS=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
     --jq '[.[]|select(.merged_at!=null)|.labels[].name]' 2>/dev/null || echo null)
+elif [[ ${GITHUB_EVENT_NAME:-} == merge_group && -n ${GH_TOKEN:-} ]]; then
+  # A queued PR is not merged yet and the event has no pull_request labels; the PR number is in the
+  # merge-group ref (refs/heads/gh-readonly-queue/BASE/pr-N-SHA).
+  pr=$(sed -n 's#.*/pr-\([0-9][0-9]*\)-.*#\1#p' <<<"${GITHUB_REF:-}")
+  PR_LABELS=null
+  if [[ -n $pr ]]; then
+    PR_LABELS=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '[.labels[].name]' 2>/dev/null || echo null)
+  fi
 fi
 flags=(); [[ ${LOWER_IS_BETTER:-true} == false ]] && flags+=(--higher-is-better)
 [[ ${BASELINING:-false} == true ]] && flags+=(--baselining)

@@ -135,6 +135,9 @@ pub fn run(args: &[String]) -> i32 {
                     if k != "proven" {
                         err(format!("{cname}: the umbrella job id must be 'proven' (required check 'proven / verdict'), found '{k}'"));
                     }
+                    if has(v, "needs") {
+                        err(format!("{cname}: job '{k}' has 'needs:'; a skipped prerequisite would skip the gate"));
+                    }
                     if has(v, "if") {
                         err(format!("{cname}: job '{k}' has an 'if:'; a skipped gate is not a pass"));
                     }
@@ -151,6 +154,14 @@ pub fn run(args: &[String]) -> i32 {
             }
             if let Value::Mapping(m) = &on {
                 if let Some(Value::Mapping(pr)) = get(m, "pull_request") {
+                    if let Some(types) = get(pr, "types") {
+                        let have: BTreeSet<String> = types.as_sequence().into_iter().flatten().filter_map(key_str).collect();
+                        for need in ["opened", "synchronize", "reopened"] {
+                            if !have.contains(need) {
+                                err(format!("{cname}: on.pull_request.types must include {need} (or be omitted), or the required check will not run on new commits"));
+                            }
+                        }
+                    }
                     for key in ["branches", "branches-ignore", "paths", "paths-ignore"] {
                         if has(pr, key) {
                             err(format!("{cname}: on.pull_request.{key} can skip the required check; remove the filter"));
