@@ -193,6 +193,21 @@ bash "$tracer" lcov "$tmp/repo" "$tmp/arm-trace" arm-case.sh >"$tmp/arm-case.lco
 want=$'SF:arm-case.sh\nDA:2,1\nDA:3,1\nDA:5,1\nDA:8,1\nLF:4\nLH:4\nend_of_record'
 check "tracer: a case opener with an inline first arm leaves later patterns as structure" \
   "tracer lcov: $(tr '\n' ' ' <"$tmp/arm-case.lcov")" test "$(cat "$tmp/arm-case.lcov")" = "$want"
+cat >"$tmp/repo/quoted-esac.sh" <<'SH'
+#!/usr/bin/env bash
+case $1 in x) echo "text; esac still quoted" ;;
+  y)
+    echo 'text; esac still quoted' ;;
+  z)
+    echo \; esac ;;
+  *)
+    echo other ;;
+esac
+SH
+bash "$tracer" lcov "$tmp/repo" "$tmp/empty-trace" quoted-esac.sh >"$tmp/quoted-esac.lcov"
+want=$'SF:quoted-esac.sh\nDA:2,0\nDA:4,0\nDA:6,0\nDA:8,0\nLF:4\nLH:0\nend_of_record'
+check "tracer: quoted esac and escaped separators leave later patterns as structure" \
+  "tracer lcov: $(tr '\n' ' ' <"$tmp/quoted-esac.lcov")" test "$(cat "$tmp/quoted-esac.lcov")" = "$want"
 # A here-document body line that reads FILE, a tab, and nothing else is source
 # text, not a file boundary, so the unexecuted line after exit stays uncovered.
 printf '%s\n' '#!/usr/bin/env bash' 'cat <<EOF' $'FILE\t' 'EOF' 'exit 0' 'echo never' >"$tmp/repo/marker.sh"

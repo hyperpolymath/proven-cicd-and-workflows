@@ -196,8 +196,16 @@ HOOK
         if (t != "") {
           opener = (t ~ /(^|[;&|({][ \t]*|(^|[ \t;])(if|then|do|else|elif|while|until|!)[ \t]+)case[ \t].*[ \t]in([ \t].*)?$/)
           ncase += opener
-          if (ncase && t ~ /(^|[;&|][ \t]*)esac([ \t;&|<>)].*)?$/) ncase--
-          pat = (ncase && (opener && t ~ /[ \t]in$/ || t ~ /(;;|;&|;;&)$/))
+          pat = 0
+          if (ncase) {
+            # Mask quoted and escaped characters without joining adjacent tokens.
+            syntax = ""
+            for (i = 1; i <= length(code); i++)
+              syntax = syntax (substr(plain, i, 1) == "1" ? substr(code, i, 1) : "Q")
+            gsub(/^[ \t]+|[ \t]+$/, "", syntax)
+            if (syntax ~ /(^|[;&|][ \t]*)esac([ \t;&|<>)].*)?$/) ncase--
+            pat = (ncase && (opener && syntax ~ /[ \t]in$/ || syntax ~ /(;;|;&|;;&)$/))
+          }
         }
         # A here-document opens at a plain << that no < precedes (<<< is a
         # here-string), that is not escaped and not inside quotes or
