@@ -11,7 +11,7 @@ name=${BENCH_NAME:?} tmp=${RUNNER_TEMP:-/tmp}
 out="$tmp/bench-$name.json"
 if [[ $BENCH_METRIC == seconds ]]; then
   s=$(date +%s.%N); bash -o pipefail -c "$BENCH_COMMAND" || { echo "::error::bench $name: command failed"; exit 1; }
-  e=$(date +%s.%N); value=$(python3 -c 'import sys;print(round(float(sys.argv[2])-float(sys.argv[1]),6))' "$s" "$e") \
+  e=$(date +%s.%N); value=$(awk -v s="$s" -v e="$e" 'BEGIN{printf "%.6f", e-s}') \
     || { echo "::error::bench $name: could not compute elapsed seconds"; exit 1; }
 else
   res=$(bash -o pipefail -c "$BENCH_COMMAND") || { echo "::error::bench $name: command failed"; exit 1; }
@@ -37,7 +37,8 @@ if [[ ${GITHUB_EVENT_NAME:-} == push && -n ${GH_TOKEN:-} ]]; then
 fi
 flags=(); [[ ${LOWER_IS_BETTER:-true} == false ]] && flags+=(--higher-is-better)
 [[ ${BASELINING:-false} == true ]] && flags+=(--baselining)
-verdict=$(python3 "$here/proven-bench-gate.py" "$value" --history "$hist" ${flags[@]+"${flags[@]}"}); rc=$?
+gate=${PROVEN_GATE:-$(bash "$here/proven-gate-bin.sh")}
+verdict=$("$gate" bench-gate "$value" --history "$hist" ${flags[@]+"${flags[@]}"}); rc=$?
 echo "$verdict"
 if (( rc > 3 )) || { (( rc != 0 )) && [[ -z $verdict ]]; }; then
   echo "::error::bench $name: the gate itself failed (exit $rc); no verdict"; exit 1

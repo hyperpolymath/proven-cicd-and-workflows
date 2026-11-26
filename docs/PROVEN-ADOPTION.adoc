@@ -140,6 +140,10 @@ and gets fixed.
 
 == 5. What a release adds
 
+The planner, integrity checker and bench classifier are one Rust crate, `tools/proven-gate`
+(built `--locked` by each job that needs it); no Python implementation source is
+used anywhere, per estate doctrine.
+
 Release 0.1.0: plan, ER-A8 integrity, proven lock gate, sweep 1 (unit, smoke,
 build, P2P) for rust, elixir, go, node, python, zig and shell, and the Six
 Sigma bench gate. Toolchains for deno, julia, gleam, idris2 and ocaml, and

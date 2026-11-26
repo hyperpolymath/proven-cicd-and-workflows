@@ -1,5 +1,5 @@
 # Tests the umbrella's `unit` category runs for this repository (tests/unit.sh).
-# Each is hermetic: no network, no toolchain beyond bash, jq, yq, python3.
+# Each is hermetic: no network, no toolchain beyond bash, jq, yq and the proven-gate crate (cargo).
 # Tests not listed run elsewhere (assurance-kernel.yml) or are tracked in
 # docs/ESTATE-MASTER-SCHEDULE.adoc as "unit: to bring in", never silently dropped.
 proven-umbrella

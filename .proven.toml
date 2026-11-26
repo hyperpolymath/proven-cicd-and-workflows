@@ -11,17 +11,12 @@ reason = "scripts/coverdata-to-lcov.exs is a single standalone script, not a mix
 [languages.ignore.idris2]
 reason = "the Idris2 kernels (*.ipkg) build and run in assurance-kernel.yml and proven-lock-gate, which install the Idris2 toolchain; the umbrella cannot provision idris2 in release 0.1"
 
-[languages.ignore.python]
-reason = "scripts/proven-*.py are stdlib-only CLI tools; they are exercised end to end by tests/proven-umbrella.sh, tests/smoke.sh and tests/p2p.sh (shell)"
-
-# The one Rust crate, actions/creusot-check/source-facts, has no tests yet.
-# PR #162 adds them; until it merges these are visible, expiring waivers, not N/A.
-[categories.unit.rust.waiver]
-reason = "source-facts has no tests on main; hyperpolymath/proven-cicd-and-workflows#162 adds them"
-until = "2026-12-10"
+# Rust: tools/proven-gate carries the real unit tests (unit runs there); it has no smoke
+# or p2p tests yet, and actions/creusot-check/source-facts has none on main (#162 adds them).
+# Visible, expiring waivers, not N/A.
 [categories.smoke.rust.waiver]
-reason = "as unit: #162"
+reason = "no Rust smoke or p2p test yet; hyperpolymath/proven-cicd-and-workflows#162 and the proven-gate crate follow"
 until = "2026-12-10"
 [categories.p2p.rust.waiver]
-reason = "as unit: #162"
+reason = "no Rust smoke or p2p test yet; hyperpolymath/proven-cicd-and-workflows#162 and the proven-gate crate follow"
 until = "2026-12-10"

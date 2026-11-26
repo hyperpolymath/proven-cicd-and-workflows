@@ -9,7 +9,8 @@ PASS=0; FAIL=0
 ok()  { printf '  ok   %s\n' "$1"; PASS=$((PASS+1)); }
 bad() { printf '  FAIL %s\n' "$1"; FAIL=$((FAIL+1)); }
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
-detect() { python3 "$ROOT/scripts/proven-detect.py" "$@"; }
+GATE=$(bash "$ROOT/scripts/proven-gate-bin.sh") || { echo "cannot build proven-gate"; exit 2; }
+detect() { "$GATE" detect "$@"; }
 expect() { # name expected-rc got-rc
   local name=$1 want=$2 got=$3
   [[ $want == "$got" ]] && ok "$name" || bad "$name (want rc $want, got $got)"
@@ -58,7 +59,7 @@ bash "$ROOT/scripts/proven-run.sh" build rust "$W/d" 'true' >/dev/null 2>&1; exp
 bash "$ROOT/scripts/proven-run.sh" unit shell "$W/nope" 'true' >/dev/null 2>&1; expect "missing dir cannot run" 2 $?
 
 echo "bench (Six Sigma):"
-g() { python3 "$ROOT/scripts/proven-bench-gate.py" "$@" >/dev/null 2>&1; }
+g() { "$GATE" bench-gate "$@" >/dev/null 2>&1; }
 g 100 --history 100,100; expect "equal is Ordinary" 0 $?
 g 119 --history 100;     expect "19% worse is Ordinary" 0 $?
 g 130 --history 100;     expect "30% worse is Acceptable (needs reviewer)" 3 $?
@@ -75,7 +76,7 @@ g 130 --history 1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,100,100,100,10
 
 echo "integrity (ER-A8):"
 mkint() { mk; mkdir -p "$W/r/.github/workflows"; cp "$ROOT/.github/workflows/proven-lock-gate.yml" "$W/r/.github/workflows/"; cp "$ROOT/templates/proven-caller.yml" "$W/r/.github/workflows/proven.yml"; sed -i 's/__PROVEN_SHA__/0123456789abcdef0123456789abcdef01234567/;s/__PROVEN_TAG__/v0/' "$W/r/.github/workflows/proven.yml"; }
-integ() { PROVEN_ROOT="$W/r" python3 "$ROOT/scripts/proven-integrity.py" .github/workflows/proven.yml >/dev/null 2>&1; }
+integ() { PROVEN_ROOT="$W/r" "$GATE" integrity .github/workflows/proven.yml >/dev/null 2>&1; }
 mkint; integ; expect "template caller is consistent" 0 $?
 mkint; printf 'on: [' > "$W/r/.github/workflows/broken.yml"; integ; expect "an unparseable workflow fails" 1 $?
 mkint; rm "$W/r/.github/workflows/proven-lock-gate.yml"; integ; expect "missing stamped lock gate fails" 1 $?
