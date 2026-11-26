@@ -38,6 +38,12 @@ out=$(detect "$W/r" 2>&1); [[ $(jq '.jobs|length' <<<"$out") == 2 && $(jq '.na|l
 mk; printf 'schema = "proven/manifest/v1"\n[categories.smoke.waiver]\nreason = "adopting"\nuntil = "2026-12-31"\n' > "$W/r/.proven.toml"; : > "$W/r/Cargo.toml"
 detect "$W/r" --today 2026-11-26 >/dev/null 2>&1; expect "unexpired waiver passes" 0 $?
 detect "$W/r" --today 2027-01-01 >/dev/null 2>&1; expect "expired waiver fails" 1 $?
+mk; printf 'schema = "proven/manifest/v1"\n[languages]\ndeclare = ["c"]\n' > "$W/r/.proven.toml"
+detect "$W/r" >/dev/null 2>&1; expect "declared language with no runner fails" 1 $?
+mk; printf 'schema = "proven/manifest/v1"\n' > "$W/r/.proven.toml"; mkdir -p "$W/r/a" "$W/r/b"; : > "$W/r/a/go.mod"; : > "$W/r/b/go.mod"
+out=$(detect "$W/r" 2>&1); [[ $(jq '[.jobs[]|select(.category=="build")]|length' <<<"$out") == 2 && $(jq '[.jobs[].id]|unique|length' <<<"$out") == $(jq '.jobs|length' <<<"$out") ]] && ok "two Go roots plan two build jobs with unique ids" || bad "multi-root go"
+mk; printf 'schema = "proven/manifest/v1"\n' > "$W/r/.proven.toml"; mkdir -p "$W/r/apps/api" "$W/r/tests"; : > "$W/r/apps/api/Cargo.toml"; printf 'true\n' > "$W/r/tests/build.sh"
+out=$(detect "$W/r" 2>&1); [[ $(jq -r '.jobs[]|select(.id=="build-rust")|.dir' <<<"$out") == . ]] && ok "convention command runs from the repo root" || bad "convention dir"
 mk; printf 'schema = "proven/manifest/v1"\n[categories.chaos]\nna = "x"\n' > "$W/r/.proven.toml"
 detect "$W/r" >/dev/null 2>&1; expect "unknown category fails" 1 $?
 mk; printf 'schema = "proven/manifest/v1"\n' > "$W/r/.proven.toml"; : > "$W/r/Cargo.toml"; printf 'smoke:\n\techo hi\n' > "$W/r/justfile"
@@ -60,6 +66,10 @@ g 151 --history 100;     expect "51% worse is Unacceptable" 1 $?
 g 70  --history 100;     expect "30% better is Extraordinary, passes" 0 $?
 g 60 --history 100 --higher-is-better; expect "higher-is-better: 40% lower is Acceptable" 3 $?
 g 100;                   expect "no history and no baselining fails" 2 $?
+g nan --history 100;     expect "nan current fails" 2 $?
+g 100 --history nan,100; expect "nan history fails" 2 $?
+g 5 --history=-10;       expect "negative baseline is no baseline" 2 $?
+g 1.2 --history 1.0;     expect "exactly 20% worse (float noise) is Acceptable" 3 $?
 g 100 --baselining;      expect "no history with baselining passes" 0 $?
 g 130 --history 1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,100,100,100,100,100,100,100,100,100,100; expect "only the last 10 history values count" 3 $?
 
@@ -70,6 +80,8 @@ mkint; integ; expect "template caller is consistent" 0 $?
 mkint; printf 'on: [' > "$W/r/.github/workflows/broken.yml"; integ; expect "an unparseable workflow fails" 1 $?
 mkint; rm "$W/r/.github/workflows/proven-lock-gate.yml"; integ; expect "missing stamped lock gate fails" 1 $?
 mkint; sed -i 's|^    uses:|    if: false\n    uses:|' "$W/r/.github/workflows/proven.yml"; integ; expect "an if: on the caller job fails" 1 $?
+mkint; sed -i 's|^  pull_request:|  pull_request:\n    paths: [src/**]|' "$W/r/.github/workflows/proven.yml"; integ; expect "a pull_request paths filter fails" 1 $?
+mkint; printf 'name: x\non: push\njobs:\n  a:\n    runs-on: x\n    continue-on-error: "true"\n    steps: []\n' > "$W/r/.github/workflows/proven-extra.yaml"; integ; expect "quoted continue-on-error in proven*.yaml fails" 1 $?
 mkint; sed -i 's|^  proven:|  other:|' "$W/r/.github/workflows/proven.yml"; integ; expect "a renamed caller job id fails" 1 $?
 mkint; sed -i 's|^  pull_request:||;s|^  merge_group:||' "$W/r/.github/workflows/proven.yml"; integ; expect "no pull_request trigger fails" 1 $?
 mkint; rm "$W/r/.github/workflows/proven.yml"; integ; expect "missing caller fails" 1 $?

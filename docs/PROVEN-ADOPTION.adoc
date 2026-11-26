@@ -12,6 +12,7 @@ and reaches your repository when the pin is bumped.
 name: Proven
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   merge_group:
   push:
     branches: [main]
@@ -21,6 +22,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  pull-requests: read   # bench-approved label lookup (also on the push after merge)
 jobs:
   proven:   # the id MUST be `proven`; no `if:`, no `continue-on-error`
     uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/proven.yml@<40-hex SHA> # v0.1.0

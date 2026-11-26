@@ -11,7 +11,8 @@ name=${BENCH_NAME:?} tmp=${RUNNER_TEMP:-/tmp}
 out="$tmp/bench-$name.json"
 if [[ $BENCH_METRIC == seconds ]]; then
   s=$(date +%s.%N); bash -o pipefail -c "$BENCH_COMMAND" || { echo "::error::bench $name: command failed"; exit 1; }
-  e=$(date +%s.%N); value=$(python3 -c "print(round($e-$s,6))")
+  e=$(date +%s.%N); value=$(python3 -c 'import sys;print(round(float(sys.argv[2])-float(sys.argv[1]),6))' "$s" "$e") \
+    || { echo "::error::bench $name: could not compute elapsed seconds"; exit 1; }
 else
   res=$(bash -o pipefail -c "$BENCH_COMMAND") || { echo "::error::bench $name: command failed"; exit 1; }
   value=$(tail -n1 <<<"$res")
@@ -29,10 +30,18 @@ if [[ -n ${GH_TOKEN:-} ]]; then
     fi
   done
 fi
+# Approval must survive the merge: on a push to main, read the labels of the PR that produced the commit.
+if [[ ${GITHUB_EVENT_NAME:-} == push && -n ${GH_TOKEN:-} ]]; then
+  PR_LABELS=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+    --jq '[.[]|select(.merged_at!=null)|.labels[].name]' 2>/dev/null || echo null)
+fi
 flags=(); [[ ${LOWER_IS_BETTER:-true} == false ]] && flags+=(--higher-is-better)
 [[ ${BASELINING:-false} == true ]] && flags+=(--baselining)
-verdict=$(python3 "$here/proven-bench-gate.py" "$value" --history "$hist" "${flags[@]}"); rc=$?
+verdict=$(python3 "$here/proven-bench-gate.py" "$value" --history "$hist" ${flags[@]+"${flags[@]}"}); rc=$?
 echo "$verdict"
+if (( rc > 3 )) || { (( rc != 0 )) && [[ -z $verdict ]]; }; then
+  echo "::error::bench $name: the gate itself failed (exit $rc); no verdict"; exit 1
+fi
 printf '{"name":"%s","value":%s,"metric":"%s"}\n' "$name" "$value" "$BENCH_METRIC" > "$out"
 { echo "### bench $name"; echo '```'; echo "$verdict"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 case $rc in

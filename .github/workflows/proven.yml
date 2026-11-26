@@ -58,6 +58,7 @@ jobs:
       has_jobs: ${{ steps.plan.outputs.has_jobs }}
       benches: ${{ steps.plan.outputs.benches }}
       has_benches: ${{ steps.plan.outputs.has_benches }}
+      waivers: ${{ steps.plan.outputs.waivers }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,6 +123,7 @@ jobs:
           print("has_jobs=" + str(bool(p["jobs"])).lower())
           print("benches=" + json.dumps({"include": p["benches"]}))
           print("has_benches=" + str(bool(p["benches"])).lower())
+          print("waivers=" + json.dumps(p["waivers"]))
           for e in p["errors"]:
               print(f"::error::{e}", file=sys.stderr)
           PY
@@ -218,6 +220,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     name: bench-${{ matrix.name }}
     needs: plan
     if: needs.plan.outputs.has_benches == 'true'
@@ -271,6 +274,7 @@ jobs:
           BENCH: ${{ needs.bench.result }}
           HAS_JOBS: ${{ needs.plan.outputs.has_jobs }}
           HAS_BENCHES: ${{ needs.plan.outputs.has_benches }}
+          WAIVERS: ${{ needs.plan.outputs.waivers }}
         run: |
           bad=0
           row() { local a=$1 b=$2; printf '| %s | %s |\n' "$a" "$b" >> "$GITHUB_STEP_SUMMARY"; }
@@ -290,4 +294,9 @@ jobs:
           # matrix job is legitimately skipped; a failed plan fails above.
           if [[ $HAS_JOBS == true ]]; then need category "$CATEGORY" required; else need category "$CATEGORY" optional; fi
           if [[ $HAS_BENCHES == true ]]; then need bench "$BENCH" required; else need bench "$BENCH" optional; fi
+          # Waivers are visible, never silent: category, language, reason, expiry.
+          if [[ -n ${WAIVERS:-} && $WAIVERS != '[]' ]]; then
+            { echo; echo '### active waivers (expire; an expired waiver fails the gate)'; echo '| category | lang | until | reason |'; echo '|---|---|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.[]|"| \(.category) | \(.lang) | \(.until) | \(.reason) |"' <<<"$WAIVERS" >> "$GITHUB_STEP_SUMMARY" || true
+          fi
           exit "$bad"

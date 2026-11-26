@@ -13,8 +13,10 @@ except ModuleNotFoundError:
 
 root = os.path.realpath(os.environ.get("PROVEN_ROOT") or os.getcwd())
 os.chdir(root)
+if len(sys.argv) < 2 or not sys.argv[1]:
+    print("::error::usage: proven-integrity.py CALLER_WORKFLOW_PATH"); sys.exit(2)
 caller = os.path.realpath(os.path.join(root, sys.argv[1]))
-if not caller.startswith(root + os.sep):
+if not caller.startswith(root.rstrip(os.sep) + os.sep):
     print("::error::caller workflow path escapes the repository"); sys.exit(2)
 caller = os.path.relpath(caller, root)
 bad = []
@@ -45,7 +47,8 @@ if d is None:
 else:
     on = d.get("on", d.get(True))  # YAML 1.1 parses a bare `on` key as True
     trig = set(on) if isinstance(on, (dict, list)) else {on}
-    jobs = {k: v for k, v in d["jobs"].items() if isinstance(v, dict) and pat.search(str(v.get("uses", "")))}
+    all_jobs = d.get("jobs") if isinstance(d.get("jobs"), dict) else {}
+    jobs = {k: v for k, v in all_jobs.items() if isinstance(v, dict) and pat.search(str(v.get("uses", "")))}
     if not jobs:
         err(f"{caller} has no job calling the proven umbrella workflow")
     for k, v in jobs.items():
@@ -55,11 +58,34 @@ else:
             err(f"{caller}: job '{k}' has an 'if:'; a skipped gate is not a pass")
         if "continue-on-error" in v:
             err(f"{caller}: job '{k}' sets continue-on-error")
-        if not trig & {"pull_request", "merge_group"}:
-            err(f"{caller} is not triggered by pull_request or merge_group")
-for f in glob.glob(".github/workflows/proven*.yml"):
-    if re.search(r"^\s*continue-on-error:\s*true", open(f, encoding="utf-8").read(), re.M):
-        err(f"{f} sets continue-on-error: true")
+    if not trig & {"pull_request", "merge_group"}:
+        err(f"{caller} is not triggered by pull_request or merge_group")
+    pr = on.get("pull_request") if isinstance(on, dict) else None
+    if isinstance(pr, dict):
+        for key in ("branches", "branches-ignore", "paths", "paths-ignore"):
+            if key in pr:
+                err(f"{caller}: on.pull_request.{key} can skip the required check; remove the filter")
+
+
+def may_be_true(v):
+    """continue-on-error values GitHub would read as true (literal, string or expression)."""
+    return not (v is False or (isinstance(v, str) and v.strip().lower() == "false"))
+
+
+def scan_continue_on_error(f):
+    wf = load(f)
+    for jk, jv in ((wf or {}).get("jobs") or {}).items():
+        if not isinstance(jv, dict):
+            continue
+        if "continue-on-error" in jv and may_be_true(jv["continue-on-error"]):
+            err(f"{f}: job '{jk}' sets continue-on-error")
+        for st in jv.get("steps") or []:
+            if isinstance(st, dict) and "continue-on-error" in st and may_be_true(st["continue-on-error"]):
+                err(f"{f}: a step in job '{jk}' sets continue-on-error")
+
+
+for f in sorted(glob.glob(".github/workflows/proven*.yml") + glob.glob(".github/workflows/proven*.yaml")):
+    scan_continue_on_error(f)
 if not bad:
     print(f"ER-A8 integrity: ok ({len(files)} workflow files)")
 sys.exit(1 if bad else 0)

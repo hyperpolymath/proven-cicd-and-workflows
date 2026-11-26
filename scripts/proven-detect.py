@@ -195,13 +195,20 @@ def load_manifest(root: str, errors: list):
 
 
 def marker_languages(files):
-    langs: dict[str, str] = {}
-    for f in files:
+    """(langs, roots): first project dir per language, and every project dir per language."""
+    roots: dict[str, list[str]] = {}
+    workspaces = [os.path.dirname(f) or "." for f in files if os.path.basename(f) == "go.work"]
+    for f in sorted(files, key=lambda x: (x.count("/"), x)):
         base = os.path.basename(f)
         lang = MARKERS.get(base) or SUFFIX_MARKERS.get(os.path.splitext(base)[1])
-        if lang:
-            langs.setdefault(lang, os.path.dirname(f) or ".")
-    return langs
+        if not lang:
+            continue
+        d = os.path.dirname(f) or "."
+        if lang == "go" and any(w != d and (w == "." or d.startswith(w + "/")) for w in workspaces):
+            continue  # a module inside a go.work workspace is covered by the workspace root
+        if d not in roots.setdefault(lang, []):
+            roots[lang].append(d)
+    return {lang: dirs[0] for lang, dirs in roots.items()}, roots
 
 
 def read_ignores(m, errors):
@@ -215,8 +222,10 @@ def read_ignores(m, errors):
 
 
 def detect_languages(files, m, ignores):
-    langs = marker_languages(files)
+    langs, roots = marker_languages(files)
     declared = set(m.get("languages", {}).get("declare", []) or [])
+    for lang in declared:
+        langs.setdefault(lang, ".")
     ext_langs = {SOURCE_EXT[e] for e in (os.path.splitext(f)[1] for f in files) if e in SOURCE_EXT}
     for lang in sorted(ext_langs):
         if lang in langs or lang in declared:
@@ -226,7 +235,8 @@ def detect_languages(files, m, ignores):
         if lang in ignores or f".{lang}" in ignores:
             continue
         langs.setdefault(lang, ".")
-    return langs
+    # Only Go plans every independent module root; other languages use their first root.
+    return langs, {lang: (roots.get(lang) if lang == "go" else None) or [d] for lang, d in langs.items()}
 
 
 def check_waiver(wv, cat, lang, today, errors, waivers):
@@ -259,29 +269,32 @@ def resolve_command(entry, per, cat, lang, recipes, filenames):
 
 
 def plan_category(cat, lang, cmeta, ctx):
-    """Returns (job|None, na|None); appends to ctx errors/waivers."""
+    """Returns (jobs list, na|None); appends to ctx errors/waivers."""
     entry = cmeta.get(cat, {}) or {}
     per = entry.get(lang, {}) if isinstance(entry.get(lang), dict) else {}
     na = per.get("na", entry.get("na"))
     if na is not None:
         if not str(na).strip():
             ctx["errors"].append(f"na-no-reason: {cat}/{lang} is N/A with an empty reason")
-            return None, None
-        return None, {"category": cat, "lang": lang, "reason": na}
+            return [], None
+        return [], {"category": cat, "lang": lang, "reason": na}
     wv = per.get("waiver", entry.get("waiver"))
     if wv is not None:
         check_waiver(wv, cat, lang, ctx["today"], ctx["errors"], ctx["waivers"])
-        return None, None
+        return [], None
     cmd, source = resolve_command(entry, per, cat, lang, ctx["recipes"], ctx["filenames"])
     if cmd is None:
         ctx["errors"].append(f"missing-runner: {cat}/{lang}: no command (manifest, justfile recipe, "
                              f"tests/{cat}.sh or language default), no N/A reason, no waiver")
-        return None, None
+        return [], None
     if not str(cmd).strip():
         ctx["errors"].append(f"command-empty: {cat}/{lang} manifest command is empty")
-        return None, None
-    return {"id": f"{cat}-{lang}", "category": cat, "lang": lang,
-            "dir": ctx["langs"][lang], "command": cmd, "source": source}, None
+        return [], None
+    dirs = ctx["roots"][lang] if source == "default" else ["."]  # only language defaults run in the project dir
+    multi = len(dirs) > 1
+    return [{"id": f"{cat}-{lang}" + (("-" + re.sub(r"[^A-Za-z0-9]+", "_", d).strip("_")) if multi else ""),
+             "category": cat, "lang": lang, "dir": d, "command": cmd, "source": source}
+            for d in dirs], None
 
 
 def plan_benches(m, errors):
@@ -319,22 +332,21 @@ def main():
     m = load_manifest(root, errors)
     files = [f for f in list_files(root) if not skipped(f)]
     ignores = read_ignores(m, errors)
-    langs = detect_languages(files, m, ignores)
+    langs, roots = detect_languages(files, m, ignores)
     cmeta = m.get("categories", {}) or {}
     for name in cmeta:
         if name not in KNOWN_CATEGORIES:
             errors.append(f"category-unknown: [categories.{name}] is not a category this release knows "
                           f"(known: {', '.join(KNOWN_CATEGORIES)}); an unknown name is never ignored")
-    ctx = {"errors": errors, "waivers": [], "today": today, "langs": langs,
+    ctx = {"errors": errors, "waivers": [], "today": today, "langs": langs, "roots": roots,
            "recipes": just_recipes(root), "filenames": set(files)}
     jobs, na_list = [], []
     for lang in sorted(langs):
         if lang in ignores:
             continue
         for cat in cats:
-            job, na = plan_category(cat, lang, cmeta, ctx)
-            if job:
-                jobs.append(job)
+            planned, na = plan_category(cat, lang, cmeta, ctx)
+            jobs.extend(planned)
             if na:
                 na_list.append(na)
     plan = {"ok": not errors, "errors": errors, "languages": sorted(langs), "jobs": jobs,

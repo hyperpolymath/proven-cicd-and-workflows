@@ -13,7 +13,7 @@ percentage drives the class:
   Extraordinary  > 20% better  exit 0 (flag)
 No history is an error (exit 2) unless --baselining, which records and passes.
 """
-import argparse, json, sys
+import argparse, json, math, sys
 
 ap = argparse.ArgumentParser()
 ap.add_argument("current", type=float)
@@ -22,6 +22,10 @@ ap.add_argument("--higher-is-better", action="store_true")
 ap.add_argument("--baselining", action="store_true")
 a = ap.parse_args()
 hist = [float(x) for x in a.history.split(",") if x.strip()][-10:]
+if not math.isfinite(a.current) or not all(math.isfinite(x) for x in hist):
+    print(json.dumps({"class": "NoBaseline", "current": str(a.current)}))
+    print("non-finite benchmark value: no pass on garbage", file=sys.stderr)
+    sys.exit(2)
 if not hist:
     if a.baselining:
         print(json.dumps({"class": "Baselining", "baseline": None, "current": a.current}))
@@ -30,14 +34,19 @@ if not hist:
     print("no history on main and [bench.*] baselining is not set: no pass on absence", file=sys.stderr)
     sys.exit(2)
 base = sum(hist) / len(hist)
-if base == 0:
-    print(json.dumps({"class": "NoBaseline", "baseline": 0}))
+if base <= 0:  # a zero or negative baseline cannot express a percentage regression
+    print(json.dumps({"class": "NoBaseline", "baseline": base}))
     sys.exit(2)
 worse = (base - a.current) / base if a.higher_is_better else (a.current - base) / base
 pct = round(worse * 100, 2)
-if worse > 0.50: cls, rc = "Unacceptable", 1
-elif worse >= 0.20: cls, rc = "Acceptable", 3
-elif worse < -0.20: cls, rc = "Extraordinary", 0
-else: cls, rc = "Ordinary", 0
+# Classify on the rounded percentage so float noise (0.19999999999999996) cannot slip under a boundary.
+if pct > 50:
+    cls, rc = "Unacceptable", 1
+elif pct >= 20:
+    cls, rc = "Acceptable", 3
+elif pct < -20:
+    cls, rc = "Extraordinary", 0
+else:
+    cls, rc = "Ordinary", 0
 print(json.dumps({"class": cls, "baseline": base, "current": a.current, "worse_pct": pct, "n": len(hist)}))
 sys.exit(rc)

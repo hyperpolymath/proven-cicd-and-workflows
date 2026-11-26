@@ -4,6 +4,7 @@ name: Proven
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]  # labeled: bench-approved re-runs the gate
   merge_group:
   push:
     branches: [main]
@@ -15,6 +16,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  pull-requests: read  # bench-approved label lookup
 
 jobs:
   proven:

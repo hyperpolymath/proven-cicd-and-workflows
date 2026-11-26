@@ -21,8 +21,9 @@ hand-wired per repo, and nothing passes on absence.
 | ER-A8 workflow integrity | in PR | `scripts/proven-integrity.py`
 | Umbrella `proven.yml` + caller template + `.proven.toml` schema | in PR | release v0.1.0 after merge
 | Sweep 1 runners: unit, smoke, build, P2P | in PR | rust, elixir, go, node, python, zig, shell
-| Six Sigma bench gate | in PR | baseline = mean of last 10 main runs
+| Six Sigma bench gate | in PR | baseline = mean of last 10 main runs; review round 1 fixed (non-finite, negative baseline, rounding, approval survives merge)
 | Dogfood (DOG-01) | in PR | `proven-self.yml` calls the local umbrella
+| Review round 1 (15 CodeRabbit findings) | fixed, awaiting CI | multi-root Go, declared languages, caller filters, waivers in verdict, `labeled` trigger, `pull-requests: read`
 | Adoption doc, check names, org allow-list | in PR | `docs/PROVEN-ADOPTION.adoc`
 |===
 
