@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: MPL-2.0
+name: 'Lean Axioms Gate'
+description: >-
+  Lean axiom gate for standalone (non-Lake) files: detect counts the .lean
+  sources outside any Lake project and refuses a list it cannot read; prove
+  asserts the pinned Lean 4.15.0 (bin/lean SHA-256), runs planted controls
+  through the same judgement (a clean theorem accepted; a sorry, Classical.choice,
+  a declared or unprinted-axiom use, an ill-typed file, a #eval or elab_rules
+  forgery of the clean line, and a declaration added without the kernel
+  refused), compiles each listed file to .olean, then runs the gate's own checker
+  out of process: it replays every constant through the kernel and collects the
+  axioms of every safe constant, module-wide. Nothing the file prints is
+  evidence. Required theorems must resolve to a constant of a listed module. Lake
+  projects belong to proof-runner-check, which builds them and does not judge
+  axioms. The reusable workflow .github/workflows/lean-axioms-gate.yml installs
+  Lean and runs both phases.
+inputs:
+  phase:
+    description: 'detect | prove'
+    required: true
+  working_directory:
+    description: 'Tree root'
+    required: false
+    default: '.'
+  files:
+    description: 'Whitespace-separated standalone .lean files to compile'
+    required: false
+    default: 'verification/proofs/lean4/Haruspex.lean'
+  required_theorems:
+    description: 'Whitespace-separated theorem names that must each resolve to a constant of a listed module (existence only; axioms are judged module-wide); empty for none'
+    required: false
+    default: ''
+  allowed_axioms:
+    description: 'Whitespace-separated axiom names the module may use (full names as the checker prints them); empty for none. sorryAx is never allowable'
+    required: false
+    default: ''
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Lean axioms gate phase
+      shell: bash
+      env:
+        LEAN_GATE_PHASE: ${{ inputs.phase }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        FILES: ${{ inputs.files }}
+        REQUIRED_THEOREMS: ${{ inputs.required_theorems }}
+        ALLOWED_AXIOMS: ${{ inputs.allowed_axioms }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh"
