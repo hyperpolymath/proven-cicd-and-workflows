@@ -37,7 +37,8 @@ if [ "$actual" != "$expected" ]; then
   echo "::error::cicd-suite: checkout is $actual but the reusable workflow is $expected. NO CHECK WAS PERFORMED." >&2
   exit 2
 fi
-for s in actions/rust-ci-check/check.sh actions/creusot-check/check.sh actions/spark-check/check.sh actions/kanren-check/check.sh; do
+for s in actions/rust-ci-check/check.sh actions/creusot-check/check.sh actions/spark-check/check.sh actions/kanren-check/check.sh \
+         actions/agda-check/check.sh actions/rocq-check/check.sh actions/lean-axioms-check/check.sh actions/tla-check/check.sh; do
   [ -f "$suite/$s" ] || { echo "::error::cicd-suite: $s is missing at $expected. NO CHECK WAS PERFORMED." >&2; exit 2; }
 done
 echo "Suite gate scripts pinned at $repository@$expected"
