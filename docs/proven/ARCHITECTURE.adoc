@@ -121,6 +121,8 @@ There are two judgements, and they come from two places:
   own known-answer control. Rewriting a stale copy is a separate applier mode,
   with its own flag, controls and PR branch, and it waits for the owner's review
   of a standards PR.
+  The contract for that mode is `INSTALL-MODE.adoc`, checked by
+  `tests/proven-install-mode.sh`.
 
 Inlined jobs lose two things the reusable call used to give them, and the
 content restores both:

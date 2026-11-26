@@ -42,10 +42,14 @@
 # jobs under sha_pinning_required. cicd-suite/scripts/deonboard-workflow.sh
 # reverses a re-onboarding.
 #
-# There is deliberately NO `concurrency:` block: serialising per SHA would delay the
-# in_progress caller behind a running evaluation that then writes a stale success. Instead the
-# reusable re-reads the runs just before it writes and re-evaluates when they moved
-# (scripts/ci-gate-publish.sh; tests/ci-gate.sh asserts the template has no concurrency).
+# There is deliberately NO `concurrency:` block here: serialising per SHA would delay the
+# in_progress caller behind a running evaluation that then writes a stale success. The reusable's
+# own job cancels a running evaluation of the same SHA instead, and re-reads the runs just before it
+# writes (scripts/ci-gate-publish.sh; tests/ci-gate.sh asserts the template has no concurrency).
+#
+# API budget: "**" starts the gate for every workflow. If the profile's required checks come from a
+# few workflows, naming them (workflows: ["CI", "Lint"]) cuts the events; keep that list in step with
+# the profile (docs/CI-GATE.adoc, "API budget").
 #
 # No `secrets:` line: the reusable consumes none.
 name: CI gate
