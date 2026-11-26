@@ -65,7 +65,7 @@ g 130 --history 1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,100,100,100,10
 
 echo "integrity (ER-A8):"
 mkint() { mk; mkdir -p "$W/r/.github/workflows"; cp "$ROOT/.github/workflows/proven-lock-gate.yml" "$W/r/.github/workflows/"; cp "$ROOT/templates/proven-caller.yml" "$W/r/.github/workflows/proven.yml"; sed -i 's/__PROVEN_SHA__/0123456789abcdef0123456789abcdef01234567/;s/__PROVEN_TAG__/v0/' "$W/r/.github/workflows/proven.yml"; }
-integ() { python3 "$ROOT/scripts/proven-integrity.py" "$W/r" .github/workflows/proven.yml >/dev/null 2>&1; }
+integ() { PROVEN_ROOT="$W/r" python3 "$ROOT/scripts/proven-integrity.py" .github/workflows/proven.yml >/dev/null 2>&1; }
 mkint; integ; expect "template caller is consistent" 0 $?
 mkint; printf 'on: [' > "$W/r/.github/workflows/broken.yml"; integ; expect "an unparseable workflow fails" 1 $?
 mkint; rm "$W/r/.github/workflows/proven-lock-gate.yml"; integ; expect "missing stamped lock gate fails" 1 $?

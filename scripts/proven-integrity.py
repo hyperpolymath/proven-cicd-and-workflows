@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """ER-A8 workflow integrity: no pass on absence.
 
-proven-integrity.py REPO_DIR CALLER_WORKFLOW_PATH
+proven-integrity.py CALLER_WORKFLOW_PATH   (repository root: $PROVEN_ROOT or cwd)
 A missing, skipped or unparseable workflow fails. Exit 0 ok, 1 defect, 2 could not run.
 """
 import glob, os, re, sys
@@ -11,11 +11,9 @@ try:
 except ModuleNotFoundError:
     print("::error::PyYAML unavailable; integrity NOT CHECKED"); sys.exit(2)
 
-root = os.path.realpath(sys.argv[1])
-if not os.path.isdir(root):
-    print("::error::repository directory not found"); sys.exit(2)
+root = os.path.realpath(os.environ.get("PROVEN_ROOT") or os.getcwd())
 os.chdir(root)
-caller = os.path.realpath(os.path.join(root, sys.argv[2]))
+caller = os.path.realpath(os.path.join(root, sys.argv[1]))
 if not caller.startswith(root + os.sep):
     print("::error::caller workflow path escapes the repository"); sys.exit(2)
 caller = os.path.relpath(caller, root)

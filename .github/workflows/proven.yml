@@ -151,7 +151,7 @@ jobs:
           path: .cicd-suite
           persist-credentials: false
       - name: ER-A8 workflow integrity
-        run: python3 .cicd-suite/scripts/proven-integrity.py . "${{ needs.plan.outputs.caller_path }}"
+        run: python3 .cicd-suite/scripts/proven-integrity.py "${{ needs.plan.outputs.caller_path }}"
 
   lock:
     permissions:

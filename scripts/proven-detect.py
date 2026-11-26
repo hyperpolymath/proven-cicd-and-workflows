@@ -27,7 +27,6 @@ import datetime
 import json
 import os
 import re
-import subprocess
 import sys
 
 try:
@@ -157,17 +156,10 @@ def safe_join(root: str, name: str):
 
 
 def list_files(root: str):
-    try:
-        out = subprocess.run(["git", "-C", root, "ls-files", "-z"],
-                             capture_output=True, check=True).stdout
-        files = [f for f in out.decode().split("\0") if f]
-        if files:
-            return files
-    except (OSError, subprocess.CalledProcessError):
-        pass
+    """Every file under root outside the skipped directories (no subprocess)."""
     files = []
     for dp, dns, fns in os.walk(root):
-        dns[:] = [d for d in dns if d != ".git"]
+        dns[:] = [d for d in dns if d not in SKIP_DIRS]
         for f in fns:
             files.append(os.path.relpath(os.path.join(dp, f), root))
     return files
