@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: MPL-2.0
+# Agda Gate — thin caller of the estate's Agda gate in
+# hyperpolymath/proven-cicd-and-workflows. Enforcing: the pinned Agda 2.6.3
+# checks every module the MANIFEST lists under --safe --without-K
+# --cubical-compatible --no-libraries --ignore-interfaces --double-check, a
+# .agda file the MANIFEST does not list fails, and each reject fixture must
+# be refused on its marked line. Planted controls prove the prover can say no
+# before its green is credited.
+#
+# Require `agda / Agda verdict`.
+#
+# Full-SHA pin, DE-ONBOARDED from actions.lock, no `secrets:` — see
+# rust-ci.yml in this directory for why. This gate calls no other reusable
+# workflow, so `contents: read` is all it holds.
+name: Agda Gate
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  agda:
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/agda-gate.yml@__CICD_SUITE_SHA__ # cicd-suite main
+    # Inputs (optional; the defaults are hvn-dehallucinator's layout):
+    #   manifest: verification/proofs/agda/MANIFEST
+    #   proof_dir: verification/proofs/agda     # every .agda here must be listed
+    #   include_dirs: verification/proofs/agda  # whitespace-separated
+    #   siblings_script: scripts/fetch-siblings.sh  # '' if the tree has no pinned siblings
+    #   siblings_include_glob: _build/dependencies/*/src
+    #   reject_dir: tests/reject                # '' if the tree has no reject fixtures

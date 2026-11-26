@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MPL-2.0
+name: 'TLA+ Model-Check Gate'
+description: >-
+  TLA+ gate: detect counts the .tla sources and refuses a spec or config list
+  it cannot read; prove asserts Java 21 and the pinned tla2tools.jar v1.7.4
+  (SHA-256), runs planted controls through the same judgement (a model that
+  holds must pass; one that violates an invariant must be refuted by that
+  invariant and by no other name), then runs TLC: every must_pass config must
+  complete with no error, and every must_refute config (<config>:<Invariant>)
+  must be refuted by exactly that invariant. A must-refute config that passes
+  fails the gate. A model check is tested at its bounds, not proven. The
+  reusable workflow .github/workflows/tla-gate.yml installs Java and runs both
+  phases.
+inputs:
+  phase:
+    description: 'detect | prove'
+    required: true
+  working_directory:
+    description: 'Tree root'
+    required: false
+    default: '.'
+  spec_dir:
+    description: 'Directory holding the spec and its configs'
+    required: false
+    default: 'verification/proofs/tlaplus'
+  spec:
+    description: 'The spec file (a .tla name inside spec_dir)'
+    required: false
+    default: 'Engine.tla'
+  must_pass:
+    description: 'Whitespace-separated configs that must model-check with no error'
+    required: false
+    default: 'Engine.cfg'
+  must_refute:
+    description: 'Whitespace-separated <config>.cfg:<Invariant> entries; TLC must report that invariant violated'
+    required: false
+    default: 'Original.cfg:Guarantee OtherTarget.cfg:GuaranteeBound'
+  workers:
+    description: 'TLC -workers (a number or auto); 1 keeps counterexamples deterministic'
+    required: false
+    default: '1'
+runs:
+  using: 'composite'
+  steps:
+    - name: Run TLA+ gate phase
+      shell: bash
+      env:
+        TLA_GATE_PHASE: ${{ inputs.phase }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        SPEC_DIR: ${{ inputs.spec_dir }}
+        SPEC: ${{ inputs.spec }}
+        MUST_PASS: ${{ inputs.must_pass }}
+        MUST_REFUTE: ${{ inputs.must_refute }}
+        WORKERS: ${{ inputs.workers }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh"
