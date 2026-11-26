@@ -228,13 +228,17 @@ n=$(dlen "$DESC")
   && ok "long failure description is cut to $n chars with an ellipsis" || bad "long description: $n chars '$DESC'"
 PROFILE="$FX/profile.json"
 
-echo "== the status writer is the text of the workflow's own step =="
-# Every status goes through post_status, written by the "Write the status writer" step. The tests
-# extract that heredoc from ci-gate.yml and source it, so they drive the shipped text, not a copy.
+echo "== the REST layer is the text of the workflow's own step =="
+# Every read and every status goes through scripts/ci-gate-api.sh, written byte for byte by the "Write the
+# REST layer" step. The tests extract that heredoc from ci-gate.yml and source it, so they drive the shipped
+# text, not a copy, and fail when the two texts differ.
 awk '/<<.CI_GATE_STATUS_EOF.$/{f=1;next} /^ *CI_GATE_STATUS_EOF$/{f=0} f' "$WORKFLOW" | sed 's/^          //' > "$WORK/status-lib.sh"
 export CI_GATE_STATUS_LIB="$WORK/status-lib.sh"
 grep -q '^post_status()' "$CI_GATE_STATUS_LIB" && bash -n "$CI_GATE_STATUS_LIB" \
-  && ok "extracted the status writer from ci-gate.yml (it parses and defines post_status)" || bad "could not extract the status writer"
+  && ok "extracted the REST layer from ci-gate.yml (it parses and defines post_status)" || bad "could not extract the REST layer"
+cmp -s "$CI_GATE_STATUS_LIB" "$ROOT/scripts/ci-gate-api.sh" \
+  && ok "the workflow step's text is scripts/ci-gate-api.sh byte for byte" \
+  || bad "the workflow step and scripts/ci-gate-api.sh differ (copy the file into the step, indented 10 spaces)"
 
 echo "== publisher: fake gh, settle guard, status writes =="
 PUBLISH="$ROOT/scripts/ci-gate-publish.sh"
@@ -251,6 +255,62 @@ cat > "$FAKEGH/bin/gh" <<'FAKEGH_EOF'
 # reads many); the jobs call is answered from the commit named by the latest runs call.
 # Listings for the sweep: pulls.json (open PRs), default_branch, default_sha, failpulls, faildefault.
 D=${FAKEGH_DIR:?}
+# `gh api -i` (the REST layer, scripts/ci-gate-api.sh): re-invoke this stub without -i to get the items,
+# then answer like GitHub: status line, Etag, Link rel="next" for more pages, X-RateLimit-*, a blank
+# line, the page body. If-None-Match equal to the Etag answers 304 (gh exits 1). The file `limits`
+# injects rate limits, one line per request until empty: primary | secondary | retry429 | perm403
+# (by/<sha>/limits: the same, for the run-list reads of that commit only).
+# Every -i request is logged to requests.log as "<code> <method> <path>".
+if [[ " $* " == *" -i "* ]]; then
+  a=() inm='' method=GET path='' prev=''
+  for x in "$@"; do
+    if [[ $prev == -H && $x == If-None-Match:* ]]; then inm=${x#If-None-Match: }; unset 'a[${#a[@]}-1]'; prev=''; continue; fi
+    if [[ $prev == -X ]]; then method=$x; [[ $x == GET ]] && unset 'a[${#a[@]}-1]' || a+=("$x"); prev=''; continue; fi
+    [[ $x == -i ]] && { prev=$x; continue; }
+    [[ $x == repos/* ]] && path=$x
+    a+=("$x"); prev=$x
+  done
+  log() { echo "$1 $method $path" >> "$D/requests.log"; }
+  lf=$D/limits   # by/<sha>/limits applies to the run-list reads of that one commit (the sweep reads many)
+  [[ $path =~ head_sha=([0-9a-f]{40}) && -s $D/by/${BASH_REMATCH[1]}/limits ]] && lf=$D/by/${BASH_REMATCH[1]}/limits
+  if [[ -s $lf ]]; then
+    kind=$(head -n 1 "$lf"); sed -i 1d "$lf"
+    case $kind in
+      primary)  log 403; printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: %s\r\n\r\n{"message":"API rate limit exceeded for installation ID 1."}\n' "$(( $(cat "$D/clock" 2>/dev/null || echo 0) + ${LIMIT_RESET_IN:-30} ))"; echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2; exit 1 ;;
+      secondary) log 403; printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 4000\r\n\r\n{"message":"You have exceeded a secondary rate limit."}\n'; echo "gh: You have exceeded a secondary rate limit. (HTTP 403)" >&2; exit 1 ;;
+      retry429) log 429; printf 'HTTP/2.0 429 Too Many Requests\r\nRetry-After: 7\r\n\r\n{"message":"slow down"}\n'; echo "gh: HTTP 429" >&2; exit 1 ;;
+      perm403)  log 403; printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 4000\r\n\r\n{"message":"Resource not accessible by integration"}\n'; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+    esac
+  fi
+  if [[ $method == POST ]]; then
+    out=$("$0" api -X POST "${a[@]:1}" 2> "$D/inner.err"); rc=$?; err=$(cat "$D/inner.err")
+    if ((rc == 0)); then log 201; printf 'HTTP/2.0 201 Created\r\n\r\n{}\n'; exit 0; fi
+    if [[ $out == HTTP/* ]]; then   # an injected rate limit (the `ratelimit` file): relay GitHub's answer as it is
+      log "$(awk 'NR == 1 { print $2 }' <<< "$out")"; printf '%s\n' "$out"; echo "$err" >&2; exit 1
+    fi
+    code=500; [[ $err == *"HTTP 422"* ]] && code=422
+    log "$code"; printf 'HTTP/2.0 %s Error\r\n\r\n{"message":"%s"}\n' "$code" "${err//\"/}"; echo "$err" >&2; exit 1
+  fi
+  page=1; [[ $path =~ [\&?]page=([0-9]+) ]] && page=${BASH_REMATCH[1]}
+  base=${path%&page=*}; per=100; [[ $base =~ per_page=([0-9]+) ]] && per=${BASH_REMATCH[1]}
+  case $base in
+    *"actions/runs?head_sha"*) key=workflow_runs ;;
+    *"/jobs?filter=latest"*)   key=jobs ;;
+    *"/status?per_page"*)      key=statuses ;;
+    *) key='' ;;
+  esac
+  items=$("$0" api --paginate "$base" --jq ".${key:-x}[]" 2> "$D/inner.err"); rc=$?
+  if ((rc != 0)) || [[ -z $key ]]; then log 500; printf 'HTTP/2.0 500 Internal Server Error\r\n\r\n{}\n'; cat "$D/inner.err" >&2; exit 1; fi
+  if ! arr=$(jq -sc '.' <<< "$items" 2>/dev/null); then
+    log 200; printf 'HTTP/2.0 200 OK\r\n\r\n%s\n' "$items"; exit 0   # malformed data passes through
+  fi
+  n=$(jq length <<< "$arr")
+  body=$(jq -c --arg k "$key" --argjson o $(( (page - 1) * per )) --argjson p "$per" '{($k): .[$o:$o + $p], total_count: length}' <<< "$arr")
+  etag="\"$(printf '%s' "$body" | sha1sum | cut -c1-40)\""
+  more=''; (( page * per < n )) && more="Link: <https://api.github.com/$base&page=$((page + 1))>; rel=\"next\""$'\r\n'
+  if [[ -n $inm && $inm == "$etag" ]]; then log 304; printf 'HTTP/2.0 304 Not Modified\r\nEtag: %s\r\n%s\r\n' "$etag" "$more"; echo "gh: HTTP 304" >&2; exit 1; fi
+  log 200; printf 'HTTP/2.0 200 OK\r\nEtag: %s\r\n%sX-Ratelimit-Remaining: 4999\r\n\r\n%s\n' "$etag" "$more" "$body"; exit 0
+fi
 if [[ ${CLOCK_API_COST:-0} != 0 ]]; then
   echo "$(( $(cat "$D/clock") + CLOCK_API_COST ))" > "$D/clock"
 fi
@@ -643,11 +703,11 @@ step_text "Publish a failure status when no verdict" > "$WORK/fallback.sh"
 grep -q post_status "$WORK/fallback.sh" && ok "extracted the failure fallback step (it writes through post_status)" || bad "could not extract the failure fallback step"
 grep -q post_status "$WORK/early.sh" && ok "the early pending step writes through post_status" || bad "the early pending step does not use post_status"
 early() { # [VAR=value ...] -> RC, EOUT; the workflow's early pending step for an in_progress run
-  EOUT=$(env "${RLENV[@]}" EVENT_NAME=workflow_run EVENT_ACTION=in_progress RUN_NAME=CI \
+  EOUT=$(env "${RLENV[@]}" API_CACHE="$(mktemp -d "$WORK/cache.XXXXXX")" EVENT_NAME=workflow_run EVENT_ACTION=in_progress RUN_NAME=CI \
     REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate SERVER_URL=https://github.com RUN_ID=1 "$@" bash "$WORK/early.sh" 2>&1); RC=$?
 }
 fallback() { # [VAR=value ...] -> RC, EOUT; the workflow's failure fallback step
-  EOUT=$(env "${RLENV[@]}" EVENT_NAME=workflow_run REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
+  EOUT=$(env "${RLENV[@]}" API_CACHE="$(mktemp -d "$WORK/cache.XXXXXX")" EVENT_NAME=workflow_run REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
     SERVER_URL=https://github.com RUN_ID=1 "$@" bash "$WORK/fallback.sh" 2>&1); RC=$?
 }
 attempts() { grep -c . "$FAKEGH/attempts.log" 2>/dev/null || echo 0; }
@@ -722,14 +782,14 @@ chk "publisher exhausted: exit 1, 'rate limited, no verdict', nothing written" "
 chk "publisher exhausted: die() makes no further failure attempt (5 attempts, all the verdict)" "$(attempts)/$(sort -u "$FAKEGH/attempts.log")" "5/success"
 [ ! -s "$WORK/gho" ] && ok "publisher exhausted: no published=true, so the fallback step runs" || bad "publisher exhausted but claimed published"
 pubreset; snap 1 "$DONE"; publish CI_GATE_STATUS_LIB="$WORK/nonexistent"
-chk "publisher without the status writer: refused, nothing read or written" "$RC/$NPOSTS/$CALLS/$(grep -c 'status writer' <<<"$PUBOUT")" "1/0/0/1"
+chk "publisher without the REST layer: refused, nothing read or written" "$RC/$NPOSTS/$CALLS/$(grep -c 'REST layer' <<<"$PUBOUT")" "1/0/0/1"
 
 echo "-- static: the writer step, the concurrency block --"
 step_line2() { grep -n -- "- name: $1" "$WORKFLOW" | head -1 | cut -d: -f1; }
-L_W=$(step_line2 'Write the status writer')
+L_W=$(step_line2 'Write the REST layer')
 { [ -n "$L_W" ] && [ "$L_W" -gt "$L_REFUSE" ] && [ "$L_W" -lt "$L_PEND" ]; } && ok "the writer step sits between input validation and the early pending" || bad "the writer step is misplaced ($L_W)"
 WSTEP=$(sed -n "${L_W},$((L_PEND - 1))p" "$WORKFLOW")
-! grep -qE '\$suite|fetch |scripts/' <<<"$WSTEP" && ok "the writer step reads no suite file" || bad "the writer step touches the suite"
+! sed '/<<.CI_GATE_STATUS_EOF.$/,/^ *CI_GATE_STATUS_EOF$/d; /^ *#/d' <<<"$WSTEP" | grep -qE '\$suite|fetch |scripts/' && ok "the REST layer step reads no suite file" || bad "the REST layer step touches the suite"
 OUTSIDE=$( { sed -n "1,$((L_W - 1))p" "$WORKFLOW"; sed -n "${L_PEND},\$p" "$WORKFLOW"; } | grep 'gh api')
 [ "$(grep -c . <<<"$OUTSIDE")" = 1 ] && grep -q 'contents/' <<<"$OUTSIDE" \
   && ok "outside the writer, ci-gate.yml calls gh api only to fetch suite files" || bad "ci-gate.yml calls gh api outside the writer: $OUTSIDE"
@@ -778,6 +838,22 @@ chk "a failed SHA makes the sweep exit non-zero" "$RC" 1
 grep -q 'Test (failure)' "$FAKEGH/posts.log" && ok "the failure names the job" || bad "the failure does not name the job"
 grep -qF "| \`$(sha_n 1 | cut -c1-12)\` | PR #1 | failure |" "$WORK/gss" && ok "the step summary table has the failed row" || bad "no failed row in the summary table"
 grep -qF "| default branch | success |" "$WORK/gss" && ok "the step summary table has the default branch row" || bad "no default branch row in the summary table"
+
+echo "-- the sweep spends ONE rate-limit retry budget across all its commits --"
+# The sweep evaluates the default branch head (sha 12) first, then the pull request head (sha 11).
+pubreset; set_pulls "1 $T1 11"; set_default 12
+sweep_sha 11 "$DONE"; sweep_sha 12 "$DONE"
+echo retry429 > "$FAKEGH/by/$(sha_n 11)/limits"; echo retry429 > "$FAKEGH/by/$(sha_n 12)/limits"
+sweep API_RETRY_BUDGET_SECONDS=10 CI_GATE_SLEEP=true
+chk "the first commit (default branch) waits out its 429 (7 s of 10) and is judged" "$(last_for 12)" success
+chk "the second commit's 429 would pass the shared budget (14 s > 10): it is not judged; the failure fallback writes failure, never a pass; the sweep fails" "$(count_for 11)/$(last_for 11)/$RC" "1/failure/1"
+grep -q '7s of the 10s retry budget spent (next wait 7s)' <<< "$SOUT" \
+  && ok "the refusal names the budget already spent by the earlier commit" || bad "the second publisher did not see the shared ledger"
+pubreset; set_pulls "1 $T1 11"; set_default 12
+sweep_sha 11 "$DONE"; sweep_sha 12 "$DONE"
+echo retry429 > "$FAKEGH/by/$(sha_n 11)/limits"; echo retry429 > "$FAKEGH/by/$(sha_n 12)/limits"
+sweep API_RETRY_BUDGET_SECONDS=14 CI_GATE_SLEEP=true
+chk "inside the shared budget (7 + 7 = 14 s), both commits are judged" "$(last_for 11)/$(last_for 12)/$RC" "success/success/0"
 
 pubreset; set_pulls "1 $T1 3"; set_default 4
 sweep_sha 3 "$DONE"; sweep_sha 4 "$DONE"
@@ -915,9 +991,31 @@ RPGH
 chmod +x "$WORK/rp/bin/gh"
 rm -f "$WORK/rp/fetched"; : > "$WORK/rp/gh_env"
 env PATH="$WORK/rp/bin:$PATH" RPDIR="$WORK/rp" RUNNER_TEMP="$WORK/rp/tmp" GITHUB_ENV="$WORK/rp/gh_env" REPO=example/.github \
-  WF_REPO=hyperpolymath/proven-cicd-and-workflows WF_SHA="$(printf 'c%.0s' $(seq 40))" bash "$WORK/readprofile.sh" > "$WORK/rp/out" 2>&1
+  SERVER_URL="file://$WORK/rp/no-such-forge" WF_REPO=hyperpolymath/proven-cicd-and-workflows WF_SHA="$(printf 'c%.0s' $(seq 40))" bash "$WORK/readprofile.sh" > "$WORK/rp/out" 2>&1
 chk "a .github repository: the profile is fetched from profiles/ci-gate/example/.github.json and lands under the owner in the suite" \
   "$?/$(grep -c '^profiles/ci-gate/example/\.github\.json$' "$WORK/rp/fetched")/$([ -f "$WORK/rp/tmp/ci-gate-suite/profiles/ci-gate/example/.github.json" ] && echo yes || echo no)" "0/1/yes"
+grep -q 'git fetch of .* failed; reading the suite files through the contents API' "$WORK/rp/out" \
+  && ok "git unreachable: the step says so and falls back to the contents API" || bad "no fallback notice when git is unreachable"
+echo "-- the suite comes through git when the forge answers (no REST request) --"
+FORGE="$WORK/rp/forge"; rm -rf "$FORGE"; mkdir -p "$FORGE/src"
+( cd "$FORGE/src" && git init -q && mkdir -p scripts profiles/ci-gate/example \
+  && for f in $(grep -o '^ *fetch [^ ]*' "$WORK/readprofile.sh" | awk '{print $2}' | grep -v '\$'); do mkdir -p "$(dirname "$f")"; echo "git:$f" > "$f"; done \
+  && echo '{}' > profiles/ci-gate/example/.github.json \
+  && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm s ) || bad "could not build the local forge"
+GSHA=$(git -C "$FORGE/src" rev-parse HEAD)
+mkdir -p "$FORGE/hyperpolymath"; git clone -q --bare "$FORGE/src" "$FORGE/hyperpolymath/proven-cicd-and-workflows"
+git -C "$FORGE/hyperpolymath/proven-cicd-and-workflows" config uploadpack.allowReachableSHA1InWant true
+rm -rf "$WORK/rp/tmp" "$WORK/rp/fetched"; : > "$WORK/rp/gh_env"
+env PATH="$WORK/rp/bin:$PATH" RPDIR="$WORK/rp" RUNNER_TEMP="$WORK/rp/tmp" GITHUB_ENV="$WORK/rp/gh_env" REPO=example/.github \
+  SERVER_URL="file://$FORGE" WF_REPO=hyperpolymath/proven-cicd-and-workflows WF_SHA="$GSHA" bash "$WORK/readprofile.sh" > "$WORK/rp/out" 2>&1
+chk "git route: the step succeeds, and no file came from the contents API" "$?/$(cat "$WORK/rp/fetched" 2>/dev/null | wc -l)" "0/0"
+chk "git route: the publisher is the one at that commit" "$(cat "$WORK/rp/tmp/ci-gate-suite/scripts/ci-gate-publish.sh" 2>/dev/null)" "git:scripts/ci-gate-publish.sh"
+[ ! -e "$WORK/rp/tmp/ci-gate-suite/scripts/ci-gate-api.sh" ] && ok "git route: the REST layer is not fetched; every step runs the one the workflow wrote" || bad "git route: the suite fetch still pulls a second copy of the REST layer"
+rm -rf "$WORK/rp/tmp" "$WORK/rp/fetched"
+env PATH="$WORK/rp/bin:$PATH" RPDIR="$WORK/rp" RUNNER_TEMP="$WORK/rp/tmp" GITHUB_ENV="$WORK/rp/gh_env" REPO=example/.github \
+  SERVER_URL="file://$FORGE" WF_REPO=hyperpolymath/proven-cicd-and-workflows WF_SHA="$(printf 'd%.0s' $(seq 40))" bash "$WORK/readprofile.sh" > "$WORK/rp/out" 2>&1
+chk "git route, a commit the forge does not have: falls back to the contents API (never reads another commit)" \
+  "$(grep -c 'contents API' "$WORK/rp/out")/$( [ -s "$WORK/rp/fetched" ] && echo api || echo none)" "1/api"
 echo "== the publisher and the sweep refuse a malformed coordinate; a .github repository resolves =="
 jq '.repository = "example/.github"' "$FX/profile.json" > "$SUITE_DIR/profiles/ci-gate/example/.github.json"
 pubreset; snap 1 "$DONE"; publish REPO=example/.github

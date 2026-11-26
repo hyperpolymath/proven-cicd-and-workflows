@@ -7,8 +7,9 @@
 # Environment (every value arrives through env:, never interpolated into a script):
 #   REPO HEAD_SHA CONTEXT TIMEOUT_MINUTES GATE_NAME   what and where to publish
 #   SUITE            directory holding scripts/, profiles/ fetched from the suite at one commit
-#   CI_GATE_STATUS_LIB  the status writer written by ci-gate.yml ("Write the status writer"); every
-#                    status goes through its post_status (de-duplicated, retried when rate limited)
+#   CI_GATE_STATUS_LIB  the REST layer, written by ci-gate.yml ("Write the REST layer") from
+#                    scripts/ci-gate-api.sh: every read goes through its api_list (conditional, paged,
+#                    retried when rate limited), every status through its post_status
 #   WORK             scratch directory (default: a fresh mktemp -d)
 #   SERVER_URL RUN_ID WF_REPO WF_SHA                    for target_url and the step summary
 #   CI_GATE_NOW      test hook: epoch seconds instead of `date +%s`
@@ -59,9 +60,11 @@ done
 [[ $REPO =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && ${REPO#*/} != . && ${REPO#*/} != .. ]] \
   || { echo "::error::ci-gate-publish: REPO is not an owner/name coordinate; NO VERDICT WAS PRODUCED"; exit 1; }
 mkdir -p "$WORK" || exit 1
+# The REST layer (scripts/ci-gate-api.sh, as written by ci-gate.yml): conditional reads, page walking,
+# bounded back-off on rate limits, and the one status writer.
 # shellcheck source=/dev/null
-source "$CI_GATE_STATUS_LIB" && declare -F post_status > /dev/null \
-  || { echo "::error::ci-gate-publish: the status writer $CI_GATE_STATUS_LIB is unreadable; NO VERDICT WAS PRODUCED"; exit 1; }
+source "$CI_GATE_STATUS_LIB" && declare -F post_status api_list > /dev/null \
+  || { echo "::error::ci-gate-publish: the REST layer $CI_GATE_STATUS_LIB is unreadable; NO VERDICT WAS PRODUCED"; exit 1; }
 PROFILE="$SUITE/profiles/ci-gate/$REPO.json"
 published=0
 # Invocation-local cache: never reuse data left by a previous publisher or sweep head.
@@ -92,8 +95,8 @@ die() { # <description> — no verdict could be produced: failure status, red jo
 finish_output() { [[ -z ${GITHUB_OUTPUT:-} ]] || echo "published=true" >> "$GITHUB_OUTPUT"; published=1; }
 
 fetch_runs() { # -> $WORK/workflow-runs.json (every page)
-  gh api --paginate "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" --jq '.workflow_runs[]' \
-    | jq -s '.' > "$WORK/workflow-runs.json.new" \
+  api_list "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100" '.workflow_runs' \
+    > "$WORK/workflow-runs.json.new" \
     && jq -e 'type == "array"' "$WORK/workflow-runs.json.new" > /dev/null \
     && mv "$WORK/workflow-runs.json.new" "$WORK/workflow-runs.json"
 }
@@ -175,8 +178,8 @@ while :; do
       printf '%s\n' "${completed_jobs[$id]}" >> "$WORK/jobs.ndjson"
     else
       unset 'completed_keys[$id]' 'completed_jobs[$id]'
-      jobs=$(gh api --paginate "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[]' \
-        | jq -c --slurpfile run "$WORK/run.json" '. + {run: {id: $run[0].id, name: $run[0].name, path: $run[0].path, status: $run[0].status}}') \
+      jobs=$(api_list "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" '.jobs' \
+        | jq -c --slurpfile run "$WORK/run.json" '.[] | . + {run: {id: $run[0].id, name: $run[0].name, path: $run[0].path, status: $run[0].status}}') \
         || die "could not read the jobs of run $id"
       printf '%s\n' "$jobs" >> "$WORK/jobs.ndjson"
       if [[ $status == completed ]]; then
