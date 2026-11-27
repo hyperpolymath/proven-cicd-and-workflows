@@ -42,3 +42,4 @@ jobs:
     #   toolchain: "1.85.0"             # default "auto": rust-toolchain.toml, else stable
     #   enable_coverage: true           # with coverage_floor: "70"
     #   zig_version: "0.15.2"           # crates with a Zig-native build
+    #   apt_packages: "capnproto protobuf-compiler"  # system tools the build needs (apt, validated)

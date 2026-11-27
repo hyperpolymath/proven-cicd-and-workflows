@@ -1476,10 +1476,19 @@ for spec in "resource-algebra:Proofs verdict:proofs.yml" "mathesis:Proven suite 
   IFS=: read -r repo need wf <<<"$spec"
   jq -e --arg n "$need" --arg w ".github/workflows/$wf" '.checks | any(.[]; .job == $n and .workflow == $w)' "$ROOT/profiles/ci-gate/hyperpolymath/$repo.json" >/dev/null && ok "$repo requires the renamed aggregator '$need' from $wf" || bad "$repo does not require '$need' from $wf"
 done
+# The repositories known to have BOTH producers of the emoji-named Empty-linter gate
+# (dogfood-gate.yml and empty-linter.yml) must require both. Repositories onboarded later name
+# the job without the emoji and have one producer only (read from their check runs), so this
+# exact pair is asserted where it is known to exist, and the pair rule below covers every profile.
+for repo in mathesis resource-algebra rsr-template-repo tsunami-breaker work-queue; do
+  f="$ROOT/profiles/ci-gate/hyperpolymath/$repo.json"
+  jq -e '[.checks[] | select(.job == "🔴 GATE: Empty-linter (invisible characters)") | .workflow] | sort == [".github/workflows/dogfood-gate.yml", ".github/workflows/empty-linter.yml"]' "$f" >/dev/null && ok "hyperpolymath/$repo: both Empty-linter producers are required" || bad "hyperpolymath/$repo: Empty-linter producers are not both listed"
+done
+# Pair rule, every profile: listing one producer of the emoji-named gate means listing both,
+# so a name satisfied by one producer can never stand in for the other.
 for f in "$ROOT"/profiles/ci-gate/*/*.json; do
   repo="$(basename "$(dirname "$f")")/$(basename "$f" .json)"
-  [ "$repo" = hyperpolymath/proven-cicd-and-workflows ] && continue   # the suite has no Empty-linter workflow
-  jq -e '[.checks[] | select(.job == "🔴 GATE: Empty-linter (invisible characters)") | .workflow] | sort == [".github/workflows/dogfood-gate.yml", ".github/workflows/empty-linter.yml"]' "$f" >/dev/null && ok "$repo: both Empty-linter producers are required" || bad "$repo: Empty-linter producers are not both listed"
+  jq -e '[.checks[] | select(.job == "🔴 GATE: Empty-linter (invisible characters)") | .workflow] | sort | (length == 0 or . == [".github/workflows/dogfood-gate.yml", ".github/workflows/empty-linter.yml"])' "$f" >/dev/null && ok "$repo: Empty-linter producers are none or both" || bad "$repo: lists one Empty-linter producer without the other"
 done
 
 echo "== static guards =="
