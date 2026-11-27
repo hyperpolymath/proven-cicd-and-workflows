@@ -594,6 +594,18 @@ the authoring environment, and on a GitHub runner: Language Gates Self-Test run
 43949978719, on 7593837, passed all four. Later heads are pending their own CI.
 The reusable workflows themselves have not yet run in a consumer repository.
 
+==== Advisory auto-fix
+
+`+.github/workflows/advisory-autofix.yml+` audits, on a schedule, every Cargo
+workspace it discovers through a tracked, non-vendored `+Cargo.lock+` (a
+workspace without a tracked lockfile is not covered), bumps a vulnerable crate
+to its lowest patched version with `+cargo update --precise+`, and opens one
+signed PR (never auto-merged). It opens or updates one issue per unresolved
+advisory when no compatible patched version is available. Caller: `+templates/advisory-autofix-caller.yml+`;
+Dependabot config generator: `+scripts/advisory-autofix-dependabot.sh+`. What it
+does and does not cover, including that proof-lane failures are not advisories:
+`+docs/ADVISORY-AUTOFIX.adoc+`.
+
 ==== What a gate may use, and what a consumer's lock must hold
 
 Two constraints are evaluated in the *caller's* repository, so nothing in

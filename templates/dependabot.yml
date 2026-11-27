@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MPL-2.0
+# Dependabot SECURITY updates, one cargo entry per Cargo workspace (KYAML).
+# This is an EXAMPLE with a root workspace and a nested fuzz/ one. Generate the
+# real file for a repo, with an entry for every tracked non-vendored
+# Cargo.lock, by running from its root:
+#   bash <cicd-suite>/scripts/advisory-autofix-dependabot.sh > .github/dependabot.yml
+# `open-pull-requests-limit: 0` keeps version-update PRs off while security PRs
+# still open. Never add `ignore: update-types: [version-update:semver-patch]`:
+# it blocks the patch-level security PRs this file exists for.
+# Also enable "Dependabot security updates" in the repo settings; a file cannot.
+{
+  version: 2,
+  updates: [
+    {
+      package-ecosystem: "cargo",
+      directory: "/",
+      schedule: { interval: "weekly" },
+      open-pull-requests-limit: 0,
+    },
+    {
+      package-ecosystem: "cargo",
+      directory: "/fuzz",
+      schedule: { interval: "weekly" },
+      open-pull-requests-limit: 0,
+    },
+  ],
+}

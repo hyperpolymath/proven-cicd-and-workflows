@@ -7,6 +7,16 @@
       "reason": "Bounded read-only recovery runner; full-SHA official actions, candidate artifacts only, no target writeback or policy changes."
     },
     {
+      "path": ".github/workflows/advisory-autofix-self-test.yml",
+      "mode": "immutable",
+      "reason": "Self-test for the advisory auto-fix; full-SHA actions outside the existing lock map."
+    },
+    {
+      "path": ".github/workflows/advisory-autofix.yml",
+      "mode": "immutable",
+      "reason": "Reusable advisory auto-fix; full-SHA actions outside the existing lock map (de-onboarded like rust-ci.yml); remote closure is not certified by this scope guard."
+    },
+    {
       "path": ".github/workflows/agda-gate.yml",
       "mode": "immutable",
       "reason": "Full-SHA source references outside the existing lock map; remote closure is not certified by this scope guard."
