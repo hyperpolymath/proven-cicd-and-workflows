@@ -61,6 +61,10 @@ na = "single binary, no inter-component seam"   # N/A needs a written reason
 reason = "toolchain not yet provisioned by the umbrella"
 until = "2026-12-31"
 
+# A language whose project is not at the repository root: preparation and every command run there.
+[languages.dir]
+elixir = "elixir-orchestration"
+
 # A source language with no runner must be accounted for, with a reason.
 [languages.ignore.c]
 reason = "vendored header only"
@@ -156,3 +160,11 @@ build, P2P) for rust, elixir, go, node, python, zig and shell, and the Six
 Sigma bench gate. Toolchains for deno, julia, gleam, idris2 and ocaml, and
 sweeps 2 to 4, follow as releases; a repository that needs one before then
 declares it N/A with a reason, or a time-boxed waiver.
+
+== 6. Behaviour notes (rsr-template-repo findings)
+
+* The suite is checked out into `.cicd-suite`, then moved to `$RUNNER_TEMP/cicd-suite` before anything else runs, so repo-root shape checks never see it. (`actions/checkout` cannot write outside the workspace, hence checkout then move.)
+* A command that is not per-language (a category-level manifest command, a justfile recipe, `tests/<category>.sh`) runs once per category, as job `<category>-all` (also in a single-language repo), not once per detected language; dependency preparation runs for every language the job stands for, in the job directory. A root `tests/<category>.sh` stays reachable when `[languages.dir]` moves the job. Per-language manifest commands (`[categories.unit.rust]`) never merge.
+* Node dependency preparation follows the lockfile: `bun.lock`/`bun.lockb` runs `bun install --frozen-lockfile` (bun installed by `npm install -g bun@<bun_version input, default 1.4.5>` when absent), `pnpm-lock.yaml` runs `pnpm install --frozen-lockfile`, `yarn.lock` runs `yarn install --immutable`, `package-lock.json` runs `npm ci`; no lockfile fails closed. This lets a repo satisfy the estate npm-tier-4 policy (no package-lock.json) and still run the node lane.
+* `just` is provisioned (taiki-e/install-action, already allow-listed) for any category job whose command mentions `just`, so justfile-recipe detection works on a bare runner (echidna#531 hit `just: command not found`).
+* Zero-test detection covers rust, elixir, go, python, node, zig and shell, and `all` accepts any recognised count line (cargo `running N tests`, ExUnit, TAP `1..N`/`ok`, `N passed`, zig `All N tests passed`). A language with no parser fails closed instead of passing on exit status. The default zig unit command is `zig build test --summary all`, so a passing run prints a count. The shell parser takes only anchored count forms, so a bare `ok` or `PASS` is not a pass; `all` also accepts Bun `N pass` and `Ran N tests across`.

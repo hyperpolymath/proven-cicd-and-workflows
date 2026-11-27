@@ -40,6 +40,10 @@ on:
         description: OTP version when a mix project is detected
         type: string
         default: "27"
+      bun_version:
+        description: Bun version installed (npm install -g) when a node project has a bun.lock
+        type: string
+        default: "1.4.5"
 
 permissions: {}
 
@@ -95,16 +99,19 @@ jobs:
           ref: ${{ steps.suite.outputs.sha }}
           path: .cicd-suite
           persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
       - name: Refuse scripts from an unverified suite commit
         env:
           EXPECTED: ${{ steps.suite.outputs.sha }}
           EXPECTED_REPOSITORY: ${{ steps.suite.outputs.repository }}
-        run: bash .cicd-suite/scripts/verify-suite-checkout.sh
+          SUITE_DIR: ${{ runner.temp }}/cicd-suite
+        run: bash "$SUITE/scripts/verify-suite-checkout.sh"
       - name: Plan (languages, manifest, categories)
         id: plan
         run: |
           set +e
-          gate=$(bash .cicd-suite/scripts/proven-gate-bin.sh) || { echo "::error::proven-gate failed to build"; exit 1; }
+          gate=$(bash "$SUITE/scripts/proven-gate-bin.sh") || { echo "::error::proven-gate failed to build"; exit 1; }
           "$gate" detect . > "$RUNNER_TEMP/plan.json"
           rc=$?
           set -e
@@ -142,9 +149,11 @@ jobs:
           ref: ${{ needs.plan.outputs.suite_sha }}
           path: .cicd-suite
           persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
       - name: ER-A8 workflow integrity
         run: |
-          gate=$(bash .cicd-suite/scripts/proven-gate-bin.sh) || { echo "::error::proven-gate failed to build"; exit 1; }
+          gate=$(bash "$SUITE/scripts/proven-gate-bin.sh") || { echo "::error::proven-gate failed to build"; exit 1; }
           "$gate" integrity "$CALLER"
         env:
           CALLER: ${{ needs.plan.outputs.caller_path }}
@@ -166,10 +175,12 @@ jobs:
           ref: ${{ needs.plan.outputs.suite_sha }}
           path: .cicd-suite
           persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
       - name: Proven lock gate (SR-005)
         run: |
           [[ -f .github/workflows/proven-lock-gate.yml ]] || { echo '::error::stamped proven-lock-gate.yml is missing'; exit 1; }
-          bash .cicd-suite/scripts/proven-lock-gate.sh "$GITHUB_WORKSPACE" .github/workflows/proven-lock-gate.yml
+          bash "$SUITE/scripts/proven-lock-gate.sh" "$GITHUB_WORKSPACE" .github/workflows/proven-lock-gate.yml
 
   category:
     permissions:
@@ -192,23 +203,31 @@ jobs:
           ref: ${{ needs.plan.outputs.suite_sha }}
           path: .cicd-suite
           persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
-        if: matrix.lang == 'elixir'
+        if: contains(matrix.langs, 'elixir')
         with:
           elixir-version: ${{ inputs.elixir_version }}
           otp-version: ${{ inputs.otp_version }}
           version-type: loose
       - uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406 # v2.2.1
-        if: matrix.lang == 'zig'
+        if: contains(matrix.langs, 'zig')
         with:
           version: ${{ inputs.zig_version }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        if: contains(matrix.command, 'just')
+        with:
+          tool: just
       - name: Run ${{ matrix.category }} for ${{ matrix.lang }} (${{ matrix.source }})
         env:
           CATEGORY: ${{ matrix.category }}
           LANGUAGE: ${{ matrix.lang }}
           WORKDIR: ${{ matrix.dir }}
+          LANGS: ${{ matrix.langs }}
+          BUN_VERSION: ${{ inputs.bun_version }}
           COMMAND: ${{ matrix.command }}
-        run: bash .cicd-suite/scripts/proven-run.sh "$CATEGORY" "$LANGUAGE" "$WORKDIR" "$COMMAND"
+        run: bash "$SUITE/scripts/proven-run.sh" "$CATEGORY" "$LANGUAGE" "$WORKDIR" "$COMMAND"
 
   bench:
     permissions:
@@ -233,6 +252,8 @@ jobs:
           ref: ${{ needs.plan.outputs.suite_sha }}
           path: .cicd-suite
           persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
       - name: Measure, classify against the last 10 main runs, record
         env:
           GH_TOKEN: ${{ github.token }}
@@ -242,7 +263,7 @@ jobs:
           LOWER_IS_BETTER: ${{ matrix.lower_is_better }}
           BASELINING: ${{ matrix.baselining }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-        run: bash .cicd-suite/scripts/proven-bench-run.sh
+        run: bash "$SUITE/scripts/proven-bench-run.sh"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
         with:
