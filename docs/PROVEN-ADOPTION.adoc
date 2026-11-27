@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: CC-BY-SA-4.0
+= Adopting the proven umbrella gate
+:toc:
+
+One caller file, one manifest, one required check. Everything else lives here
+and reaches your repository when the pin is bumped.
+
+== 1. The caller (copy `templates/proven-caller.yml`)
+
+[source,yaml]
+----
+name: Proven
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+  push:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read   # bench-approved label lookup (also on the push after merge)
+jobs:
+  proven:   # the id MUST be `proven`; no `if:`, no `continue-on-error`
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/proven.yml@<40-hex SHA> # v0.1.0
+----
+
+The pin is a full SHA with its release tag in the comment. Dependabot
+(`package-ecosystem: github-actions`) bumps it; that is how new categories,
+aspects and checks reach you. The stamped `proven-lock-gate.yml`
+(`templates/proven-lock-gate.yml`) must also be present (SR-005).
+
+== 2. The manifest: `.proven.toml` (schema `proven/manifest/v1`)
+
+[source,toml]
+----
+schema = "proven/manifest/v1"            # required
+
+# Categories this release enforces: unit, smoke, build, p2p.
+# Command precedence: manifest > justfile recipe (unit|test, smoke, build, p2p)
+#   > tests/<category>.sh > language default.
+[categories.smoke]
+command = "just smoke"                   # applies to every detected language
+[categories.unit.rust]                   # or per language
+command = "cargo nextest run"
+[categories.p2p]
+na = "single binary, no inter-component seam"   # N/A needs a written reason
+
+# A time-boxed adoption waiver. Visible in the verdict, fails once expired.
+[categories.build.waiver]
+reason = "toolchain not yet provisioned by the umbrella"
+until = "2026-12-31"
+
+# A source language with no runner must be accounted for, with a reason.
+[languages.ignore.c]
+reason = "vendored header only"
+
+# Benchmarks. Baseline = mean of the last 10 runs on main.
+[bench.parse]
+command = "cargo run --release --bin bench-parse"   # metric "seconds" times it
+# metric = "ops_per_s"; lower_is_better = false     # or print a number on the last line
+baselining = true                         # first runs only: no history passes, with a record
+----
+
+Fail-closed rules (ER-A8): no manifest, a wrong schema, an unparseable
+manifest, an unknown category, an unknown language with no runner, a category
+with no command and no N/A reason and no unexpired waiver, an empty reason, a
+test run that executed zero tests, and any skipped or cancelled job all fail
+`proven / verdict`.
+
+Bench classes: Unacceptable (more than 50% worse than baseline) blocks;
+Acceptable (20 to 50% worse) fails until a reviewer applies the
+`bench-approved` label; Ordinary (within 20%) and Extraordinary (better by more
+than 20%) pass. With no history and `baselining` unset the bench fails.
+
+== 3. Required check names (org ruleset)
+
+Require exactly one new context per repository:
+
+* `proven / verdict`
+
+It is red if any of plan, integrity, lock, category or bench jobs failed or
+was skipped. Per-category jobs (`proven / unit-rust` and so on) vary with the
+repository and must not be required individually. The stamped lock gate's own
+context `Proven lock gate` stays required where it is already.
+
+== 4. Org allow-list (Settings, Actions, Allowed actions)
+
+The umbrella calls only these, all pinned by full SHA inside it:
+
+[source]
+----
+hyperpolymath/proven-cicd-and-workflows/.github/workflows/proven.yml@*
+actions/checkout@*
+actions/upload-artifact@*
+actions/download-artifact@*
+erlef/setup-beam@*
+goto-bus-stop/setup-zig@*
+----
+
+Already required by the existing gates and unchanged:
+`hyperpolymath/proven-cicd-and-workflows/.github/workflows/rust-ci.yml@*`,
+`dtolnay/rust-toolchain@*`, `swatinem/rust-cache@*`, `taiki-e/install-action@*`,
+`actions/setup-node@*`. A refreshed list is in this file with every release.
+
+=== Estate standards reusable workflows (found by searching the estate)
+
+Both owners appear in the estate, because the `hyperpolymath/standards` name
+redirects to `metadatastician/standards` and a redirected reusable call can
+fail. List both spellings until every caller points at the canonical owner:
+
+[source]
+----
+{metadatastician,hyperpolymath}/standards/.github/workflows/governance-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/secret-scanner-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/scorecard-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/hypatia-scan-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/mirror-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/rust-ci-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/codeql-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/elixir-ci-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/deno-ci-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/changelog-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/rsr-antipattern-reusable.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/spark-theatre-gate.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/deed-conformance.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/k9-conformance.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/ci-pipeline.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/governance.yml@*
+{metadatastician,hyperpolymath}/standards/.github/workflows/affinescript-verify.yml@*
+----
+
+The braces are shorthand: the allow-list takes one line per owner. Entries seen
+once or twice (`gov.yml`, `x.yml`, a `rust-ciXreusable.yml` typo) look like
+mistakes in callers and are left out on purpose; a caller that uses one fails
+and gets fixed.
+
+== 5. What a release adds
+
+The planner, integrity checker and bench classifier are one Rust crate, `tools/proven-gate`
+(built `--locked` by each job that needs it); no Python implementation source is
+used anywhere, per estate doctrine.
+
+Release 0.1.0: plan, ER-A8 integrity, proven lock gate, sweep 1 (unit, smoke,
+build, P2P) for rust, elixir, go, node, python, zig and shell, and the Six
+Sigma bench gate. Toolchains for deno, julia, gleam, idris2 and ocaml, and
+sweeps 2 to 4, follow as releases; a repository that needs one before then
+declares it N/A with a reason, or a time-boxed waiver.
