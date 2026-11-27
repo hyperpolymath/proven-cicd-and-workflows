@@ -228,13 +228,17 @@ n=$(dlen "$DESC")
   && ok "long failure description is cut to $n chars with an ellipsis" || bad "long description: $n chars '$DESC'"
 PROFILE="$FX/profile.json"
 
-echo "== the status writer is the text of the workflow's own step =="
-# Every status goes through post_status, written by the "Write the status writer" step. The tests
-# extract that heredoc from ci-gate.yml and source it, so they drive the shipped text, not a copy.
+echo "== the REST layer is the text of the workflow's own step =="
+# Every read and every status goes through scripts/ci-gate-api.sh, written byte for byte by the "Write the
+# REST layer" step. The tests extract that heredoc from ci-gate.yml and source it, so they drive the shipped
+# text, not a copy, and fail when the two texts differ.
 awk '/<<.CI_GATE_STATUS_EOF.$/{f=1;next} /^ *CI_GATE_STATUS_EOF$/{f=0} f' "$WORKFLOW" | sed 's/^          //' > "$WORK/status-lib.sh"
 export CI_GATE_STATUS_LIB="$WORK/status-lib.sh"
 grep -q '^post_status()' "$CI_GATE_STATUS_LIB" && bash -n "$CI_GATE_STATUS_LIB" \
-  && ok "extracted the status writer from ci-gate.yml (it parses and defines post_status)" || bad "could not extract the status writer"
+  && ok "extracted the REST layer from ci-gate.yml (it parses and defines post_status)" || bad "could not extract the REST layer"
+cmp -s "$CI_GATE_STATUS_LIB" "$ROOT/scripts/ci-gate-api.sh" \
+  && ok "the workflow step's text is scripts/ci-gate-api.sh byte for byte" \
+  || bad "the workflow step and scripts/ci-gate-api.sh differ (copy the file into the step, indented 10 spaces)"
 
 echo "== publisher: fake gh, settle guard, status writes =="
 PUBLISH="$ROOT/scripts/ci-gate-publish.sh"
@@ -251,6 +255,62 @@ cat > "$FAKEGH/bin/gh" <<'FAKEGH_EOF'
 # reads many); the jobs call is answered from the commit named by the latest runs call.
 # Listings for the sweep: pulls.json (open PRs), default_branch, default_sha, failpulls, faildefault.
 D=${FAKEGH_DIR:?}
+# `gh api -i` (the REST layer, scripts/ci-gate-api.sh): re-invoke this stub without -i to get the items,
+# then answer like GitHub: status line, Etag, Link rel="next" for more pages, X-RateLimit-*, a blank
+# line, the page body. If-None-Match equal to the Etag answers 304 (gh exits 1). The file `limits`
+# injects rate limits, one line per request until empty: primary | secondary | retry429 | perm403
+# (by/<sha>/limits: the same, for the run-list reads of that commit only).
+# Every -i request is logged to requests.log as "<code> <method> <path>".
+if [[ " $* " == *" -i "* ]]; then
+  a=() inm='' method=GET path='' prev=''
+  for x in "$@"; do
+    if [[ $prev == -H && $x == If-None-Match:* ]]; then inm=${x#If-None-Match: }; unset 'a[${#a[@]}-1]'; prev=''; continue; fi
+    if [[ $prev == -X ]]; then method=$x; [[ $x == GET ]] && unset 'a[${#a[@]}-1]' || a+=("$x"); prev=''; continue; fi
+    [[ $x == -i ]] && { prev=$x; continue; }
+    [[ $x == repos/* ]] && path=$x
+    a+=("$x"); prev=$x
+  done
+  log() { echo "$1 $method $path" >> "$D/requests.log"; }
+  lf=$D/limits   # by/<sha>/limits applies to the run-list reads of that one commit (the sweep reads many)
+  [[ $path =~ head_sha=([0-9a-f]{40}) && -s $D/by/${BASH_REMATCH[1]}/limits ]] && lf=$D/by/${BASH_REMATCH[1]}/limits
+  if [[ -s $lf ]]; then
+    kind=$(head -n 1 "$lf"); sed -i 1d "$lf"
+    case $kind in
+      primary)  log 403; printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: %s\r\n\r\n{"message":"API rate limit exceeded for installation ID 1."}\n' "$(( $(cat "$D/clock" 2>/dev/null || echo 0) + ${LIMIT_RESET_IN:-30} ))"; echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2; exit 1 ;;
+      secondary) log 403; printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 4000\r\n\r\n{"message":"You have exceeded a secondary rate limit."}\n'; echo "gh: You have exceeded a secondary rate limit. (HTTP 403)" >&2; exit 1 ;;
+      retry429) log 429; printf 'HTTP/2.0 429 Too Many Requests\r\nRetry-After: 7\r\n\r\n{"message":"slow down"}\n'; echo "gh: HTTP 429" >&2; exit 1 ;;
+      perm403)  log 403; printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 4000\r\n\r\n{"message":"Resource not accessible by integration"}\n'; echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+    esac
+  fi
+  if [[ $method == POST ]]; then
+    out=$("$0" api -X POST "${a[@]:1}" 2> "$D/inner.err"); rc=$?; err=$(cat "$D/inner.err")
+    if ((rc == 0)); then log 201; printf 'HTTP/2.0 201 Created\r\n\r\n{}\n'; exit 0; fi
+    if [[ $out == HTTP/* ]]; then   # an injected rate limit (the `ratelimit` file): relay GitHub's answer as it is
+      log "$(awk 'NR == 1 { print $2 }' <<< "$out")"; printf '%s\n' "$out"; echo "$err" >&2; exit 1
+    fi
+    code=500; [[ $err == *"HTTP 422"* ]] && code=422
+    log "$code"; printf 'HTTP/2.0 %s Error\r\n\r\n{"message":"%s"}\n' "$code" "${err//\"/}"; echo "$err" >&2; exit 1
+  fi
+  page=1; [[ $path =~ [\&?]page=([0-9]+) ]] && page=${BASH_REMATCH[1]}
+  base=${path%&page=*}; per=100; [[ $base =~ per_page=([0-9]+) ]] && per=${BASH_REMATCH[1]}
+  case $base in
+    *"actions/runs?head_sha"*) key=workflow_runs ;;
+    *"/jobs?filter=latest"*)   key=jobs ;;
+    *"/status?per_page"*)      key=statuses ;;
+    *) key='' ;;
+  esac
+  items=$("$0" api --paginate "$base" --jq ".${key:-x}[]" 2> "$D/inner.err"); rc=$?
+  if ((rc != 0)) || [[ -z $key ]]; then log 500; printf 'HTTP/2.0 500 Internal Server Error\r\n\r\n{}\n'; cat "$D/inner.err" >&2; exit 1; fi
+  if ! arr=$(jq -sc '.' <<< "$items" 2>/dev/null); then
+    log 200; printf 'HTTP/2.0 200 OK\r\n\r\n%s\n' "$items"; exit 0   # malformed data passes through
+  fi
+  n=$(jq length <<< "$arr")
+  body=$(jq -c --arg k "$key" --argjson o $(( (page - 1) * per )) --argjson p "$per" '{($k): .[$o:$o + $p], total_count: length}' <<< "$arr")
+  etag="\"$(printf '%s' "$body" | sha1sum | cut -c1-40)\""
+  more=''; (( page * per < n )) && more="Link: <https://api.github.com/$base&page=$((page + 1))>; rel=\"next\""$'\r\n'
+  if [[ -n $inm && $inm == "$etag" ]]; then log 304; printf 'HTTP/2.0 304 Not Modified\r\nEtag: %s\r\n%s\r\n' "$etag" "$more"; echo "gh: HTTP 304" >&2; exit 1; fi
+  log 200; printf 'HTTP/2.0 200 OK\r\nEtag: %s\r\n%sX-Ratelimit-Remaining: 4999\r\n\r\n%s\n' "$etag" "$more" "$body"; exit 0
+fi
 if [[ ${CLOCK_API_COST:-0} != 0 ]]; then
   echo "$(( $(cat "$D/clock") + CLOCK_API_COST ))" > "$D/clock"
 fi
@@ -297,7 +357,8 @@ case $args in
     sha=${args#*head_sha=}; sha=${sha%%&*}; echo "$sha" > "$D/cursha"
     R=$D; [[ ! -d $D/by/$sha ]] || R=$D/by/$sha
     n=$(( $(cat "$R/runs.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$R/runs.count"
-    [[ ! -f $R/fail.$n ]] || { echo "gh: HTTP 500" >&2; exit 1; }
+    # a failing read records whether published=true was already written: it must not be, before the post-write verification
+    [[ ! -f $R/fail.$n ]] || { [[ -s ${GITHUB_OUTPUT:-/dev/null} ]] && touch "$R/marker_before_fail.$n"; echo "gh: HTTP 500" >&2; exit 1; }
     f=$R/runs.$n.json; [[ -f $f ]] || f=$(ls "$R"/runs.*.json | sort -V | tail -1)
     jq -c '.[]' "$f" ;;
   *"/jobs?filter=latest"*)
@@ -323,7 +384,7 @@ SHA=$(printf 'a%.0s' $(seq 40))
 snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
   jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/runs.$1.json"
 }
-pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$FAKEGH/ratelimit" "$FAKEGH/attempts.log" "$FAKEGH/rl.sleeps" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
+pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/marker_before_fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$FAKEGH/ratelimit" "$FAKEGH/attempts.log" "$FAKEGH/rl.sleeps" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
   : > "$FAKEGH/jobs.calls"
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
@@ -408,6 +469,7 @@ pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.2"; publish
 chk "gh error on the guard fetch: a failure POST" "$(post_n 1 | cut -f1)" failure
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.3"; publish
 chk "gh error on the post-write fetch: success was written, then a failure POST" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)/$RC" "success,failure/1"
+chk "post-write re-read fails: published=true was not yet written (the failure step must stay eligible), and is written once the failure stands" "$([ -e "$FAKEGH/marker_before_fail.3" ] && echo early || echo none)/$(grep -c '^published=true$' "$WORK/gho")" "none/1"
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/failjobs"; publish
 chk "gh error reading jobs: a failure POST" "$(post_n 1 | cut -f1)" failure
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/failpost"; publish
@@ -643,11 +705,11 @@ step_text "Publish a failure status when no verdict" > "$WORK/fallback.sh"
 grep -q post_status "$WORK/fallback.sh" && ok "extracted the failure fallback step (it writes through post_status)" || bad "could not extract the failure fallback step"
 grep -q post_status "$WORK/early.sh" && ok "the early pending step writes through post_status" || bad "the early pending step does not use post_status"
 early() { # [VAR=value ...] -> RC, EOUT; the workflow's early pending step for an in_progress run
-  EOUT=$(env "${RLENV[@]}" EVENT_NAME=workflow_run EVENT_ACTION=in_progress RUN_NAME=CI \
+  EOUT=$(env "${RLENV[@]}" API_CACHE="$(mktemp -d "$WORK/cache.XXXXXX")" EVENT_NAME=workflow_run EVENT_ACTION=in_progress RUN_NAME=CI \
     REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate SERVER_URL=https://github.com RUN_ID=1 "$@" bash "$WORK/early.sh" 2>&1); RC=$?
 }
 fallback() { # [VAR=value ...] -> RC, EOUT; the workflow's failure fallback step
-  EOUT=$(env "${RLENV[@]}" EVENT_NAME=workflow_run REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
+  EOUT=$(env "${RLENV[@]}" API_CACHE="$(mktemp -d "$WORK/cache.XXXXXX")" EVENT_NAME=workflow_run REPO=example/repo HEAD_SHA="$SHA" CONTEXT=CI/gate \
     SERVER_URL=https://github.com RUN_ID=1 "$@" bash "$WORK/fallback.sh" 2>&1); RC=$?
 }
 attempts() { grep -c . "$FAKEGH/attempts.log" 2>/dev/null || echo 0; }
@@ -670,7 +732,7 @@ pubreset; printf '%s\n' '403 Forbidden' '403 Forbidden' > "$FAKEGH/ratelimit"
 early RL_MESSAGE='You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
 read -r s1 s2 <<<"$(sleeps)"
 chk "a secondary rate limit with no headers: exit 0 after 3 attempts" "$RC/$(attempts)" "0/3"
-{ ((s1 >= 5 && s1 <= 7 && s2 >= 10 && s2 <= 15)); } && ok "no headers: capped exponential backoff with jitter (${s1}s in 5..7, ${s2}s in 10..15)" || bad "backoff out of range: '$(sleeps)'"
+{ ((s1 >= 60 && s1 <= 90 && s2 >= 120 && s2 <= 180)); } && ok "no headers: backoff starts at a minute, doubles, with jitter (${s1}s in 60..90, ${s2}s in 120..180)" || bad "backoff out of range: '$(sleeps)'"
 
 echo "-- firing: rate limited to exhaustion --"
 pubreset; for _ in 1 2 3 4 5 6; do echo "$RETRY_3"; done > "$FAKEGH/ratelimit"; early
@@ -722,14 +784,14 @@ chk "publisher exhausted: exit 1, 'rate limited, no verdict', nothing written" "
 chk "publisher exhausted: die() makes no further failure attempt (5 attempts, all the verdict)" "$(attempts)/$(sort -u "$FAKEGH/attempts.log")" "5/success"
 [ ! -s "$WORK/gho" ] && ok "publisher exhausted: no published=true, so the fallback step runs" || bad "publisher exhausted but claimed published"
 pubreset; snap 1 "$DONE"; publish CI_GATE_STATUS_LIB="$WORK/nonexistent"
-chk "publisher without the status writer: refused, nothing read or written" "$RC/$NPOSTS/$CALLS/$(grep -c 'status writer' <<<"$PUBOUT")" "1/0/0/1"
+chk "publisher without the REST layer: refused, nothing read or written" "$RC/$NPOSTS/$CALLS/$(grep -c 'REST layer' <<<"$PUBOUT")" "1/0/0/1"
 
 echo "-- static: the writer step, the concurrency block --"
 step_line2() { grep -n -- "- name: $1" "$WORKFLOW" | head -1 | cut -d: -f1; }
-L_W=$(step_line2 'Write the status writer')
+L_W=$(step_line2 'Write the REST layer')
 { [ -n "$L_W" ] && [ "$L_W" -gt "$L_REFUSE" ] && [ "$L_W" -lt "$L_PEND" ]; } && ok "the writer step sits between input validation and the early pending" || bad "the writer step is misplaced ($L_W)"
 WSTEP=$(sed -n "${L_W},$((L_PEND - 1))p" "$WORKFLOW")
-! grep -qE '\$suite|fetch |scripts/' <<<"$WSTEP" && ok "the writer step reads no suite file" || bad "the writer step touches the suite"
+! sed '/<<.CI_GATE_STATUS_EOF.$/,/^ *CI_GATE_STATUS_EOF$/d; /^ *#/d' <<<"$WSTEP" | grep -qE '\$suite|fetch |scripts/' && ok "the REST layer step reads no suite file" || bad "the REST layer step touches the suite"
 OUTSIDE=$( { sed -n "1,$((L_W - 1))p" "$WORKFLOW"; sed -n "${L_PEND},\$p" "$WORKFLOW"; } | grep 'gh api')
 [ "$(grep -c . <<<"$OUTSIDE")" = 1 ] && grep -q 'contents/' <<<"$OUTSIDE" \
   && ok "outside the writer, ci-gate.yml calls gh api only to fetch suite files" || bad "ci-gate.yml calls gh api outside the writer: $OUTSIDE"
@@ -778,6 +840,22 @@ chk "a failed SHA makes the sweep exit non-zero" "$RC" 1
 grep -q 'Test (failure)' "$FAKEGH/posts.log" && ok "the failure names the job" || bad "the failure does not name the job"
 grep -qF "| \`$(sha_n 1 | cut -c1-12)\` | PR #1 | failure |" "$WORK/gss" && ok "the step summary table has the failed row" || bad "no failed row in the summary table"
 grep -qF "| default branch | success |" "$WORK/gss" && ok "the step summary table has the default branch row" || bad "no default branch row in the summary table"
+
+echo "-- the sweep spends ONE rate-limit retry budget across all its commits --"
+# The sweep evaluates the default branch head (sha 12) first, then the pull request head (sha 11).
+pubreset; set_pulls "1 $T1 11"; set_default 12
+sweep_sha 11 "$DONE"; sweep_sha 12 "$DONE"
+echo retry429 > "$FAKEGH/by/$(sha_n 11)/limits"; echo retry429 > "$FAKEGH/by/$(sha_n 12)/limits"
+sweep API_RETRY_BUDGET_SECONDS=10 CI_GATE_SLEEP=true
+chk "the first commit (default branch) waits out its 429 (7 s of 10) and is judged" "$(last_for 12)" success
+chk "the second commit's 429 would pass the shared budget (14 s > 10): it is not judged; the failure fallback writes failure, never a pass; the sweep fails" "$(count_for 11)/$(last_for 11)/$RC" "1/failure/1"
+grep -q '7s of the 10s retry budget spent (next wait 7s)' <<< "$SOUT" \
+  && ok "the refusal names the budget already spent by the earlier commit" || bad "the second publisher did not see the shared ledger"
+pubreset; set_pulls "1 $T1 11"; set_default 12
+sweep_sha 11 "$DONE"; sweep_sha 12 "$DONE"
+echo retry429 > "$FAKEGH/by/$(sha_n 11)/limits"; echo retry429 > "$FAKEGH/by/$(sha_n 12)/limits"
+sweep API_RETRY_BUDGET_SECONDS=14 CI_GATE_SLEEP=true
+chk "inside the shared budget (7 + 7 = 14 s), both commits are judged" "$(last_for 11)/$(last_for 12)/$RC" "success/success/0"
 
 pubreset; set_pulls "1 $T1 3"; set_default 4
 sweep_sha 3 "$DONE"; sweep_sha 4 "$DONE"
@@ -874,12 +952,56 @@ sweep CI_GATE_SLEEP="$RL/sleep" CI_GATE_CLOCK="$RL/clock"
 chk "rate limited on the first head: exit 1, 5 attempts, nothing written" "$RC/$(attempts)/$([ -s "$FAKEGH/posts.log" ] && echo posted || echo none)" "1/5/none"
 grep -q '| rate limited | skipped | 2 not evaluated: rate limited |' "$WORK/gss" && ok "the table lists the 2 heads left for the next sweep" || bad "the table does not list the heads left by the rate limit"
 grep -q 'rate limited; the 2 remaining head SHA(s) were NOT evaluated' <<<"$SOUT" && ok "the sweep warns that it stopped" || bad "no warning for the stopped sweep"
+grep -qF '(tamper guard)' "$WORK/gss" && bad "silence: the throttled head heads no pull request, yet a tamper row was written" || ok "silence: no tamper row for a throttled head that heads no pull request"
 pubreset; set_pulls "1 $T1 1" "2 $T1 3"; set_default 2
 sweep_sha 1 "$DONE"; sweep_sha 2 "$DONE"; sweep_sha 3 "$DONE"
 echo '429 Too Many Requests|Retry-After: 3' > "$FAKEGH/ratelimit"
 sweep CI_GATE_SLEEP="$RL/sleep" CI_GATE_CLOCK="$RL/clock"
 chk "control: rate limited once and recovered: all 3 heads written, exit 0" "$(grep -c . "$FAKEGH/posts.log")/$RC/$(grep -c 'not evaluated: rate limited' "$WORK/gss")" "3/0/0"
+pubreset; set_pulls "1 $T1 1"; set_default 1
+sweep_sha 1 "$DONE"
+for _ in 1 2 3 4 5; do echo '429 Too Many Requests|Retry-After: 3'; done > "$FAKEGH/ratelimit"
+sweep CI_GATE_SLEEP="$RL/sleep" CI_GATE_CLOCK="$RL/clock"
+grep -qF '(tamper guard) | skipped | not evaluated: rate limited |' "$WORK/gss" && ok "firing: the throttled head heads PR #1, so its tamper guard is listed as not evaluated" || bad "firing: the throttled head's tamper guard is not listed as not evaluated"
 pubreset
+
+echo "-- the sweep runs the tamper guard publisher for each pull request head (Silence, Firing, mutants) --"
+mk_tamper() { # [exit code] -> a stand-in scripts/ci-gate-tamper-status.sh that logs what it was asked
+  cat > "$SUITE_DIR/scripts/ci-gate-tamper-status.sh" <<TAMPER_EOF
+#!/usr/bin/env bash
+printf '%s\t%s\n' "\$HEAD_SHA" "\$PR_NUMBERS" >> "$FAKEGH/tamper.calls"
+[[ ${1:-0} == 0 ]] || { echo "::error::ci-gate-tamper-status: stand-in refused; NO TAMPER VERDICT WAS PRODUCED"; exit ${1:-0}; }
+echo "CI/gate-tamper-guard = success: stand-in"
+TAMPER_EOF
+}
+SWEEP_UT="$SUITE_DIR/scripts/ci-gate-sweep.sh"
+tsweep_case() { # <tamper exit> -> TC (calls), RC
+  pubreset; : > "$FAKEGH/tamper.calls"; mk_tamper "$1"
+  set_pulls "4 $T1 21" "9 2026-11-17T10:01:00Z 21" "5 2026-11-17T10:02:00Z 22"; set_default 23
+  for i in 21 22 23; do sweep_sha "$i" "$DONE"; done
+  sweep; TC=$(sort "$FAKEGH/tamper.calls")
+}
+tcase_silence() { tsweep_case 0; [[ $TC == "$(printf '%s\t4 9\n%s\t5' "$(sha_n 21)" "$(sha_n 22)")" && $RC == 0 ]]; }
+tcase_firing()  { tsweep_case 1; [[ $RC == 1 ]] && grep -qF "| PR #5 (tamper guard) | error |" "$WORK/gss"; }
+tcase_absent()  { pubreset; rm -f "$SUITE_DIR/scripts/ci-gate-tamper-status.sh"; : > "$FAKEGH/tamper.calls"; set_pulls "4 $T1 21"; set_default 23
+                  for i in 21 23; do sweep_sha "$i" "$DONE"; done; sweep; [[ $RC == 0 && ! -s $FAKEGH/tamper.calls ]]; }
+tcase_silence && ok "two PRs share a head: one tamper call with both numbers; one call per other PR head; none for the default branch" || bad "tamper calls from the sweep: '$TC' rc=$RC"
+tcase_firing && ok "a tamper publisher that could not publish is an error row and the sweep exits non-zero" || bad "a tamper error is not surfaced by the sweep (rc=$RC)"
+tcase_absent && ok "a suite without the tamper publisher: the sweep runs as before" || bad "the sweep needs the tamper publisher (rc=$RC)"
+cp "$SWEEP_UT" "$WORK/sweep.orig"
+tmutant() { # <case> <what> <old> <new>
+  python3 -c 'import sys; s=open(sys.argv[1]).read(); assert s.count(sys.argv[2])==1; open(sys.argv[4],"w").write(s.replace(sys.argv[2],sys.argv[3]))' "$WORK/sweep.orig" "$3" "$4" "$SWEEP_UT" \
+    || { bad "sweep mutant '$2': anchor not found"; cp "$WORK/sweep.orig" "$SWEEP_UT"; return; }
+  if "$1" > /dev/null 2>&1; then bad "sweep mutant survived: $2"; else ok "sweep mutant killed: $2 (by $1)"; fi
+  cp "$WORK/sweep.orig" "$SWEEP_UT"
+}
+tmutant tcase_silence 'only one PR number per head'        "| sort -un | paste -sd' ' -)" "| sort -un | head -n 1)"
+tmutant tcase_silence 'every PR is judged on every head'   '$2 == s && '                '1 && '
+tmutant tcase_firing  'a tamper error is not counted'       '    if (( trc != 0 )); then'"
+      tdesc"                                                                     '    if (( trc > 99 )); then'"
+      tdesc"
+tmutant tcase_absent  'a missing publisher is still run'    'if [[ -n $prs && -f $TAMPER ]]; then' 'if [[ -n $prs ]]; then'
+rm -f "$SUITE_DIR/scripts/ci-gate-tamper-status.sh"; pubreset
 
 echo "== repository coordinate: a leading dot is a name; traversal and malformed ones are not =="
 step_script() { # <file> <step name prefix> -> the step's run: block, de-indented
@@ -955,13 +1077,13 @@ rpc() { [ -f "$WORK/rp/$1" ] && grep -c "${2:-.}" "$WORK/rp/$1" || echo 0; }
 rp_landed() { [ -f "$WORK/rp/tmp/ci-gate-suite/profiles/ci-gate/example/.github.json" ] && echo yes || echo no; }
 rp_run fail
 chk "git refused: a .github repository's profile is read through the contents API from profiles/ci-gate/example/.github.json and lands under the owner" \
-  "$RC/$(rpc fetched '^profiles/ci-gate/example/\.github\.json$')/$(rpc fetched)/$(rp_landed)" "0/1/7/yes"
+  "$RC/$(rpc fetched '^profiles/ci-gate/example/\.github\.json$')/$(rpc fetched)/$(rp_landed)" "0/1/9/yes"
 rp_run ok
-chk "git works: one fetch of the pinned commit, all seven files read from it, no contents-API call, the profile lands under the owner" \
-  "$RC/$(rpc gitfetch)/$(rpc gitfetch "github.com/hyperpolymath/proven-cicd-and-workflows $(printf 'c%.0s' $(seq 40))")/$(rpc gitread)/$(rpc gitread '^profiles/ci-gate/example/\.github\.json$')/$(rpc fetched)/$(rp_landed)/$(grep -c 'via git' "$WORK/rp/out")" "0/1/1/7/1/0/yes/1"
+chk "git works: one fetch of the pinned commit, all nine files read from it, no contents-API call, the profile lands under the owner" \
+  "$RC/$(rpc gitfetch)/$(rpc gitfetch "github.com/hyperpolymath/proven-cicd-and-workflows $(printf 'c%.0s' $(seq 40))")/$(rpc gitread)/$(rpc gitread '^profiles/ci-gate/example/\.github\.json$')/$(rpc fetched)/$(rp_landed)/$(grep -c 'via git' "$WORK/rp/out")" "0/1/1/9/1/0/yes/1"
 rp_run wronghead
 chk "git fetched another commit than the pin: nothing is read from it, the contents API is used instead" \
-  "$RC/$(rpc gitread)/$(rpc fetched)/$(grep -c 'via api' "$WORK/rp/out")" "0/0/7/1"
+  "$RC/$(rpc gitread)/$(rpc fetched)/$(grep -c 'via api' "$WORK/rp/out")" "0/0/9/1"
 echo "== the publisher and the sweep refuse a malformed coordinate; a .github repository resolves =="
 jq '.repository = "example/.github"' "$FX/profile.json" > "$SUITE_DIR/profiles/ci-gate/example/.github.json"
 pubreset; snap 1 "$DONE"; publish REPO=example/.github
