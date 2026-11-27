@@ -30,4 +30,4 @@ bash "$ROOT/scripts/proven-run.sh" unit all "$W/r" "echo hi" >/dev/null 2>&1 && 
 bash "$ROOT/scripts/proven-run.sh" unit all "$W/r" "echo 1..4" >/dev/null 2>&1 || { echo "p2p: a counted repo-wide run failed"; fail=1; }
 printf 'schema = "proven/manifest/v1"\n' > "$W/r/.proven.toml"
 "$GATE" detect "$W/r" >/dev/null 2>&1 && { echo "p2p: a plan with no runners was accepted"; fail=1; }
-(( fail == 0 )) && echo "p2p: ok"; exit "$fail"
+(( fail == 0 )) && echo "ok - p2p: every seam check passed"; exit "$fail"
