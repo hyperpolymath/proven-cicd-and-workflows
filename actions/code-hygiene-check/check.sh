@@ -59,11 +59,62 @@ else
 fi
 
 echo 'Scanning proof code for undeclared circumventions...'
+# The default policy scan covers proof languages with single-line comments.
+# Coq has nested block comments and the proof-closing keyword Admitted.;
+# a line grep without comment masking both misses the latter and produces
+# false positives on quoted or commented specimens. Delegate Coq to the
+# source-owned, fully tested lexical scanner below.
 circ="$({ git grep --untracked -n -E -w 'sorry|believe_me|admit|postulate|assert_total' -- \
-  '*.idr' '*.lean' '*.v' '*.agda' '*.thy' \
+  '*.idr' '*.lean' '*.agda' '*.thy' \
   "${exclude_paths[@]}" \
   "${allow_args[@]+"${allow_args[@]}"}" || true; } \
   | grep -vE ':[0-9]+:[[:space:]]*(\|\|\||--|//|\(\*)' || true)"
+
+hygiene_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+scanner="$hygiene_dir/scan-coq.pl"
+classifier="$hygiene_dir/classify-v-source.sh"
+if [[ ! -r "$scanner" || ! -r "$classifier" ]]; then
+  echo "::error::NOT_RUN: Coq language classifier or scanner missing" >&2
+  fail=1
+else
+  while IFS= read -r -d '' file; do
+    if [[ ! -f "$file" ]]; then
+      # A sparse-checkout checkout can list index entries omitted from the
+      # working tree. Those were not scanned by the previous git-grep gate.
+      # Skip only positively identified skip-worktree paths, not missing
+      # normal source files (which must fail closed).
+      if git ls-files -v -- "$file" | grep -q '^S '; then
+        echo "NOT_APPLICABLE: $file omitted by sparse checkout"
+        continue
+      fi
+    fi
+    result=''
+    rc=0
+    language="$(bash "$classifier" "$file" 2>&1)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      echo "::error::NOT_RUN: cannot classify $file: $language" >&2
+      fail=1
+      continue
+    fi
+    if [[ "$language" = verilog ]]; then
+      echo "NOT_APPLICABLE: $file is explicitly declared Verilog"
+      continue
+    fi
+    if [[ "$language" != coq ]]; then
+      echo "::error::NOT_RUN: unexpected classifier result for $file: $language" >&2
+      fail=1
+      continue
+    fi
+    result="$(perl "$scanner" "$file" 2>&1)" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) circ+=$'\n'"$result" ;;
+      *) echo "::error::NOT_RUN: Coq scanner failed for $file: $result" >&2; fail=1 ;;
+    esac
+  done < <(git ls-files --cached --others --exclude-standard -z -- '*.v' \
+    "${exclude_paths[@]}" "${allow_args[@]+"${allow_args[@]}"}")
+fi
+
 if [[ -n "$circ" ]]; then
   echo '::error::Undeclared proof circumventions found:' >&2
   printf '%s\n' "$circ"
