@@ -10,7 +10,7 @@ GATE=$(bash "$ROOT/scripts/proven-gate-bin.sh") || { echo "p2p: proven-gate does
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 fail=0
 mkdir -p "$W/r" && ( cd "$W/r" && git init -q . )
-printf 'schema = "proven/manifest/v1"\n[categories.unit.shell]\ncommand = "echo ok: unit seam"\n[categories.smoke.shell]\ncommand = "echo ok: smoke seam"\n[categories.build.shell]\ncommand = "true"\n[categories.p2p.shell]\ncommand = "false"\n' > "$W/r/.proven.toml"
+printf 'schema = "proven/manifest/v1"\n[categories.unit.shell]\ncommand = "echo ok - unit seam"\n[categories.smoke.shell]\ncommand = "echo ok - smoke seam"\n[categories.build.shell]\ncommand = "true"\n[categories.p2p.shell]\ncommand = "false"\n' > "$W/r/.proven.toml"
 echo 'echo' > "$W/r/a.sh"; ( cd "$W/r" && git add -A )
 plan=$("$GATE" detect "$W/r") || { echo "p2p: plan refused"; exit 1; }
 passed=0 failed=0
