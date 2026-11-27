@@ -238,6 +238,12 @@
           run: "bash tests/ci-gate-tamper-guard.sh",
         },
         {
+          # The caller renderer / drift check: render at a pinned suite SHA, the empty
+          # actions.lock entry, retired guard removal, refusals, every drift kind. Needs
+          # Go yq v4 (on the runner's PATH).
+          run: "bash tests/ci-gate-caller.sh",
+        },
+        {
           # The shell coverage tracer and gate: lcov statements and hits on
           # fixtures, exclusion matching, and the firing and silence controls.
           # Hard: a tracer that miscounts would make every coverage report lie.
