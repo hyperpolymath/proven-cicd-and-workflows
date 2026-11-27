@@ -33,6 +33,15 @@
         "templates/**",
         "scripts/proven-stamp.sh",
         "scripts/proven-coverage-collect.sh",
+        "scripts/proven-shell-coverage.sh",
+        "scripts/proven-coverage-gate.sh",
+        "scripts/proven-coverage.sh",
+        ".proven/**",
+        # self-pin-reachable.sh reads every self-pin, so any workflow or composite
+        # that gains one must re-run it before merge.
+        "scripts/self-pin-reachable.sh",
+        ".github/workflows/*.yml",
+        "actions/*/action.yml",
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
         "scripts/ci-gate-publish.sh",
@@ -87,6 +96,15 @@
         "templates/**",
         "scripts/proven-stamp.sh",
         "scripts/proven-coverage-collect.sh",
+        "scripts/proven-shell-coverage.sh",
+        "scripts/proven-coverage-gate.sh",
+        "scripts/proven-coverage.sh",
+        ".proven/**",
+        # self-pin-reachable.sh reads every self-pin, so any workflow or composite
+        # that gains one must re-run it before merge.
+        "scripts/self-pin-reachable.sh",
+        ".github/workflows/*.yml",
+        "actions/*/action.yml",
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
         "scripts/ci-gate-publish.sh",
@@ -157,6 +175,12 @@
           run: "bash tests/lock-transitive-closure.sh",
         },
         {
+          # A self-pin to a PR branch's own commit breaks main once the squash
+          # merge deletes that branch (#136, repaired by #175). Pins must be on main.
+          name: "Self-pins are reachable from main",
+          run: "bash tests/self-pin-reachable.sh",
+        },
+        {
           # scripts/deonboard-workflow.sh, through both entry points, against
           # every actions.lock schema it claims to support; an untested schema
           # must fail closed.
@@ -212,6 +236,44 @@
           # actions.lock entry, retired guard removal, refusals, every drift kind. Needs
           # Go yq v4 (on the runner's PATH).
           run: "bash tests/ci-gate-caller.sh",
+        },
+        {
+          # The shell coverage tracer and gate: lcov statements and hits on
+          # fixtures, exclusion matching, and the firing and silence controls.
+          # Hard: a tracer that miscounts would make every coverage report lie.
+          run: "bash tests/proven-coverage-gate.sh",
+        },
+      ],
+    },
+    # The whole-repository coverage run (scripts/proven-coverage.sh). Report
+    # only: it writes its findings to the job summary and never blocks a merge,
+    # until the estate decides the uncovered statements are worth gating.
+    # actionlint comes from the pin in proven/pins/toolchain.tsv, built with the
+    # runner's Go toolchain, so this job adds no `uses:` to the actions.lock closure.
+    coverage-report: {
+      name: "Coverage report (non-blocking)",
+      runs-on: "ubuntu-latest",
+      timeout-minutes: 20,
+      continue-on-error: true,
+      steps: [
+        {
+          uses: "actions/checkout@v7.0.1",
+          # Full history: lock-transitive-closure.sh resolves pinned commits in this clone.
+          with: { persist-credentials: false, fetch-depth: 0 },
+        },
+        {
+          # actionlint runs shellcheck when it is on PATH. The runner image ships one
+          # at a floating version; the pinned release replaces it, checked by sha256.
+          name: "Install pinned shellcheck",
+          run: "v=$(awk -F'\\t' '$1 == \"shellcheck\" { print $2 }' proven/pins/toolchain.tsv)\ntest \"$v\" = 0.10.0\nf=shellcheck-v$v.linux.x86_64.tar.xz\ncurl -sSfL -o \"$RUNNER_TEMP/$f\" \"https://github.com/koalaman/shellcheck/releases/download/v$v/$f\"\necho \"6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87  $RUNNER_TEMP/$f\" | sha256sum -c -\nmkdir -p \"$RUNNER_TEMP/bin\"\ntar -xJf \"$RUNNER_TEMP/$f\" -C \"$RUNNER_TEMP\"\ncp \"$RUNNER_TEMP/shellcheck-v$v/shellcheck\" \"$RUNNER_TEMP/bin/\"\necho \"$RUNNER_TEMP/bin\" >> \"$GITHUB_PATH\"\n",
+        },
+        {
+          name: "Install pinned actionlint",
+          run: "v=$(awk -F'\\t' '$1 == \"actionlint\" { print $2 }' proven/pins/toolchain.tsv)\ntest -n \"$v\"\nGOBIN=\"$RUNNER_TEMP/bin\" go install \"github.com/rhysd/actionlint/cmd/actionlint@v$v\"\necho \"$RUNNER_TEMP/bin\" >> \"$GITHUB_PATH\"\n",
+        },
+        {
+          name: "Coverage run",
+          run: "rc=0\nbash scripts/proven-coverage.sh \"$RUNNER_TEMP/coverage\" > \"$RUNNER_TEMP/coverage.log\" 2>&1 || rc=$?\n{\n  echo \"## Coverage report (exit $rc, non-blocking)\"\n  echo '```'\n  tail -n 200 \"$RUNNER_TEMP/coverage.log\"\n  echo '```'\n} >> \"$GITHUB_STEP_SUMMARY\"\ncat \"$RUNNER_TEMP/coverage.log\"\n# Each failing or not-run test's own log, so a runner-only failure can be triaged.\nawk -F'\\t' '$1 != 0 { print $2 }' \"$RUNNER_TEMP/coverage/tests.tsv\" | while IFS= read -r t; do\n  echo \"::group::log of $t\"\n  l=\"$RUNNER_TEMP/coverage/log.${t//\\//_}\"\n  echo '--- failing lines'\n  grep -n -i -E 'FAIL|not ok|error|NO CHECK|NOT RUN' \"$l\" | grep -v -E '^[0-9]+: +ok ' | head -n 40 || true\n  echo '--- tail'\n  tail -n 60 \"$l\"\n  echo '::endgroup::'\ndone\nif [ \"$rc\" -ne 0 ]; then echo \"::warning title=Coverage report::proven-coverage.sh exited $rc (report only, see the job summary)\"; fi\n",
         },
       ],
     },
