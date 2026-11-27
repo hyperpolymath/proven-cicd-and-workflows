@@ -45,14 +45,14 @@
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
         "scripts/ci-gate-publish.sh",
+        "scripts/ci-gate-api.sh",
         "scripts/ci-gate-sweep.sh",
         "scripts/ci-gate-tamper-guard.sh",
-        "scripts/ci-gate-caller.sh",
+        "scripts/ci-gate-tamper-status.sh",
         "scripts/validate-ci-gate-profile.sh",
         "profiles/ci-gate/**",
         ".github/workflows/ci-gate.yml",
         ".github/workflows/ci-gate-caller.yml",
-        ".github/workflows/ci-gate-tamper-guard*.yml",
         ".github/workflows/proven-lock-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
@@ -108,14 +108,14 @@
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
         "scripts/ci-gate-publish.sh",
+        "scripts/ci-gate-api.sh",
         "scripts/ci-gate-sweep.sh",
         "scripts/ci-gate-tamper-guard.sh",
-        "scripts/ci-gate-caller.sh",
+        "scripts/ci-gate-tamper-status.sh",
         "scripts/validate-ci-gate-profile.sh",
         "profiles/ci-gate/**",
         ".github/workflows/ci-gate.yml",
         ".github/workflows/ci-gate-caller.yml",
-        ".github/workflows/ci-gate-tamper-guard*.yml",
         ".github/workflows/proven-lock-gate.yml",
         ".github/workflows/code-hygiene-self-test.yml",
         ".github/workflows/actions.lock",
@@ -226,6 +226,12 @@
           # reported is a failure, never a pass), the profile validator, the
           # shipped profiles, and static guards on the reusable and its caller.
           run: "bash tests/ci-gate.sh",
+        },
+        {
+          # The gate's REST layer: conditional reads (ETag, 304), pagination and its cap,
+          # rate-limit back-off (primary, secondary, 429) inside a bounded budget, fail-closed
+          # edges, and one mutant per guard.
+          run: "bash tests/ci-gate-api.sh",
         },
         {
           # The tamper guard: file matching, label logic, fail-closed errors, static guards.
