@@ -4,16 +4,28 @@
 # ci-gate.yml — the interim `CI/gate`, as a reusable workflow. See docs/CI-GATE.adoc.
 #
 # It publishes ONE commit status (context = `inputs.context`, default `CI/gate`) on the head
-# commit of the workflow run that triggered it. The verdict is a pure script
+# commit of the workflow run (or pull request) that triggered it. The verdict is a pure script
 # (scripts/ci-gate-verdict.sh) over the required-check list for the calling repository
-# (profiles/ci-gate/<owner>/<repo>.json) and the Actions jobs (latest attempt) of that commit's workflow runs.
+# (profiles/ci-gate/<owner>/<repo>.json) and the Actions check runs (latest attempt) of that commit.
+#
+# CALL BUDGET: an evaluation reads the commit with TWO requests however many workflows it has: the
+# workflow runs of the head SHA, and the latest check runs of the commit, joined on check suite id
+# (scripts/ci-gate-lib.sh, profiles/ci-gate/join-checks.jq). It never lists the jobs of each run.
+#
+# COALESCING: the job has a `concurrency` group keyed on repository, context and head SHA with
+# cancel-in-progress, so the newest event for a commit replaces any evaluation still queued or
+# running for it. The sweep has its own group and is neither cancelled by nor cancelling those.
 #
 # WHY A COMMIT STATUS: a job inside a reusable workflow gets the check-run name
 # `<caller job> / <called job>`, which always contains " / " and so can never equal `CI/gate`.
 #
 # WHY workflow_run: GitHub runs a workflow_run workflow from the DEFAULT branch, so a pull
-# request cannot edit the caller, its pin, or its list. Each started or completed workflow re-evaluates
-# the head commit; there is no polling.
+# request cannot edit the caller, its pin, or its list. Each COMPLETED workflow re-evaluates the head
+# commit; there is no polling and no wait. A RE-RUN is announced by a start event, `requested`
+# or `in_progress` (GitHub is documented not to emit `requested` for a re-run, and which start event it does
+# send is unconfirmed, so the caller subscribes to both and filters first attempts out at its job `if:`):
+# either one writes one deduplicated pending and evaluates nothing. The pull_request start (gate-pr)
+# evaluates once and exits.
 #
 # SAFETY — this workflow never checks out, builds or executes code from the consumer
 # repository or the pull request (the pwn-request hazard of workflow_run). It reads only
@@ -24,28 +36,17 @@
 #
 # SWEEP: on `schedule` and `workflow_dispatch` there is no triggering run, so the job instead lists the
 # open pull requests and the default branch head of `github.repository` and runs the same guarded
-# publisher on each distinct head SHA (scripts/ci-gate-sweep.sh), with no early pending. That bounds
+# publisher on each distinct head SHA (scripts/ci-gate-sweep.sh). That bounds
 # nothing by itself: a sweep is one more last-writer-wins evaluator (docs/CI-GATE.adoc, "Residual limit").
 #
-# FAIL CLOSED: a missing or invalid profile, an empty `job.workflow_sha`, any API error, or
-# any event other than workflow_run, schedule or workflow_dispatch is a failure, never a pass or a pending.
+# FAIL CLOSED, NEVER FAIL ON AN UNAVAILABLE API: a missing or invalid profile, an empty
+# `job.workflow_sha`, a real API error (a 4xx that is not a rate limit), or any event other than
+# workflow_run, pull_request, schedule or workflow_dispatch is a failure, never a pass or a pending.
+# A rate-limited or unavailable GitHub API (429, a 403 that says rate limit, a 5xx, no answer) is
+# retried with back-off and then published as `pending` "re-evaluating later": never as a failure.
 #
-# STATUS WRITES: every commit status (the early pending, the verdicts, the failure fallback) goes
-# through one writer, written by the "Write the status writer" step and sourced by the others and by
-# scripts/ci-gate-publish.sh. It skips a write that repeats the status already standing for the
-# context (same state and description: GitHub keeps at most 1000 statuses per SHA and context), and
-# retries a rate-limited POST (HTTP 429, or 403 with a rate-limit answer): it waits for Retry-After,
-# else for x-ratelimit-reset when the quota is spent, else capped exponential backoff with jitter;
-# at most 5 attempts and 300 s of waiting per status. Exhausted, it fails with "rate limited, no verdict".
-#
-# CONCURRENCY: one evaluation per repository, context and head SHA at a time (pull_request apart from
-# the others); a newer event for the same SHA cancels the running one, which re-reads everything
-# anyway. Schedule and workflow_dispatch sweeps are keyed by run, so they never cancel each other.
-# Callers can cut events further by naming their workflows in `workflow_run.workflows` instead of
-# "**" (docs/CI-GATE.adoc, "API budget").
-#
-# The caller must grant: statuses: write, actions: read, contents: read, pull-requests: read
-# (the last one is read only by the sweep, to list open pull requests).
+# The caller must grant: statuses: write, actions: read, checks: read, contents: read,
+# pull-requests: read (the last one is read only by the sweep, to list open pull requests).
 # No `secrets:` — the reusable consumes none.
 
 name: CI gate (reusable)
@@ -64,12 +65,12 @@ on:
         required: false
         default: 180
       wait_minutes:
-        description: pull_request only. Maximum 50 minutes (reserves 10 minutes of the job timeout). How long to keep polling while a required check has not reported or a run is still active, before failing. Ignored on every other event.
+        description: DEPRECATED and IGNORED. The pull_request start no longer waits or polls (it evaluates once; the verdict comes from workflow_run completions and the sweep). Accepted so that pinned callers keep working.
         type: number
         required: false
         default: 30
       poll_seconds:
-        description: pull_request only. Seconds between polls.
+        description: DEPRECATED and IGNORED, like wait_minutes. Accepted so that pinned callers keep working.
         type: number
         required: false
         default: 20
@@ -86,28 +87,78 @@ jobs:
     name: CI gate
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # One evaluation per commit at a time; the newest event replaces older ones. workflow_run and
+    # pull_request share the key of their head SHA. A schedule or workflow_dispatch sweep has the key
+    # "sweep" (no commit has that name), and is never cancelled: a sweep that runs longer than the
+    # cron interval would otherwise be cancelled by the next one and never finish.
     concurrency:
-      group: ci-gate|${{ github.repository }}|${{ inputs.context }}|${{ github.event_name == 'pull_request' && 'pr' || 'run' }}|${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.run_id }}
-      cancel-in-progress: true
+      group: ci-gate-${{ github.repository }}-${{ inputs.context }}-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || 'sweep' }}
+      cancel-in-progress: ${{ github.event_name == 'workflow_run' || github.event_name == 'pull_request' }}
     permissions:
       statuses: write
       actions: read
+      checks: read
       contents: read
       pull-requests: read
     env:
       GH_TOKEN: ${{ github.token }}
       EVENT_NAME: ${{ github.event_name }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+      # `requested` or `in_progress` (a re-run starting) or `completed`; empty for every other event
+      WORKFLOW_RUN_ACTION: ${{ github.event_name == 'workflow_run' && github.event.action || '' }}
       REPO: ${{ github.repository }}
       CONTEXT: ${{ inputs.context }}
       TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
-      WAIT_MINUTES: ${{ inputs.wait_minutes }}
-      POLL_SECONDS: ${{ inputs.poll_seconds }}
       GATE_NAME: ${{ github.workflow }}
       SERVER_URL: ${{ github.server_url }}
       RUN_ID: ${{ github.run_id }}
     steps:
-      - name: Refuse anything but a workflow_run, schedule or workflow_dispatch event
+      - name: Read the gate library from this suite at its own commit
+        id: bootstrap
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+        # job.workflow_repository / job.workflow_sha name the reusable workflow file's own
+        # repository and commit. Empty means the runner cannot say: fail, do not guess.
+        # This one request cannot go through the library it is fetching, so it carries its own small
+        # bounded retry for a rate limit or a server error. If it still fails, no status is written here and the
+        # job is red: nothing can be published through the library without it. When the cause was an
+        # unavailable API the step reports `unavailable=true` and the fallback step stays silent (this gate
+        # never posts a failure for an unavailable API); for any other cause the fallback step writes the
+        # failure with its own small inline request.
+        run: |
+          set -euo pipefail
+          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${WF_REPO#*/}" != . && "${WF_REPO#*/}" != .. ]] \
+            || { echo "::error::job.workflow_repository is empty or malformed ('$WF_REPO'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
+          [[ "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::job.workflow_sha is empty or not a 40-hex commit ('$WF_SHA'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
+          suite="$RUNNER_TEMP/ci-gate-suite"
+          rm -rf "$suite"; mkdir -p "$suite/scripts" "$suite/profiles/ci-gate"
+          err="$RUNNER_TEMP/ci-gate-lib.err"
+          delay=5; got=0; transient=0
+          for attempt in 1 2 3 4 5; do
+            # gh writes the JSON body of an error response to stdout too, so success is the exit status, not a non-empty file
+            if gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WF_REPO/contents/scripts/ci-gate-lib.sh?ref=$WF_SHA" > "$suite/scripts/ci-gate-lib.sh" 2> "$err"; then
+              got=1; break
+            fi
+            transient=0
+            if grep -qiE 'rate limit|HTTP (429|5[0-9][0-9])|timeout|connection|EOF' "$err"; then
+              transient=1
+              if ((attempt < 5)); then
+                echo "scripts/ci-gate-lib.sh: transient API error (attempt $attempt); retrying in ${delay}s"
+                sleep "$delay"; delay=$((delay * 2)); continue
+              fi
+            fi
+            break
+          done
+          if ((got != 1)) || [[ ! -s "$suite/scripts/ci-gate-lib.sh" ]]; then
+            cat "$err" >&2
+            echo "::error::could not read scripts/ci-gate-lib.sh from $WF_REPO@$WF_SHA; NO STATUS WAS WRITTEN"
+            if ((transient)); then echo "unavailable=true" >> "$GITHUB_OUTPUT"; fi
+            exit 1
+          fi
+          echo "suite=$suite" >> "$GITHUB_ENV"
+      - name: Refuse anything but a workflow_run, pull_request, schedule or workflow_dispatch event
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
@@ -129,178 +180,107 @@ jobs:
             || { echo "::error::context input is empty or has unexpected characters"; exit 1; }
           [[ "$TIMEOUT_MINUTES" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::timeout_minutes must be a positive integer"; exit 1; }
-          [[ "$WAIT_MINUTES" =~ ^[0-9]+$ && "$POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] \
-            || { echo "::error::wait_minutes must be a non-negative and poll_seconds a positive integer"; exit 1; }
-          # Reserve ten minutes of the 60-minute job for setup and final publication.
-          if [[ "$EVENT_NAME" == pull_request ]]; then
-            [[ ${#WAIT_MINUTES} -le 2 ]] && ((10#$WAIT_MINUTES <= 50)) \
-              || { echo "::error::wait_minutes must be at most 50 to fit the job timeout"; exit 1; }
-          fi
-      - name: Write the status writer
-        # Local only: no API call and no suite file, so the early pending below still runs first.
-        # One copy of the writer for the whole job; tests/ci-gate.sh extracts and drives this text.
-        run: |
-          set -euo pipefail
-          lib="$RUNNER_TEMP/ci-gate-status.sh"
-          cat > "$lib" <<'CI_GATE_STATUS_EOF'
-          # ci-gate status writer: sourced, never run. Needs REPO HEAD_SHA CONTEXT SERVER_URL RUN_ID.
-          # Test hooks: CI_GATE_SLEEP (the sleep command), CI_GATE_CLOCK (a date command, called with +%s).
-          CI_GATE_RETRY_ATTEMPTS=${CI_GATE_RETRY_ATTEMPTS:-5}   # POSTs per status, the first included
-          CI_GATE_RETRY_SECONDS=${CI_GATE_RETRY_SECONDS:-300}   # total waiting per status
-          [[ $CI_GATE_RETRY_ATTEMPTS =~ ^[1-9][0-9]?$ ]] || CI_GATE_RETRY_ATTEMPTS=5
-          [[ $CI_GATE_RETRY_SECONDS =~ ^[0-9]{1,4}$ ]] || CI_GATE_RETRY_SECONDS=300
-          # Read by the caller: ci-gate-publish.sh die() exits without reposting.
-          # shellcheck disable=SC2034
-          CI_GATE_RATE_LIMITED=0
-
-          status_matches() { # <state> <description> -> "same" only if the combined status holds exactly this for $CONTEXT
-            local r
-            r=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status?per_page=100" --jq '.statuses[]' 2> /dev/null \
-              | jq -rs --arg c "$CONTEXT" --arg s "$1" --arg d "$2" \
-                'if type == "array" and any(.[]; type == "object" and .context == $c and .state == $s and (.description // "") == $d) then "same" else "differs" end' 2> /dev/null) || return 0
-            printf '%s\n' "$r"
-          }
-
-          header() { # <lower-case name> <gh -i output file> -> the first value of that response header
-            tr -d '\r' < "$2" | sed -n '/^$/q; p' | awk -v n="$1" 'index(tolower($0), n ": ") == 1 { sub(/^[^:]*: */, ""); print; exit }'
-          }
-
-          rate_limited() { # <HTTP code> <gh -i output file> <gh stderr file>: GitHub's primary or secondary rate limit
-            [[ $1 == 429 ]] && return 0
-            [[ $1 == 403 ]] || return 1
-            [[ $(header x-ratelimit-remaining "$2") == 0 ]] || grep -qi 'rate limit' "$2" "$3"
-          }
-
-          retry_delay() { # <gh -i output file> <attempt> -> seconds to wait before the next POST
-            local d reset
-            d=$(header retry-after "$1")
-            if [[ $d =~ ^[0-9]{1,6}$ ]]; then echo $((10#$d)); return; fi
-            reset=$(header x-ratelimit-reset "$1")
-            if [[ $(header x-ratelimit-remaining "$1") == 0 && $reset =~ ^[0-9]{1,12}$ ]]; then
-              d=$((10#$reset - $("${CI_GATE_CLOCK:-date}" +%s) + 1)); ((d > 0)) || d=1; echo "$d"; return
-            fi
-            d=$((5 << ($2 - 1))); ((d <= 60)) || d=60   # 5, 10, 20, 40, 60 s, plus up to half again
-            echo $((d + RANDOM % (d / 2 + 1)))
-          }
-
-          post_status() { # <state> <description, at most 140 characters>: 0 written or skipped, 1 refused, 2 rate limited
-            if [[ $(status_matches "$1" "$2") == same ]]; then
-              echo "ci-gate: status already $1 with this description on $HEAD_SHA; write skipped (1000-status cap)"
-              return 0
-            fi
-            local attempt=1 waited=0 code delay out err
-            out=$(mktemp) && err=$(mktemp) || return 1
-            while :; do
-              if gh api -i -X POST "repos/$REPO/statuses/$HEAD_SHA" \
-                -f state="$1" -f context="$CONTEXT" -f description="$2" \
-                -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > "$out" 2> "$err"; then
-                rm -f "$out" "$err"; return 0
-              fi
-              code=$(tr -d '\r' < "$out" | sed -n '1s/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p')
-              if ! rate_limited "$code" "$out" "$err"; then
-                cat "$err" >&2; rm -f "$out" "$err"; return 1
-              fi
-              delay=$(retry_delay "$out" "$attempt")
-              if ((attempt >= CI_GATE_RETRY_ATTEMPTS || waited + delay > CI_GATE_RETRY_SECONDS)); then
-                echo "::error::rate limited, no verdict: $CONTEXT $1 on $HEAD_SHA not written after $attempt attempt(s), ${waited}s waited (next wait ${delay}s)"
-                # shellcheck disable=SC2034
-                CI_GATE_RATE_LIMITED=1; rm -f "$out" "$err"; return 2
-              fi
-              echo "ci-gate: rate limited (HTTP $code), attempt $attempt of $CI_GATE_RETRY_ATTEMPTS; retrying in ${delay}s"
-              "${CI_GATE_SLEEP:-sleep}" "$delay"
-              waited=$((waited + delay)); attempt=$((attempt + 1))
-            done
-          }
-          CI_GATE_STATUS_EOF
-          echo "CI_GATE_STATUS_LIB=$lib" >> "$GITHUB_ENV"
-      - name: Mark a started or re-run workflow pending
-        env:
-          EVENT_ACTION: ${{ github.event.action }}
-          RUN_NAME: ${{ github.event.workflow_run.name }}
-        # First step after input validation: it needs only gh, the repository, the head SHA and
-        # the context, and runs before any suite file is fetched. A run that starts (or is
-        # re-run) must stop the previous verdict, a possible success, from standing at once.
-        # The verdict step later overwrites it; the later write is always a fresh evaluation.
-        # A pending that already stands with the same description is not written again.
-        run: |
-          set -uo pipefail
-          # shellcheck source=/dev/null
-          source "$CI_GATE_STATUS_LIB"
-          if [[ "$EVENT_NAME" == pull_request ]]; then
-            # the pull_request run then waits, so the context stands pending meanwhile.
-            desc="waiting for the required checks to report"
-          else
-            [[ "$EVENT_ACTION" == in_progress ]] || { echo "event action '$EVENT_ACTION': no early pending"; exit 0; }
-            # A character outside the BMP (an emoji) becomes '?': GitHub answers HTTP 422
-            # "Description doesn't accept 4-byte Unicode" to it, and no verdict would follow.
-            desc=$(jq -rn --arg n "$RUN_NAME" '"re-run started: " + $n | explode | map(if . > 65535 then 63 else . end) | implode | if length > 140 then .[0:139] + "…" else . end')
-          fi
-          post_status pending "$desc" || {
-            (($? == 2)) || echo "::error::could not publish the re-run pending status; NO VERDICT WAS PRODUCED"
-            exit 1
-          }
-          echo "$CONTEXT = pending: $desc"
       - name: Read the profile and the verdict scripts from this suite at its own commit
+        id: read
         env:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
-        # job.workflow_repository / job.workflow_sha name the reusable workflow file's own
-        # repository and commit, so the profile selected by github.repository is read at
-        # the SHA the caller pinned. Empty means the runner cannot say: fail, do not guess.
+        # The profile selected by github.repository is read at the SHA the caller pinned. A rate-limited
+        # or unavailable API (after the library's back-off) publishes `pending`, not a failure, and the
+        # later steps are skipped; a missing profile or any real error is a failure (the fallback step).
         run: |
-          set -euo pipefail
-          [[ "$WF_REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${WF_REPO#*/}" != . && "${WF_REPO#*/}" != .. ]] \
-            || { echo "::error::job.workflow_repository is empty or malformed ('$WF_REPO'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
-          [[ "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "::error::job.workflow_sha is empty or not a 40-hex commit ('$WF_SHA'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
-          suite="$RUNNER_TEMP/ci-gate-suite"
-          rm -rf "$suite"; mkdir -p "$suite/scripts" "$suite/profiles/ci-gate"
+          set -uo pipefail
+          # shellcheck source=/dev/null
+          source "$suite/scripts/ci-gate-lib.sh"
           fetch() { # <path in the suite> -> same path under $suite; refuses an empty file
-            gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WF_REPO/contents/$1?ref=$WF_SHA" > "$suite/$1" \
-              || { echo "::error::could not read $1 from $WF_REPO@$WF_SHA"; return 1; }
-            [[ -s "$suite/$1" ]] || { echo "::error::$1 at $WF_REPO@$WF_SHA is empty"; return 1; }
+            local rc=0
+            gate_fetch "$WF_REPO" "$1" "$WF_SHA" "$suite/$1" || rc=$?
+            case $rc in
+              0) return 0 ;;
+              75)
+                echo "unavailable=true" >> "$GITHUB_OUTPUT"
+                if [[ "$EVENT_NAME" == workflow_run || "$EVENT_NAME" == pull_request ]]; then
+                  echo "::warning::GitHub API rate-limited or unavailable while reading $1 ($GATE_API_ERR); publishing pending, NOT failure"
+                  gate_post_unavailable "$REPO" "$HEAD_SHA" "$CONTEXT" "$SERVER_URL/$REPO/actions/runs/$RUN_ID" \
+                    || { echo "::error::could not write the pending status either ($GATE_API_ERR); NO STATUS WAS WRITTEN and NO FAILURE WAS POSTED"; exit 1; }
+                  exit 0
+                fi
+                echo "::error::GitHub API rate-limited or unavailable while reading $1 ($GATE_API_ERR); the sweep evaluated nothing"
+                exit 1 ;;
+              *) echo "::error::could not read $1 from $WF_REPO@$WF_SHA ($GATE_API_ERR)"; return 1 ;;
+            esac
           }
-          fetch scripts/ci-gate-verdict.sh
-          fetch scripts/validate-ci-gate-profile.sh
-          fetch scripts/ci-gate-publish.sh
-          fetch scripts/ci-gate-sweep.sh
-          fetch profiles/ci-gate/validate.jq
-          fetch profiles/ci-gate/select-runs.jq
+          if [[ "${WORKFLOW_RUN_ACTION:-}" == requested || "${WORKFLOW_RUN_ACTION:-}" == in_progress ]]; then
+            # a re-run starting: the publisher only writes one pending, so it is the only file needed
+            fetch scripts/ci-gate-publish.sh || exit 1
+            echo "re-run start: only scripts/ci-gate-publish.sh was read"
+            exit 0
+          fi
+          fetch scripts/ci-gate-verdict.sh || exit 1
+          fetch scripts/validate-ci-gate-profile.sh || exit 1
+          fetch scripts/ci-gate-publish.sh || exit 1
+          fetch scripts/ci-gate-sweep.sh || exit 1
+          fetch profiles/ci-gate/validate.jq || exit 1
+          fetch profiles/ci-gate/select-runs.jq || exit 1
+          fetch profiles/ci-gate/join-checks.jq || exit 1
           mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
           fetch "profiles/ci-gate/$REPO.json" \
-            || { echo "::error::no CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
-          echo "suite=$suite" >> "$GITHUB_ENV"
+            || { echo "::error::no readable CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
           echo "Profile for $REPO read from $WF_REPO@$WF_SHA"
       - name: Validate the profile
+        if: ${{ steps.read.outputs.unavailable != 'true' && env.WORKFLOW_RUN_ACTION != 'requested' && env.WORKFLOW_RUN_ACTION != 'in_progress' }}
         run: bash "$suite/scripts/validate-ci-gate-profile.sh" "$suite/profiles/ci-gate/$REPO.json" "$REPO" "$CONTEXT"
       - name: Evaluate the commit and publish the status
         id: publish
+        if: ${{ steps.read.outputs.unavailable != 'true' }}
         env:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
         # All of the reading, the settle guard and the publishing is scripts/ci-gate-publish.sh
-        # (fetched from the suite above), so a stub `gh` can test it offline. On schedule and
-        # workflow_dispatch scripts/ci-gate-sweep.sh runs that same publisher once per open pull
-        # request head and the default branch head. The workflow only hands them values through env.
+        # (fetched from the suite above), so a stub `gh` can test it offline. On workflow_run it
+        # evaluates once and exits; on pull_request it first writes one pending (EVENT_NAME), then
+        # evaluates once and exits: it never waits or polls. On schedule and workflow_dispatch
+        # scripts/ci-gate-sweep.sh runs that same publisher once per open pull request head and the
+        # default branch head. The workflow only hands them values through env.
+        # Exit 75 of the publisher means the GitHub API was unavailable and `pending` was written:
+        # a warning, not a red job and never a failure status.
         run: |
-          set -euo pipefail
-          if [[ "$EVENT_NAME" == workflow_run ]]; then
-            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=0 bash "$suite/scripts/ci-gate-publish.sh"
-          elif [[ "$EVENT_NAME" == pull_request ]]; then
-            # pull_request path: one evaluation, so wait (bounded) for the required checks to report.
-            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" WAIT_SECONDS=$((WAIT_MINUTES * 60)) \
-              bash "$suite/scripts/ci-gate-publish.sh"
+          set -uo pipefail
+          rc=0
+          if [[ "$EVENT_NAME" == workflow_run || "$EVENT_NAME" == pull_request ]]; then
+            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-work" bash "$suite/scripts/ci-gate-publish.sh" || rc=$?
+            if ((rc == 75)); then
+              echo "::warning::GitHub API rate-limited or unavailable; CI/gate was set to pending and will be re-evaluated by the next workflow_run completion or the sweep. No failure was posted."
+              rc=0
+            fi
           else
-            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-sweep" bash "$suite/scripts/ci-gate-sweep.sh"
+            SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-sweep" bash "$suite/scripts/ci-gate-sweep.sh" || rc=$?
           fi
+          exit "$rc"
       - name: Publish a failure status when no verdict could be produced
-        if: ${{ failure() && steps.publish.outputs.published != 'true' }}
+        if: ${{ failure() && steps.publish.outputs.published != 'true' && steps.publish.outputs.unavailable != 'true' && steps.read.outputs.unavailable != 'true' && steps.bootstrap.outputs.unavailable != 'true' }}
+        # Only for a real fail-closed cause (a missing or invalid profile, an input error, a real API
+        # error): never for an unavailable API, which the steps above publish as pending, and never for a
+        # `requested` or `in_progress` event (a re-run starting writes only a pending; the completion decides).
+        # When the library was not read (a real error in the first step: `suite` is unset) the failure is
+        # written by one small independent request with a fixed ASCII description, so a standing success
+        # cannot survive a real failure.
         run: |
           set -uo pipefail
           ctx_re='^[A-Za-z0-9]([A-Za-z0-9._/-]| [A-Za-z0-9._/-]){0,127}$'
           [[ ( $EVENT_NAME == workflow_run || $EVENT_NAME == pull_request ) && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && ${#CONTEXT} -le 128 && $CONTEXT =~ $ctx_re ]] || exit 0
-          [[ -f ${CI_GATE_STATUS_LIB:-} ]] || { echo "::warning::the status writer was not written; no failure status"; exit 0; }
-          # shellcheck source=/dev/null
-          source "$CI_GATE_STATUS_LIB"
-          post_status failure "ci-gate could not produce a verdict (profile or API error); see the run" \
-            || echo "::warning::could not publish the failure status either"
+          [[ "${WORKFLOW_RUN_ACTION:-}" != requested && "${WORKFLOW_RUN_ACTION:-}" != in_progress ]] || exit 0
+          desc='ci-gate could not produce a verdict (profile or input error); see the run'
+          if [[ -f "${suite:-/nonexistent}/scripts/ci-gate-lib.sh" ]]; then
+            # shellcheck source=/dev/null
+            source "$suite/scripts/ci-gate-lib.sh"
+            gate_post "$REPO" "$HEAD_SHA" "$CONTEXT" failure "$desc" \
+              "$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+              || echo "::warning::could not publish the failure status either ($GATE_API_ERR)"
+          else
+            # The library was not read, so gate_post is not available: one independent write.
+            [[ "$REPO" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ && "${REPO#*/}" != . && "${REPO#*/}" != .. ]] || exit 0
+            gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=failure -f context="$CONTEXT" \
+              -f description="$desc" -f target_url="$SERVER_URL/$REPO/actions/runs/$RUN_ID" > /dev/null \
+              || echo "::warning::could not publish the failure status either (the gate library was not read)"
+          fi

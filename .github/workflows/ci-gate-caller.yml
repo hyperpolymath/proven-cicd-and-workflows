@@ -11,7 +11,12 @@
 #
 # The job id MUST stay `gate` and the workflow name MUST stay `CI gate`: the reusable drops runs of
 # that name from the evaluation, and the `if:` below keeps the gate from triggering itself.
-# There is deliberately NO `concurrency:` block. The pull_request job at the end is permanent
+# The `types` are `completed`, `requested` and `in_progress`; the `if:` admits a start event only for a
+# re-run (`run_attempt > 1`). Which start event GitHub sends for a re-run is unconfirmed, hence both
+# (docs/CI-GATE.adoc, "Re-runs").
+# There is deliberately NO `concurrency:` block here: the reusable's job carries the per-commit group
+# (repository, context, head SHA; cancel-in-progress) so that every consumer gets it with the pin, and
+# its sweep group is separate. The pull_request job at the end is permanent
 # (docs/CI-GATE.adoc, "The pull_request start"); tests/ci-gate.sh pins its shape.
 # No `secrets:` line: the reusable consumes none.
 name: CI gate
@@ -20,7 +25,7 @@ on:
   pull_request:
   workflow_run:
     workflows: ["**", "!CI gate"]
-    types: [completed, in_progress]
+    types: [completed, requested, in_progress]
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch: {}
@@ -28,12 +33,13 @@ on:
 permissions:
   statuses: write
   actions: read
+  checks: read
   contents: read
   pull-requests: read
 
 jobs:
   gate:
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'CI gate')
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || (github.event.workflow_run.name != 'CI gate' && (github.event.action == 'completed' || ((github.event.action == 'requested' || github.event.action == 'in_progress') && github.event.workflow_run.run_attempt > 1))))
     uses: ./.github/workflows/ci-gate.yml
     with:
       context: "CI / gate"
@@ -41,7 +47,9 @@ jobs:
   # The pull_request start. workflow_run, schedule and workflow_dispatch run only from the default
   # branch, so without this job the pull request that adds or changes the gate never gets the status
   # and a ruleset requiring it blocks that very pull request. This job runs from the pull request's own
-  # branch and posts the same verdict, waiting (bounded) for the checks named in the profile to report.
+  # branch, posts pending, evaluates ONCE and exits: it does not wait or poll. The verdict then comes from
+  # the default-branch workflow_run completions and the sweep (from a bootstrap pull request, which has
+  # neither yet, re-run this workflow once the other checks have finished).
   # Same-repository branches only: a fork's or Dependabot's pull_request token cannot write statuses,
   # and those are covered by the workflow_run job. No trust decision uses github.actor.
   # Because a pull request can edit this file, the Gate tamper guard (ci-gate-tamper-guard.yml, run from
