@@ -37,6 +37,11 @@
         "scripts/proven-coverage-gate.sh",
         "scripts/proven-coverage.sh",
         ".proven/**",
+        # self-pin-reachable.sh reads every self-pin, so any workflow or composite
+        # that gains one must re-run it before merge.
+        "scripts/self-pin-reachable.sh",
+        ".github/workflows/*.yml",
+        "actions/*/action.yml",
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
         "scripts/ci-gate-publish.sh",
@@ -94,6 +99,11 @@
         "scripts/proven-coverage-gate.sh",
         "scripts/proven-coverage.sh",
         ".proven/**",
+        # self-pin-reachable.sh reads every self-pin, so any workflow or composite
+        # that gains one must re-run it before merge.
+        "scripts/self-pin-reachable.sh",
+        ".github/workflows/*.yml",
+        "actions/*/action.yml",
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
         "scripts/ci-gate-publish.sh",
@@ -161,6 +171,12 @@
         },
         {
           run: "bash tests/lock-transitive-closure.sh",
+        },
+        {
+          # A self-pin to a PR branch's own commit breaks main once the squash
+          # merge deletes that branch (#136, repaired by #175). Pins must be on main.
+          name: "Self-pins are reachable from main",
+          run: "bash tests/self-pin-reachable.sh",
         },
         {
           # scripts/deonboard-workflow.sh, through both entry points, against
