@@ -151,7 +151,7 @@ jobs:
           k9-paths-ignore: ${{ inputs.manifest-k9-paths-ignore }}
       - name: Recipes Set Validation Gate
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        uses: hyperpolymath/proven-cicd-and-workflows/actions/recipes-set-check@c519c4520afbfe48f16aceb0706d7cfb1d649994 # 2026-10-14 (#54)
+        uses: hyperpolymath/proven-cicd-and-workflows/actions/recipes-set-check@fdc8793d26b0c2ed468dd18eae8eba6c06ecb44e # this PR (#140): just install pinned
 
   languages:
     name: languages
