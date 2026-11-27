@@ -121,6 +121,12 @@ cases() {
   IFS=, read -r s1 s2 s3 s4 s5 s6 <<< "$(SLEEPS)"
   { ((s3 >= 240 && s3 <= 360 && s4 >= 240 && s4 <= 360 && s5 >= 240 && s5 <= 360 && s6 >= 240 && s6 <= 360)); } && ok "the back-off is capped at 240 s (plus jitter): ${s3}, ${s4}, ${s5}, ${s6}" || bad "cap out of range: '$(SLEEPS)'"
 
+  # a high attempt count must not wrap the shift negative and collapse the wait to 1 s
+  reset; for _ in $(seq 62); do resp 403 Forbidden '{"message":"secondary rate limit"}' 'X-Ratelimit-Remaining: 4000'; done; resp 200 OK '{}'
+  ENVV=(API_MAX_ATTEMPTS=70 API_RETRY_BUDGET_SECONDS=999999); api "$GET1"; ENVV=()
+  min=$(tr ',' '\n' <<< "$(SLEEPS)" | sort -n | head -n 1)
+  { ((RC == 0 && ${min:-0} >= 60)) && [[ $(tr ',' '\n' <<< "$(SLEEPS)" | grep -c .) == 62 ]]; } && ok "62 retries: no wait ever drops below 60 s (the shift cannot overflow)" || bad "overflow: rc=$RC min=${min:-none}"
+
   reset; for _ in 1 2 3 4 5 6; do resp 429 x '{}' 'Retry-After: 3'; done
   api "$GET1"; chk "rate limited every time: 5 attempts, 4 waits, then fails closed (exit 2)" "$RC/$(NCALLS)/$(SLEEPS)" "2/5/3,3,3,3"
   grep -q '::error::rate limited, no verdict: GET repos/o/r/x' <<< "$OUT" && ok "attempts exhausted: the error says 'rate limited, no verdict'" || bad "no 'rate limited, no verdict' error: $OUT"
@@ -274,9 +280,10 @@ mutant "Retry-After signals a limit" '|| -n $(api_header retry-after) ]] && retu
 mutant "a 'rate limit' body signals a limit" "grep -qiE 'rate limit'" "grep -qiE 'no such text here'"
 mutant "Retry-After is the wait" 'then wait=$((10#$ra))' 'then wait=$((10#$ra + 1))'
 mutant "the primary reset is the wait" 'wait=$((10#$reset - now + 1))' 'wait=60'
-mutant "exponential back-off" 'wait=$((60 << (attempt - 1))); ((wait <= 240)) || wait=240' 'wait=60'
-mutant "the no-header back-off starts at a minute" 'wait=$((60 << (attempt - 1)))' 'wait=$((5 << (attempt - 1)))'
-mutant "the back-off cap" '((wait <= 240)) || wait=240' 'true'
+mutant "exponential back-off" 'else wait=$((60 << (attempt - 1))); fi' 'else wait=60; fi'
+mutant "the no-header back-off starts at a minute" 'else wait=$((60 << (attempt - 1))); fi' 'else wait=$((5 << (attempt - 1))); fi'
+mutant "the back-off cap" 'if ((attempt > 3)); then wait=240;' 'if false; then wait=240;'
+mutant "the shift is clamped, never overflowed" 'if ((attempt > 3)); then wait=240; else wait=$((60 << (attempt - 1))); fi' 'wait=$((60 << (attempt - 1))); ((wait <= 240)) || wait=240'
 # No mutant for the jitter: removing it leaves every wait inside the asserted ranges, so it is equivalent here.
 mutant "the wait is at least 1 s" '((wait >= 1)) || wait=1' 'true'
 mutant "the budget is enforced" 'if ((attempt >= API_MAX_ATTEMPTS || spent + wait > API_RETRY_BUDGET_SECONDS)); then' 'if ((attempt >= API_MAX_ATTEMPTS)); then'

@@ -22,7 +22,7 @@
 #  2. Back-off, for reads and writes alike. HTTP 429, or 403 with a rate-limit signal
 #     (X-RateLimit-Remaining: 0, a Retry-After header, or a body that says "rate limit"), is retried:
 #     after Retry-After seconds, else after the primary reset (X-RateLimit-Reset), else a capped
-#     exponential wait with jitter (5, 10, 20, 40, 60 s, plus up to half again). At most
+#     exponential wait with jitter (60, 120, 240 s, then 240, plus up to half again). At most
 #     API_MAX_ATTEMPTS tries per request, and at most API_RETRY_BUDGET_SECONDS of waiting in all, kept
 #     in API_RETRY_LEDGER so that every step of a job, and every head of a sweep, spends one budget.
 #     Past either limit the call FAILS with "rate limited, no verdict", and the caller fails closed: no
@@ -97,7 +97,8 @@ api_backoff() { # <attempt> <method> <path> -> sleeps and returns 0, or returns 
   elif [[ $(api_header x-ratelimit-remaining) == 0 && $reset =~ ^[0-9]{1,12}$ ]]; then wait=$((10#$reset - now + 1))
   else
     # A secondary limit with no header: GitHub says wait at least a minute, so start there and grow.
-    wait=$((60 << (attempt - 1))); ((wait <= 240)) || wait=240
+    # Cap before shifting: 60 << 58 overflows, and API_MAX_ATTEMPTS may be set as high as 99.
+    if ((attempt > 3)); then wait=240; else wait=$((60 << (attempt - 1))); fi
     wait=$((wait + RANDOM % (wait / 2 + 1)))
   fi
   ((wait >= 1)) || wait=1
