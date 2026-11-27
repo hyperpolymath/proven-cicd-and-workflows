@@ -56,8 +56,10 @@ API_MAX_ATTEMPTS=${API_MAX_ATTEMPTS:-5}
 API_MAX_PAGES=${API_MAX_PAGES:-50}
 mkdir -p "$API_CACHE" || return 1
 API_RETRY_LEDGER=${API_RETRY_LEDGER:-$API_CACHE/ledger}
-[[ $API_RETRY_BUDGET_SECONDS =~ ^[0-9]+$ && $API_MAX_ATTEMPTS =~ ^[1-9][0-9]?$ && $API_MAX_PAGES =~ ^[1-9][0-9]*$ ]] \
+[[ $API_RETRY_BUDGET_SECONDS =~ ^[0-9]{1,6}$ && $API_MAX_ATTEMPTS =~ ^[1-9][0-9]?$ && $API_MAX_PAGES =~ ^[1-9][0-9]{0,5}$ ]] \
   || { echo "::error::ci-gate-api: API_RETRY_BUDGET_SECONDS / API_MAX_ATTEMPTS / API_MAX_PAGES malformed" >&2; return 1; }
+# Base 10 always: a leading zero (0300) must not be read as octal in the arithmetic below.
+API_RETRY_BUDGET_SECONDS=$((10#$API_RETRY_BUDGET_SECONDS)); API_MAX_ATTEMPTS=$((10#$API_MAX_ATTEMPTS)); API_MAX_PAGES=$((10#$API_MAX_PAGES))
 # Read by the caller: ci-gate-publish.sh die() exits without reposting.
 # shellcheck disable=SC2034
 CI_GATE_RATE_LIMITED=0
@@ -94,7 +96,8 @@ api_backoff() { # <attempt> <method> <path> -> sleeps and returns 0, or returns 
   if [[ $ra =~ ^[0-9]{1,6}$ ]]; then wait=$((10#$ra))
   elif [[ $(api_header x-ratelimit-remaining) == 0 && $reset =~ ^[0-9]{1,12}$ ]]; then wait=$((10#$reset - now + 1))
   else
-    wait=$((5 << (attempt - 1))); ((wait <= 60)) || wait=60
+    # A secondary limit with no header: GitHub says wait at least a minute, so start there and grow.
+    wait=$((60 << (attempt - 1))); ((wait <= 240)) || wait=240
     wait=$((wait + RANDOM % (wait / 2 + 1)))
   fi
   ((wait >= 1)) || wait=1
@@ -117,7 +120,7 @@ api_backoff() { # <attempt> <method> <path> -> sleeps and returns 0, or returns 
 # the attempts or the budget. GET is conditional on the cached ETag of that exact path.
 api_request() {
   local method=$1 path=$2; shift 2
-  local key raw attempt=0 cond=()
+  local key raw attempt=0 cond=() gh_rc
   key=$(printf '%s %s' "$method" "$path" | sha256sum | cut -c1-40)
   raw="$API_CACHE/$key.raw"
   while :; do
@@ -125,16 +128,23 @@ api_request() {
     if [[ $method == GET && -s $API_CACHE/$key.etag && -f $API_CACHE/$key.body ]]; then
       cond=(-H "If-None-Match: $(cat "$API_CACHE/$key.etag")")
     fi
-    gh api -i -X "$method" "${cond[@]}" "$path" "$@" > "$raw" 2> "$raw.err"
+    gh_rc=0
+    gh api -i -X "$method" "${cond[@]}" "$path" "$@" > "$raw" 2> "$raw.err" || gh_rc=$?
     api_split "$raw"
     [[ -z ${API_STATS:-} ]] || echo "$API_CODE $method $path" >> "$API_STATS"
     case $API_CODE in
       2??)
+        # gh exits non-zero on a transport failure or a truncated transfer: never cache or trust that.
+        if ((gh_rc != 0)); then cat "$raw.err" >&2; return 1; fi
         API_LINK=$(api_header link)
         if [[ $method == GET ]]; then
-          cp "$API_BODY_RAW" "$API_CACHE/$key.body" || return 1
-          api_header etag > "$API_CACHE/$key.etag"
-          printf '%s\n' "$API_LINK" > "$API_CACHE/$key.link"
+          # Etag out first, body and link next, etag last: an interrupted write leaves no etag, so no
+          # later 304 can pair an old etag with a half-written body. Any failed write fails the call.
+          rm -f "$API_CACHE/$key.etag"
+          cp "$API_BODY_RAW" "$API_CACHE/$key.body" \
+            && printf '%s\n' "$API_LINK" > "$API_CACHE/$key.link" \
+            && api_header etag > "$API_CACHE/$key.etag.new" \
+            && mv "$API_CACHE/$key.etag.new" "$API_CACHE/$key.etag" || return 1
           API_BODY="$API_CACHE/$key.body"
         else
           API_BODY=$API_BODY_RAW
@@ -144,7 +154,8 @@ api_request() {
         [[ $method == GET && -f $API_CACHE/$key.body ]] || return 1
         # A 304 may leave out Link: then the page's own, cached with its body, still holds.
         API_LINK=$(api_header link)
-        [[ -n $API_LINK ]] || API_LINK=$(cat "$API_CACHE/$key.link" 2> /dev/null)
+        if [[ -n $API_LINK ]]; then printf '%s\n' "$API_LINK" > "$API_CACHE/$key.link" || return 1
+        else API_LINK=$(cat "$API_CACHE/$key.link" 2> /dev/null); fi
         API_BODY="$API_CACHE/$key.body"; return 0 ;;
     esac
     if api_is_rate_limited "$raw.err"; then
@@ -175,7 +186,7 @@ api_list() {
 
 status_matches() { # <state> <description> -> "same" only if the combined status holds exactly this for $CONTEXT
   local r
-  r=$(api_list "repos/$REPO/commits/$HEAD_SHA/status?per_page=100" '.statuses' 2> /dev/null \
+  r=$(api_list "repos/$REPO/commits/$HEAD_SHA/status?per_page=100" '.statuses' \
     | jq -r --arg c "$CONTEXT" --arg s "$1" --arg d "$2" \
       'if type == "array" and any(.[]; type == "object" and .context == $c and .state == $s and (.description // "") == $d) then "same" else "differs" end' 2> /dev/null) || return 0
   printf '%s\n' "$r"

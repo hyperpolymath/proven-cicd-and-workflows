@@ -24,6 +24,7 @@ cat > "$WORK/bin/gh" <<'EOF'
 n=$(( $(cat "$Q/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$Q/n"
 printf '%s\n' "$*" >> "$Q/calls"
 [[ -f $Q/$n.resp ]] || { echo "fake gh: no response queued for request $n: $*" >&2; exit 1; }
+[[ ! -f $Q/$n.err ]] || cat "$Q/$n.err" >&2
 cat "$Q/$n.resp"; exit "$(cat "$Q/$n.rc" 2>/dev/null || echo 0)"
 EOF
 cat > "$WORK/bin/clock" <<'EOF'
@@ -113,12 +114,12 @@ cases() {
   resp 403 Forbidden '{"message":"You have exceeded a secondary rate limit."}' 'X-Ratelimit-Remaining: 4000'; resp 200 OK '{}'
   api "$GET1"; IFS=, read -r s1 s2 <<< "$(SLEEPS)"
   chk "secondary limit with no Retry-After: two waits, then success" "$RC/$(NCALLS)" "0/3"
-  { ((s1 >= 5 && s1 <= 7 && s2 >= 10 && s2 <= 15)); } && ok "no headers: exponential back-off with jitter (${s1}s in 5..7, then ${s2}s in 10..15)" || bad "back-off out of range: '$(SLEEPS)'"
+  { ((s1 >= 60 && s1 <= 90 && s2 >= 120 && s2 <= 180)); } && ok "no headers: starts at the documented minute, then doubles, with jitter (${s1}s in 60..90, then ${s2}s in 120..180)" || bad "back-off out of range: '$(SLEEPS)'"
 
   reset; for _ in 1 2 3 4 5 6; do resp 403 Forbidden '{"message":"secondary rate limit"}' 'X-Ratelimit-Remaining: 4000'; done; resp 200 OK '{}'
-  ENVV=(API_MAX_ATTEMPTS=7 API_RETRY_BUDGET_SECONDS=1000); api "$GET1"; ENVV=()
+  ENVV=(API_MAX_ATTEMPTS=7 API_RETRY_BUDGET_SECONDS=5000); api "$GET1"; ENVV=()
   IFS=, read -r s1 s2 s3 s4 s5 s6 <<< "$(SLEEPS)"
-  { ((s4 >= 40 && s4 <= 60 && s5 >= 60 && s5 <= 90 && s6 >= 60 && s6 <= 90)); } && ok "the back-off is capped at 60 s (plus jitter): ${s4}, ${s5}, ${s6}" || bad "cap out of range: '$(SLEEPS)'"
+  { ((s3 >= 240 && s3 <= 360 && s4 >= 240 && s4 <= 360 && s5 >= 240 && s5 <= 360 && s6 >= 240 && s6 <= 360)); } && ok "the back-off is capped at 240 s (plus jitter): ${s3}, ${s4}, ${s5}, ${s6}" || bad "cap out of range: '$(SLEEPS)'"
 
   reset; for _ in 1 2 3 4 5 6; do resp 429 x '{}' 'Retry-After: 3'; done
   api "$GET1"; chk "rate limited every time: 5 attempts, 4 waits, then fails closed (exit 2)" "$RC/$(NCALLS)/$(SLEEPS)" "2/5/3,3,3,3"
@@ -126,7 +127,7 @@ cases() {
 
   reset; resp 429 x '{}'; resp 200 OK '{"a":3}'
   api "$GET1"; IFS=, read -r s1 <<< "$(SLEEPS)"
-  { ((RC == 0 && s1 >= 5 && s1 <= 7)); } && ok "429 with no header at all is a rate limit (${s1}s, then success)" || bad "429 with no headers: rc=$RC sleeps='$(SLEEPS)'"
+  { ((RC == 0 && s1 >= 60 && s1 <= 90)); } && ok "429 with no header at all is a rate limit (${s1}s, then success)" || bad "429 with no headers: rc=$RC sleeps='$(SLEEPS)'"
 
   reset; resp 403 Forbidden '{}' 'X-Ratelimit-Remaining: 0' 'X-Ratelimit-Reset: 1500'
   ENVV=(API_RETRY_BUDGET_SECONDS=300); api "$GET1"; ENVV=()
@@ -191,6 +192,34 @@ cases() {
   KEEP=1 api 'api_list "repos/o/r/l?per_page=2" .items 2> /dev/null | jq -c .; api_list "repos/o/r/l?per_page=2" .items 2> /dev/null | jq -c .'
   chk "a 304 without Link on page 1: both pages are still walked (no silent truncation)" "$(paste -sd' ' <<< "$OUT")/$(NCALLS)" "[1,2,3] [1,2,3]/4"
 
+
+  # a 304 that carries Link replaces the cached one; only a 304 without Link keeps the cached value
+  reset; resp 200 OK '{"a":1}' 'Etag: "e1"' 'Link: <x?page=2>; rel="next"'
+  resp 304 'Not Modified' '' 'Etag: "e1"' 'Link: <x?page=1>; rel="first"'; resp 304 'Not Modified' '' 'Etag: "e1"'
+  api 'api_request GET "repos/o/r/x"; api_request GET "repos/o/r/x"; api_request GET "repos/o/r/x"; echo "$API_LINK"'
+  [[ $OUT == *'rel="first"'* && $OUT != *'rel="next"'* ]] && ok "a 304 with its own Link replaces the cached Link (the walk ends)" || bad "stale cached Link kept after a 304 with Link: $OUT"
+
+  # gh exits non-zero on a 2xx (a truncated transfer): never cached, never trusted
+  reset; resp 200 OK '{"a":1}' 'Etag: "e1"'; echo 1 > "$Q/1.rc"; resp 200 OK '{"a":2}' 'Etag: "e2"'
+  api 'api_request GET "repos/o/r/x"; echo "rc1=$?"; api_request GET "repos/o/r/x"; echo "rc2=$?"'
+  chk "a 2xx with a non-zero gh exit fails and is not cached (the next GET is not conditional)" "$(grep -o 'rc[12]=[0-9]' <<< "$OUT" | paste -sd' ')/$(grep -c 'If-None-Match' "$Q/calls")" "rc1=1 rc2=0/0"
+
+  # cache writes: a failed write fails the call and leaves no ETag to pair with a half-written entry
+  reset; resp 200 OK '{"a":1}' 'Etag: "e1"'; resp 200 OK '{"a":2}' 'Etag: "e2"'
+  api 'api_request GET "repos/o/r/x"; k=$(printf "%s %s" GET repos/o/r/x | sha256sum | cut -c1-40); rm -f "$API_CACHE/$k.link"; mkdir "$API_CACHE/$k.link"
+       api_request GET "repos/o/r/x"; echo "rc=$? etag=$([[ -e $API_CACHE/$k.etag ]] && echo present || echo absent)"'
+  chk "a failed cache write fails the call and leaves no ETag behind" "$(tail -n 1 <<< "$OUT")" "rc=1 etag=absent"
+
+  # a leading zero is decimal, not octal
+  reset; resp 429 x '{}' 'Retry-After: 250'; resp 200 OK '{}'
+  ENVV=(API_RETRY_BUDGET_SECONDS=0300); api "$GET1"; ENVV=()
+  chk "API_RETRY_BUDGET_SECONDS=0300 is 300, not octal 192: a 250 s wait fits" "$RC/$(SLEEPS)" "0/250"
+
+  # the status lookup's errors reach the log, and the write still goes ahead
+  reset; resp 500 'Server Error' '{}'; echo 'gh: lookup failed (HTTP 500)' > "$Q/1.err"; resp 201 Created '{}'
+  ENVV=("${PS[@]}"); api 'post_status success "x"; echo "rc=$?"'; ENVV=()
+  grep -q 'lookup failed (HTTP 500)' <<< "$OUT" && [[ $(tail -n 1 <<< "$OUT") == rc=0 && $(NCALLS) == 2 ]] && ok "a failed status lookup is logged and the write still goes ahead" || bad "lookup error hidden or write skipped: $OUT"
+
   reset; resp 429 x '{}' 'Retry-After: 3'; resp 200 OK '{}'
   ENVV=(API_RETRY_LEDGER=/nonexistent-dir/ledger); api "$GET1"; ENVV=()
   chk "a retry ledger that cannot be written: fails closed (2) without sleeping" "$RC/$(SLEEPS)/$(NCALLS)" "2//1"
@@ -245,8 +274,9 @@ mutant "Retry-After signals a limit" '|| -n $(api_header retry-after) ]] && retu
 mutant "a 'rate limit' body signals a limit" "grep -qiE 'rate limit'" "grep -qiE 'no such text here'"
 mutant "Retry-After is the wait" 'then wait=$((10#$ra))' 'then wait=$((10#$ra + 1))'
 mutant "the primary reset is the wait" 'wait=$((10#$reset - now + 1))' 'wait=60'
-mutant "exponential back-off" 'wait=$((5 << (attempt - 1))); ((wait <= 60)) || wait=60' 'wait=5'
-mutant "the back-off cap" '((wait <= 60)) || wait=60' 'true'
+mutant "exponential back-off" 'wait=$((60 << (attempt - 1))); ((wait <= 240)) || wait=240' 'wait=60'
+mutant "the no-header back-off starts at a minute" 'wait=$((60 << (attempt - 1)))' 'wait=$((5 << (attempt - 1)))'
+mutant "the back-off cap" '((wait <= 240)) || wait=240' 'true'
 # No mutant for the jitter: removing it leaves every wait inside the asserted ranges, so it is equivalent here.
 mutant "the wait is at least 1 s" '((wait >= 1)) || wait=1' 'true'
 mutant "the budget is enforced" 'if ((attempt >= API_MAX_ATTEMPTS || spent + wait > API_RETRY_BUDGET_SECONDS)); then' 'if ((attempt >= API_MAX_ATTEMPTS)); then'
@@ -254,18 +284,27 @@ mutant "the attempt cap is enforced" 'if ((attempt >= API_MAX_ATTEMPTS || spent 
 mutant "a spent POST raises the flag" '((rc != 2)) || CI_GATE_RATE_LIMITED=1' 'true'
 mutant "a standing status is not rewritten" 'if [[ $(status_matches "$1" "$2") == same ]]; then' 'if false; then'
 mutant "retry notices stay off stdout" '(retry budget ${spent}/${API_RETRY_BUDGET_SECONDS}s)" >&2' '(retry budget ${spent}/${API_RETRY_BUDGET_SECONDS}s)"'
-mutant "a 304 keeps the cached Link" '[[ -n $API_LINK ]] || API_LINK=$(cat "$API_CACHE/$key.link" 2> /dev/null)' 'true'
-mutant "the Link is cached with the body" "printf '%s\\n' \"\$API_LINK\" > \"\$API_CACHE/\$key.link\"" 'true'
+mutant "a 304 keeps the cached Link" 'else API_LINK=$(cat "$API_CACHE/$key.link" 2> /dev/null); fi' 'else :; fi'
+mutant "a 304 with a Link replaces the cached one" 'if [[ -n $API_LINK ]]; then printf '"'%s\n'"' "$API_LINK" > "$API_CACHE/$key.link" || return 1' 'if [[ -n $API_LINK ]]; then :'
+mutant "the Link is cached with the body" '&& printf '"'%s\n'"' "$API_LINK" > "$API_CACHE/$key.link" \' '\'
+mutant "the ETag is removed before the entry is rewritten" 'rm -f "$API_CACHE/$key.etag"
+' ''
+mutant "the ETag is written last, and a failed write fails" '&& mv "$API_CACHE/$key.etag.new" "$API_CACHE/$key.etag" || return 1' '&& mv "$API_CACHE/$key.etag.new" "$API_CACHE/$key.etag" || true'
+mutant "a failed gh exit on a 2xx is not trusted" 'if ((gh_rc != 0)); then cat "$raw.err" >&2; return 1; fi' 'true'
+mutant "the budget is read as decimal" 'API_RETRY_BUDGET_SECONDS=$((10#$API_RETRY_BUDGET_SECONDS)); ' ''
+mutant "the status lookup's errors are not hidden" "'.statuses' \\
+    | jq" "'.statuses' 2> /dev/null \\
+    | jq"
 mutant "an unwritable ledger fails" 'echo $((spent + wait)) > "$API_RETRY_LEDGER" || {' 'echo $((spent + wait)) > "$API_RETRY_LEDGER" 2> /dev/null || true; [[ -n x ]] || {'
 mutant "the ledger is written" 'echo $((spent + wait)) > "$API_RETRY_LEDGER"' 'true'
 # No mutant for "only GET is conditional": a POST is never cached (no ETag is stored for it), so removing
 # `$method == GET` from the condition is an equivalent mutant; the case above still pins the behaviour.
-mutant "a 2xx GET body is cached" 'cp "$API_BODY_RAW" "$API_CACHE/$key.body" || return 1' 'true'
+mutant "a 2xx GET body is cached" 'cp "$API_BODY_RAW" "$API_CACHE/$key.body" \' 'true \'
 mutant "a 304 needs a cached body" '[[ $method == GET && -f $API_CACHE/$key.body ]] || return 1' 'touch "$API_CACHE/$key.body"'
 mutant "rel=next drives the walk" '[[ $API_LINK == *'"'"'rel="next"'"'"'* ]] || break' 'break'
 mutant "the page cap" '((page <= API_MAX_PAGES))' '((page <= 999))'
 mutant "a page must be an array" 'jq -e "$sel | type == \"array\"" "$API_BODY" > /dev/null 2>&1 || { rm -f "$acc"; return 1; }' 'true'
-mutant "config is validated" '&& $API_MAX_PAGES =~ ^[1-9][0-9]*$ ]]' ']]'
+mutant "config is validated" '&& $API_MAX_PAGES =~ ^[1-9][0-9]{0,5}$ ]]' ']]'
 mutant "the attempt cap is validated" '&& $API_MAX_ATTEMPTS =~ ^[1-9][0-9]?$' '&& 1 == 1'
 mutant "the body split keeps blank lines" 'if ($0 == "") { if (seen) done = 1; next }' 'if ($0 == "") next'
 

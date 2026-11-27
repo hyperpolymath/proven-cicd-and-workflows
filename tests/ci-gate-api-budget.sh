@@ -84,8 +84,8 @@ chmod +x "$WORK/clock" "$WORK/nap"
 BUSY='. + [range(344) as $i | .[3] | .id = 5000 + $i | .created_at = "2026-11-17T10:05:00Z"]'
 ACTIVE='map(if .id == 12 then .status = "in_progress" | .conclusion = null else . end)'
 
-old_fetch=$(git -C "$ROOT" show "$BASE:.github/workflows/ci-gate.yml" | grep -cE '^ +fetch [a-z]')
-new_fetch_api=$(grep -cE '^ +fetch [a-z]' "$ROOT/.github/workflows/ci-gate.yml")
+old_fetch=$(git -C "$ROOT" show "$BASE:.github/workflows/ci-gate.yml" | grep -cE '^ +fetch [a-z"]')
+new_fetch_api=$(grep -cE '^ +fetch [a-z"]' "$ROOT/.github/workflows/ci-gate.yml")
 grep -q 'git -C "$git_dir" -c protocol.version=2 fetch' "$ROOT/.github/workflows/ci-gate.yml" && new_fetch=0 || new_fetch=$new_fetch_api
 
 printf '\n%-58s %8s %8s\n' "billed REST requests per gate job" before after

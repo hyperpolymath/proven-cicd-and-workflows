@@ -132,7 +132,7 @@ done < "$WORK/todo.tsv"
 {
   echo "### $CONTEXT sweep of $REPO"
   echo
-  echo "$(grep -c . "$WORK/todo.tsv" || true) of $total distinct head SHAs evaluated (cap $MAX). Profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`."
+  echo "$n of $total distinct head SHAs evaluated (cap $MAX). Profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`."
   echo
   echo '| Commit | Source | State | Description |'
   echo '|---|---|---|---|'

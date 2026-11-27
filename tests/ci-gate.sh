@@ -730,7 +730,7 @@ pubreset; printf '%s\n' '403 Forbidden' '403 Forbidden' > "$FAKEGH/ratelimit"
 early RL_MESSAGE='You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
 read -r s1 s2 <<<"$(sleeps)"
 chk "a secondary rate limit with no headers: exit 0 after 3 attempts" "$RC/$(attempts)" "0/3"
-{ ((s1 >= 5 && s1 <= 7 && s2 >= 10 && s2 <= 15)); } && ok "no headers: capped exponential backoff with jitter (${s1}s in 5..7, ${s2}s in 10..15)" || bad "backoff out of range: '$(sleeps)'"
+{ ((s1 >= 60 && s1 <= 90 && s2 >= 120 && s2 <= 180)); } && ok "no headers: backoff starts at a minute, doubles, with jitter (${s1}s in 60..90, ${s2}s in 120..180)" || bad "backoff out of range: '$(sleeps)'"
 
 echo "-- firing: rate limited to exhaustion --"
 pubreset; for _ in 1 2 3 4 5 6; do echo "$RETRY_3"; done > "$FAKEGH/ratelimit"; early
