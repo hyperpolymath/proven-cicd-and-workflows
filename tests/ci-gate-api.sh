@@ -23,6 +23,7 @@ cat > "$WORK/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(cat "$Q/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$Q/n"
 printf '%s\n' "$*" >> "$Q/calls"
+printf '%s\037' "$@" >> "$Q/args"; echo >> "$Q/args"
 [[ -f $Q/$n.resp ]] || { echo "fake gh: no response queued for request $n: $*" >&2; exit 1; }
 [[ ! -f $Q/$n.err ]] || cat "$Q/$n.err" >&2
 cat "$Q/$n.resp"; exit "$(cat "$Q/$n.rc" 2>/dev/null || echo 0)"
@@ -37,7 +38,7 @@ echo "$1" >> "$Q/sleeps"; echo $(( $(cat "$Q/clock") + $1 )) > "$Q/clock"
 EOF
 chmod +x "$WORK/bin/"*
 
-reset() { Q=$WORK/q.$RANDOM$RANDOM; mkdir -p "$Q"; echo 1000 > "$Q/clock"; : > "$Q/sleeps"; : > "$Q/calls"; export Q; }
+reset() { Q=$WORK/q.$RANDOM$RANDOM; mkdir -p "$Q"; echo 1000 > "$Q/clock"; : > "$Q/sleeps"; : > "$Q/calls"; : > "$Q/args"; export Q; }
 # resp <code> <reason> <body> [header lines...]: queue the next response; gh exits 1 for any non-2xx
 resp() {
   local code=$1 reason=$2 body=$3; shift 3
@@ -150,7 +151,9 @@ cases() {
   reset; resp 200 OK '{"statuses":[]}'; resp 201 Created '{}'
   ENVV=("${PS[@]}"); api 'post_status success "all green"; echo "rc=$? flag=$CI_GATE_RATE_LIMITED"'; ENVV=()
   chk "Silence: a new status is written: 2 requests (read, POST), no wait, flag 0" "$(tail -n 1 <<< "$OUT")/$(NCALLS)/$(SLEEPS)" "rc=0 flag=0/2/"
-  grep -q 'POST .*statuses/abc .*description=all green' "$Q/calls" && ok "the POST carries state, context, description and target_url" || bad "POST arguments: $(tail -n 1 "$Q/calls")"
+  # argument boundaries kept (separator \037): each field is one argument, the description's space included
+  want=$(printf '%s\037' api -i -X POST repos/o/r/statuses/abc -f state=success -f context=CI/gate -f 'description=all green' -f target_url=https://github.com/o/r/actions/runs/1)
+  [[ $(tail -n 1 "$Q/args") == "$want" ]] && ok "the POST carries exactly state, context, description and target_url, one argument each" || bad "POST arguments: $(tail -n 1 "$Q/args" | tr '\037' '|')"
   reset; resp 200 OK '{"statuses":[{"context":"CI/gate","state":"success","description":"all green"}]}'
   ENVV=("${PS[@]}"); api 'post_status success "all green"; echo "rc=$? flag=$CI_GATE_RATE_LIMITED"'; ENVV=()
   chk "Silence: the same status already stands: no POST, written-or-skipped is 0" "$(tail -n 1 <<< "$OUT")/$(NCALLS)" "rc=0 flag=0/1"
@@ -215,6 +218,17 @@ cases() {
   api 'api_request GET "repos/o/r/x"; k=$(printf "%s %s" GET repos/o/r/x | sha256sum | cut -c1-40); rm -f "$API_CACHE/$k.link"; mkdir "$API_CACHE/$k.link"
        api_request GET "repos/o/r/x"; echo "rc=$? etag=$([[ -e $API_CACHE/$k.etag ]] && echo present || echo absent)"'
   chk "a failed cache write fails the call and leaves no ETag behind" "$(tail -n 1 <<< "$OUT")" "rc=1 etag=absent"
+
+  # a 304 whose Link cannot be stored: the old Link stays whole, the ETag goes, the next GET is fresh
+  reset; resp 200 OK '{"a":1}' 'Etag: "e1"' 'Link: <x?page=2>; rel="next"'; resp 304 'Not Modified' '' 'Etag: "e1"' 'Link: <x?page=1>; rel="first"'
+  api 'api_request GET "repos/o/r/x"; k=$(printf "%s %s" GET repos/o/r/x | sha256sum | cut -c1-40); mkdir "$API_CACHE/$k.link.new"
+       api_request GET "repos/o/r/x"; echo "rc=$? etag=$([[ -e $API_CACHE/$k.etag ]] && echo present || echo absent) link=$(grep -c "rel=.next" "$API_CACHE/$k.link")"'
+  chk "a 304 whose new Link cannot be written fails, keeps the old Link intact and drops the ETag" "$(tail -n 1 <<< "$OUT")" "rc=1 etag=absent link=1"
+
+  # the retry ledger is replaced whole: a failed write leaves the recorded total as it was
+  reset; resp 429 x '{}' 'Retry-After: 5'; echo 100 > "$Q/ledger"; mkdir "$Q/ledger.new"
+  ENVV=(API_RETRY_LEDGER="$Q/ledger"); api "$GET1"; ENVV=()
+  chk "a ledger that cannot be written ends the waiting at once and keeps its total (100), not an empty file" "$RC/$(cat "$Q/ledger")/$(SLEEPS)" "2/100/"
 
   # a leading zero is decimal, not octal
   reset; resp 429 x '{}' 'Retry-After: 250'; resp 200 OK '{}'
@@ -292,7 +306,9 @@ mutant "a spent POST raises the flag" '((rc != 2)) || CI_GATE_RATE_LIMITED=1' 't
 mutant "a standing status is not rewritten" 'if [[ $(status_matches "$1" "$2") == same ]]; then' 'if false; then'
 mutant "retry notices stay off stdout" '(retry budget ${spent}/${API_RETRY_BUDGET_SECONDS}s)" >&2' '(retry budget ${spent}/${API_RETRY_BUDGET_SECONDS}s)"'
 mutant "a 304 keeps the cached Link" 'else API_LINK=$(cat "$API_CACHE/$key.link" 2> /dev/null); fi' 'else :; fi'
-mutant "a 304 with a Link replaces the cached one" 'if [[ -n $API_LINK ]]; then printf '"'%s\n'"' "$API_LINK" > "$API_CACHE/$key.link" || return 1' 'if [[ -n $API_LINK ]]; then :'
+mutant "a 304 with a Link replaces the cached one" '{ printf '"'%s\\n'"' "$API_LINK" > "$API_CACHE/$key.link.new" && mv -f "$API_CACHE/$key.link.new" "$API_CACHE/$key.link"; } 2> /dev/null \' 'true \'
+mutant "the cached Link is replaced whole, by a rename" 'printf '"'%s\\n'"' "$API_LINK" > "$API_CACHE/$key.link.new" && mv -f "$API_CACHE/$key.link.new" "$API_CACHE/$key.link"' 'printf '"'%s\\n'"' "$API_LINK" > "$API_CACHE/$key.link"'
+mutant "a failed Link update drops the ETag" '|| { rm -f "$API_CACHE/$key.link.new" "$API_CACHE/$key.etag"; return 1; }' '|| { rm -f "$API_CACHE/$key.link.new"; return 1; }'
 mutant "the Link is cached with the body" '&& printf '"'%s\n'"' "$API_LINK" > "$API_CACHE/$key.link" \' '\'
 mutant "the ETag is removed before the entry is rewritten" 'rm -f "$API_CACHE/$key.etag"
 ' ''
@@ -302,8 +318,9 @@ mutant "the budget is read as decimal" 'API_RETRY_BUDGET_SECONDS=$((10#$API_RETR
 mutant "the status lookup's errors are not hidden" "'.statuses' \\
     | jq" "'.statuses' 2> /dev/null \\
     | jq"
-mutant "an unwritable ledger fails" 'echo $((spent + wait)) > "$API_RETRY_LEDGER" || {' 'echo $((spent + wait)) > "$API_RETRY_LEDGER" 2> /dev/null || true; [[ -n x ]] || {'
-mutant "the ledger is written" 'echo $((spent + wait)) > "$API_RETRY_LEDGER"' 'true'
+mutant "an unwritable ledger fails" 'mv -f "$API_RETRY_LEDGER.new" "$API_RETRY_LEDGER"; } 2> /dev/null || {' 'mv -f "$API_RETRY_LEDGER.new" "$API_RETRY_LEDGER"; } 2> /dev/null || true; [[ -n x ]] || {'
+mutant "the ledger is written" 'mv -f "$API_RETRY_LEDGER.new" "$API_RETRY_LEDGER"; }' 'true; }'
+mutant "the ledger is replaced whole, by a rename" 'echo $((spent + wait)) > "$API_RETRY_LEDGER.new" && mv -f "$API_RETRY_LEDGER.new" "$API_RETRY_LEDGER"' 'echo $((spent + wait)) > "$API_RETRY_LEDGER"'
 # No mutant for "only GET is conditional": a POST is never cached (no ETag is stored for it), so removing
 # `$method == GET` from the condition is an equivalent mutant; the case above still pins the behaviour.
 mutant "a 2xx GET body is cached" 'cp "$API_BODY_RAW" "$API_CACHE/$key.body" \' 'true \'

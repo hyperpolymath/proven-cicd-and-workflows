@@ -264,7 +264,10 @@ jobs:
             fi
             echo "ci-gate: rate limited (HTTP $API_CODE), attempt $attempt of $API_MAX_ATTEMPTS; retrying in ${wait}s (retry budget ${spent}/${API_RETRY_BUDGET_SECONDS}s)" >&2
             # A budget that cannot be recorded cannot be enforced: fail rather than wait without bound.
-            echo $((spent + wait)) > "$API_RETRY_LEDGER" || {
+            # Written beside the ledger and renamed over it, so a failed write cannot leave the recorded
+            # total truncated to nothing (which every later step would read as zero seconds spent).
+            { echo $((spent + wait)) > "$API_RETRY_LEDGER.new" && mv -f "$API_RETRY_LEDGER.new" "$API_RETRY_LEDGER"; } 2> /dev/null || {
+              rm -f "$API_RETRY_LEDGER.new" 2> /dev/null
               echo "::error::rate limited, no verdict: the retry ledger $API_RETRY_LEDGER is not writable, so the retry budget cannot be kept" >&2
               return 1
             }
@@ -310,7 +313,11 @@ jobs:
                   [[ $method == GET && -f $API_CACHE/$key.body ]] || return 1
                   # A 304 may leave out Link: then the page's own, cached with its body, still holds.
                   API_LINK=$(api_header link)
-                  if [[ -n $API_LINK ]]; then printf '%s\n' "$API_LINK" > "$API_CACHE/$key.link" || return 1
+                  if [[ -n $API_LINK ]]; then
+                    # Replace the cached Link whole or not at all. If that fails, the entry's body and Link no
+                    # longer belong together: drop its ETag, so the next request fetches it afresh.
+                    { printf '%s\n' "$API_LINK" > "$API_CACHE/$key.link.new" && mv -f "$API_CACHE/$key.link.new" "$API_CACHE/$key.link"; } 2> /dev/null \
+                      || { rm -f "$API_CACHE/$key.link.new" "$API_CACHE/$key.etag"; return 1; }
                   else API_LINK=$(cat "$API_CACHE/$key.link" 2> /dev/null); fi
                   API_BODY="$API_CACHE/$key.body"; return 0 ;;
               esac

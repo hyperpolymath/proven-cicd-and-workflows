@@ -357,7 +357,8 @@ case $args in
     sha=${args#*head_sha=}; sha=${sha%%&*}; echo "$sha" > "$D/cursha"
     R=$D; [[ ! -d $D/by/$sha ]] || R=$D/by/$sha
     n=$(( $(cat "$R/runs.count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$R/runs.count"
-    [[ ! -f $R/fail.$n ]] || { echo "gh: HTTP 500" >&2; exit 1; }
+    # a failing read records whether published=true was already written: it must not be, before the post-write verification
+    [[ ! -f $R/fail.$n ]] || { [[ -s ${GITHUB_OUTPUT:-/dev/null} ]] && touch "$R/marker_before_fail.$n"; echo "gh: HTTP 500" >&2; exit 1; }
     f=$R/runs.$n.json; [[ -f $f ]] || f=$(ls "$R"/runs.*.json | sort -V | tail -1)
     jq -c '.[]' "$f" ;;
   *"/jobs?filter=latest"*)
@@ -383,7 +384,7 @@ SHA=$(printf 'a%.0s' $(seq 40))
 snap() { # <n> <jq filter over the fixture runs> -> runs.n.json
   jq -c "$2" "$FX/workflow-runs.json" > "$FAKEGH/runs.$1.json"
 }
-pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$FAKEGH/ratelimit" "$FAKEGH/attempts.log" "$FAKEGH/rl.sleeps" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
+pubreset() { rm -rf "$FAKEGH/by" "$FAKEGH/cursha" "$FAKEGH/pulls.json" "$FAKEGH/default_branch" "$FAKEGH/default_sha" "$FAKEGH/failpulls" "$FAKEGH/faildefault"; rm -f "$FAKEGH"/runs.*.json "$FAKEGH/prepost" "$FAKEGH"/fail.* "$FAKEGH"/marker_before_fail.* "$FAKEGH"/failjobs "$FAKEGH"/failpost "$FAKEGH/posts.log" "$FAKEGH/runs.count" "$FAKEGH/status.log" "$FAKEGH/status.reads" "$FAKEGH/failstatus" "$FAKEGH/badstatus" "$FAKEGH/ratelimit" "$FAKEGH/attempts.log" "$FAKEGH/rl.sleeps" "$WORK/gho"; cp "$FX/jobs.json" "$FAKEGH/jobs.json"; }
 publish() { # [VAR=value ...] -> RC, NPOSTS, POSTS (state<TAB>description lines), CALLS (runs fetches)
   : > "$FAKEGH/jobs.calls"
   : > "$FAKEGH/posts.log"; rm -f "$FAKEGH/runs.count"; rm -rf "$WORK/pw"
@@ -468,6 +469,7 @@ pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.2"; publish
 chk "gh error on the guard fetch: a failure POST" "$(post_n 1 | cut -f1)" failure
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/fail.3"; publish
 chk "gh error on the post-write fetch: success was written, then a failure POST" "$(cut -f1 "$FAKEGH/posts.log" | paste -sd, -)/$RC" "success,failure/1"
+chk "post-write re-read fails: published=true was not yet written (the failure step must stay eligible), and is written once the failure stands" "$([ -e "$FAKEGH/marker_before_fail.3" ] && echo early || echo none)/$(grep -c '^published=true$' "$WORK/gho")" "none/1"
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/failjobs"; publish
 chk "gh error reading jobs: a failure POST" "$(post_n 1 | cut -f1)" failure
 pubreset; snap 1 "$DONE"; touch "$FAKEGH/failpost"; publish

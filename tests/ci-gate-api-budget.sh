@@ -11,7 +11,8 @@
 # 100; `gh api rate_limit` is free. The suite-file fetch of the workflow is counted from the workflow
 # itself (one contents request per `fetch`, or none when the git route works).
 #
-# It asserts only that AFTER never bills more than BEFORE in any scenario, and prints the table.
+# It asserts that AFTER never bills more than BEFORE in any scenario, and that both sides publish the
+# same verdict line (an absent line fails). It prints the resolved BASE commit and the table.
 # Usage: bash tests/ci-gate-api-budget.sh [BASE]
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -93,6 +94,7 @@ suite_cost() { # <workflow text on stdin> -> 0 when the files come by git, else 
 old_fetch=$(git -C "$ROOT" show "$BASE:.github/workflows/ci-gate.yml" | suite_cost)
 new_fetch=$(suite_cost < "$ROOT/.github/workflows/ci-gate.yml")
 
+echo "base: $(git -C "$ROOT" rev-parse "$BASE")"
 printf '\n%-58s %8s %8s\n' "billed REST requests per gate job" before after
 row() { # <label> <before> <after>
   printf '%-58s %8s %8s\n' "$1" "$2" "$3"
@@ -103,8 +105,12 @@ for s in "settled, 4 runs on the head:." "a required run still active:$ACTIVE" "
   label=${s%%:*}; jqf=${s#*:}
   scenario "$jqf"; b=$(billed before); scenario "$jqf"; a=$(billed after)
   [[ ${b%%:*} == "${a%%:*}" ]] || { echo "  FAIL exit codes differ for '$label': before ${b%%:*}, after ${a%%:*}"; FAIL=1; }
-  diff <(grep -E 'state=|::error::' "$WORK/before.out" | sed 's/[0-9]\+s//g' | head -n 3) <(grep -E 'state=|::error::' "$WORK/after.out" | sed 's/[0-9]\+s//g' | head -n 3) > /dev/null \
-    || { echo "  note: outputs differ for '$label' (see the run logs)"; }
+  # The verdict lines of both sides must exist and be the same (waits of "Ns" aside): an empty
+  # match on both sides would otherwise compare equal and pass.
+  vb=$(grep -E 'state=|CI/gate = |::error::' "$WORK/before.out" | sed 's/[0-9]\+s//g')
+  va=$(grep -E 'state=|CI/gate = |::error::' "$WORK/after.out" | sed 's/[0-9]\+s//g')
+  [[ -n $vb && -n $va ]] || { echo "  FAIL no verdict line found for '$label' (before: ${#vb} bytes, after: ${#va} bytes)"; FAIL=1; }
+  [[ $vb == "$va" ]] || { echo "  FAIL verdict output differs for '$label'"; diff <(echo "$vb") <(echo "$va") | head -6; FAIL=1; }
   row "publisher: $label" "${b#*:}" "${a#*:}"
   [[ -z ${BENCH_VERBOSE:-} ]] || { echo "    before:"; sed "s/^/      /" "$WORK/before.out" | grep -E "state|CI/gate" | head -3; echo "    after:"; sed "s/^/      /" "$WORK/after.out" | grep -E "state|CI/gate" | head -3; awk "{print \"      \" \$1, \$2, \$NF}" "$WORK/bill"; }
 done

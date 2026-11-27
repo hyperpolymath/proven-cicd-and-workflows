@@ -235,11 +235,13 @@ while :; do
   # d. write, then verify the write against the runs as they are now
   write_summary "$state" "$description" 1
   post "$state" "$description" || die 'could not publish the status'
-  finish_output
   echo "$CONTEXT = $state: $description"
+  # published=true is written only once the write is verified. Written before, a failed re-read
+  # (a rate limit, say) would skip the workflow's failure step and leave this unverified status as
+  # the only outcome on the commit; without it that step still gets to write a failure.
   fetch_runs || die 'could not re-read the workflow runs after publishing'
   fp_post=$(fingerprint "$WORK/workflow-runs.json") || die 'workflow runs are malformed'
-  if [[ $fp_before == "$fp_post" ]]; then settled=1; break; fi
+  if [[ $fp_before == "$fp_post" ]]; then finish_output; settled=1; break; fi
   # A bootstrap PR may have no default-branch evaluator to clear our stale success.
   if ((WAIT_SECONDS > 0)) && [[ $state == success ]]; then
     post pending 'runs still changing' || die 'could not publish the status'
