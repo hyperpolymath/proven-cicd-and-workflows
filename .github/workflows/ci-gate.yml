@@ -73,6 +73,11 @@ on:
         type: number
         required: false
         default: 20
+      quiet_seconds:
+        description: workflow_run only. Seconds to wait, after the early pending and before the first read, so a newer event for the same commit cancels this run before it spends API calls. 0 to 120.
+        type: number
+        required: false
+        default: 30
 
 permissions:
   contents: read
@@ -103,6 +108,7 @@ jobs:
       TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
       WAIT_MINUTES: ${{ inputs.wait_minutes }}
       POLL_SECONDS: ${{ inputs.poll_seconds }}
+      QUIET_SECONDS: ${{ inputs.quiet_seconds }}
       GATE_NAME: ${{ github.workflow }}
       SERVER_URL: ${{ github.server_url }}
       RUN_ID: ${{ github.run_id }}
@@ -131,6 +137,8 @@ jobs:
             || { echo "::error::timeout_minutes must be a positive integer"; exit 1; }
           [[ "$WAIT_MINUTES" =~ ^[0-9]+$ && "$POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::wait_minutes must be a non-negative and poll_seconds a positive integer"; exit 1; }
+          [[ "$QUIET_SECONDS" =~ ^[0-9]+$ && ${#QUIET_SECONDS} -le 3 ]] && ((10#$QUIET_SECONDS <= 120)) \
+            || { echo "::error::quiet_seconds must be an integer from 0 to 120"; exit 1; }
           # Reserve ten minutes of the 60-minute job for setup and final publication.
           if [[ "$EVENT_NAME" == pull_request ]]; then
             [[ ${#WAIT_MINUTES} -le 2 ]] && ((10#$WAIT_MINUTES <= 50)) \
@@ -240,6 +248,16 @@ jobs:
             exit 1
           }
           echo "$CONTEXT = pending: $desc"
+      - name: Let a burst of workflow_run events settle
+        # Several runs of one commit start and finish within seconds. The job's concurrency
+        # group cancels this run when a newer event for the same commit arrives, so waiting
+        # here, before the suite is read, lets a cancelled run spend no further API call.
+        # The early pending above has already stopped a previous verdict from standing.
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == workflow_run && "$QUIET_SECONDS" -gt 0 ]] || { echo "no quiet period for $EVENT_NAME"; exit 0; }
+          echo "waiting ${QUIET_SECONDS}s for newer events for $HEAD_SHA"
+          sleep "$QUIET_SECONDS"
       - name: Read the profile and the verdict scripts from this suite at its own commit
         env:
           WF_REPO: ${{ job.workflow_repository }}
@@ -255,9 +273,27 @@ jobs:
             || { echo "::error::job.workflow_sha is empty or not a 40-hex commit ('$WF_SHA'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
           suite="$RUNNER_TEMP/ci-gate-suite"
           rm -rf "$suite"; mkdir -p "$suite/scripts" "$suite/profiles/ci-gate"
+          # One shallow git fetch of the suite commit replaces seven contents-API reads, so the
+          # REST budget the gate shares with every other workflow is not spent on these files.
+          # The fetch is anonymous: a private suite, or a network that refuses it, falls back
+          # to the contents API. FETCH_HEAD must be the pinned commit, or nothing is read from it.
+          src="$RUNNER_TEMP/ci-gate-src"
+          rm -rf "$src"; git init -q "$src"
+          via=api
+          if GIT_TERMINAL_PROMPT=0 git -C "$src" fetch -q --depth 1 --no-tags "https://github.com/$WF_REPO" "$WF_SHA" 2>/dev/null \
+            && [[ "$(git -C "$src" rev-parse FETCH_HEAD)" == "$WF_SHA" ]]; then
+            via=git
+          else
+            echo "::notice::could not git-fetch $WF_REPO@$WF_SHA; reading the suite through the contents API"
+          fi
           fetch() { # <path in the suite> -> same path under $suite; refuses an empty file
-            gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WF_REPO/contents/$1?ref=$WF_SHA" > "$suite/$1" \
-              || { echo "::error::could not read $1 from $WF_REPO@$WF_SHA"; return 1; }
+            if [[ "$via" == git ]]; then
+              git -C "$src" cat-file blob "$WF_SHA:$1" > "$suite/$1" 2>/dev/null \
+                || { echo "::error::could not read $1 from $WF_REPO@$WF_SHA"; return 1; }
+            else
+              gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WF_REPO/contents/$1?ref=$WF_SHA" > "$suite/$1" \
+                || { echo "::error::could not read $1 from $WF_REPO@$WF_SHA"; return 1; }
+            fi
             [[ -s "$suite/$1" ]] || { echo "::error::$1 at $WF_REPO@$WF_SHA is empty"; return 1; }
           }
           fetch scripts/ci-gate-verdict.sh
@@ -272,7 +308,7 @@ jobs:
           fetch "profiles/ci-gate/$REPO.json" \
             || { echo "::error::no CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
           echo "suite=$suite" >> "$GITHUB_ENV"
-          echo "Profile for $REPO read from $WF_REPO@$WF_SHA"
+          echo "Profile for $REPO read from $WF_REPO@$WF_SHA (via $via)"
       - name: Validate the profile
         run: bash "$suite/scripts/validate-ci-gate-profile.sh" "$suite/profiles/ci-gate/$REPO.json" "$REPO" "$CONTEXT"
       - name: Evaluate the commit and publish the status

@@ -18,8 +18,10 @@ name: CI gate
 
 on:
   pull_request:
+  # Only the workflows that produce the profile's required jobs start the gate (docs/CI-GATE.adoc,
+  # "Fewer events"). tests/ci-gate.sh checks this list equals the names of the profile's workflows.
   workflow_run:
-    workflows: ["**", "!CI gate"]
+    workflows: ["Central Estate CI/CD Audit", "Proven lock gate", "Secret Scanner", "Bounded secret scanner controls", "Supplemental secret checks"]
     types: [completed, in_progress]
   schedule:
     - cron: "7,22,37,52 * * * *"
