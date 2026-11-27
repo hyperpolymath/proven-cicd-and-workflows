@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MPL-2.0
+# actionlint configuration for the proven baseline. Every ignore is scoped to one
+# file and one message, and says why it is not a defect. A new finding of any
+# other kind fails the lint.
+paths:
+  # job.workflow_repository and job.workflow_sha are GitHub job-context fields
+  # the pinned actionlint (1.7.7) does not know yet.
+  .github/workflows/ci-gate.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type'
+      # [[ length ]] && (( range )) || { error }: either check failing must reach
+      # the error branch, which is what A && B || C does here.
+      - 'SC2015:'
+  .github/workflows/ci-gate-tamper-guard.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type'
+  # uses: $/actions/... is the gh actions-lock same-repository form, resolved by
+  # the lock tool (see scripts/extract-lock-facts.sh), not a GitHub ref.
+  .github/workflows/code-hygiene-self-test.yml:
+    ignore:
+      - 'specifying action "\$/actions/[a-z-]+" in invalid format because ref is missing'
+  # Backticks in a printf format are Markdown for the step summary, not
+  # command substitution.
+  .github/workflows/assurance-kernel.yml:
+    ignore:
+      - 'SC2016:'
+  # Style only: separate appends to GITHUB_OUTPUT are kept one fact per line.
+  .github/workflows/secret-scanner-consumer-canaries.yml:
+    ignore:
+      - 'SC2129:'

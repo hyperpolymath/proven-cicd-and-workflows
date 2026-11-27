@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath) <j.d.a.jewell@open.ac.uk>
 #
-# language-gates-self-test.yml — the four language gates must be able to
+# language-gates-self-test.yml — the language gates (Rust, Creusot, SPARK,
+# miniKanren, and the Agda, Rocq, Lean-axioms and TLA+ prover gates) must be able to
 # FAIL, for each thing they claim to check, before any consumer calls them.
 #
 # Gate fixtures establish that each reusable can reject its named defects;
@@ -25,7 +26,13 @@ on:
       - "actions/creusot-check/**"
       - "actions/spark-check/**"
       - "actions/kanren-check/**"
+      - "actions/agda-check/**"
+      - "actions/rocq-check/**"
+      - "actions/lean-axioms-check/**"
+      - "actions/tla-check/**"
       - "scripts/verify-suite-checkout.sh"
+      - "rollout_language_gates.sh"
+      - "tests/rollout-detection.sh"
       - "scripts/deonboard-workflow.sh"
       - "actions/zig-unified-api-adapter-check/**"
       - "tests/zig-ffi-scope.sh"
@@ -38,6 +45,10 @@ on:
       - ".github/workflows/creusot-gate.yml"
       - ".github/workflows/spark-gate.yml"
       - ".github/workflows/kanren-gate.yml"
+      - ".github/workflows/agda-gate.yml"
+      - ".github/workflows/rocq-gate.yml"
+      - ".github/workflows/lean-axioms-gate.yml"
+      - ".github/workflows/tla-gate.yml"
       - ".github/workflows/language-gates-self-test.yml"
       - "templates/**"
   pull_request:
@@ -47,7 +58,13 @@ on:
       - "actions/creusot-check/**"
       - "actions/spark-check/**"
       - "actions/kanren-check/**"
+      - "actions/agda-check/**"
+      - "actions/rocq-check/**"
+      - "actions/lean-axioms-check/**"
+      - "actions/tla-check/**"
       - "scripts/verify-suite-checkout.sh"
+      - "rollout_language_gates.sh"
+      - "tests/rollout-detection.sh"
       - "scripts/deonboard-workflow.sh"
       - "actions/zig-unified-api-adapter-check/**"
       - "tests/zig-ffi-scope.sh"
@@ -60,6 +77,10 @@ on:
       - ".github/workflows/creusot-gate.yml"
       - ".github/workflows/spark-gate.yml"
       - ".github/workflows/kanren-gate.yml"
+      - ".github/workflows/agda-gate.yml"
+      - ".github/workflows/rocq-gate.yml"
+      - ".github/workflows/lean-axioms-gate.yml"
+      - ".github/workflows/tla-gate.yml"
       - ".github/workflows/language-gates-self-test.yml"
       - "templates/**"
 
@@ -81,7 +102,9 @@ jobs:
   gates:
     name: Each gate can fail for what it checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      JAVA: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -92,13 +115,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends guile-3.0 shellcheck
           rustup component add clippy rustfmt
+      - name: Prover toolchains the prover-gate suites run for real (pins are asserted by the gates)
+        # The Agda, Rocq, Lean and TLA+ test suites run the REAL pinned tools: each
+        # gate refuses any other binary, so a stand-in prover is not possible. A
+        # wrong version is exit 2 inside the gate, never a skip. Java 21 is named
+        # by path because the runner image carries other JDKs.
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends agda-bin coq openjdk-21-jre-headless zstd
+          curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 -o "$RUNNER_TEMP/lean-4.15.0-linux.tar.zst" \
+            https://github.com/leanprover/lean4/releases/download/v4.15.0/lean-4.15.0-linux.tar.zst
+          echo "af71a2569a9f68337de2434829b3008cd8e32c436e9cb6bd8c84a2c2ba3585c9  $RUNNER_TEMP/lean-4.15.0-linux.tar.zst" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/lean"
+          tar --zstd -xf "$RUNNER_TEMP/lean-4.15.0-linux.tar.zst" -C "$RUNNER_TEMP/lean"
+          echo "$RUNNER_TEMP/lean/lean-4.15.0-linux/bin" >> "$GITHUB_PATH"
       - name: Every gate script parses and is shellcheck-clean
         run: |
           set -euo pipefail
-          for f in actions/rust-ci-check/*.sh actions/creusot-check/*.sh actions/spark-check/*.sh actions/kanren-check/*.sh scripts/verify-suite-checkout.sh scripts/deonboard-workflow.sh rollout_language_gates.sh; do
+          for f in actions/rust-ci-check/*.sh actions/creusot-check/*.sh actions/spark-check/*.sh actions/kanren-check/*.sh actions/agda-check/*.sh actions/rocq-check/*.sh actions/lean-axioms-check/*.sh actions/tla-check/*.sh scripts/verify-suite-checkout.sh scripts/deonboard-workflow.sh rollout_language_gates.sh; do
             bash -n "$f"
           done
-          shellcheck -S warning actions/rust-ci-check/*.sh actions/creusot-check/*.sh actions/spark-check/*.sh actions/kanren-check/*.sh scripts/verify-suite-checkout.sh scripts/deonboard-workflow.sh rollout_language_gates.sh
+          shellcheck -S warning actions/rust-ci-check/*.sh actions/creusot-check/*.sh actions/spark-check/*.sh actions/kanren-check/*.sh actions/agda-check/*.sh actions/rocq-check/*.sh actions/lean-axioms-check/*.sh actions/tla-check/*.sh scripts/verify-suite-checkout.sh scripts/deonboard-workflow.sh rollout_language_gates.sh
       - name: The suite-checkout verifier refuses an empty or wrong SHA
         run: |
           set -euo pipefail
@@ -113,6 +150,8 @@ jobs:
         run: bash tests/suite-source-compatibility.sh
       - name: Zig FFI scope distinguishes CLI I/O and fails closed
         run: bash tests/zig-ffi-scope.sh
+      - name: Rollout detectors select the right gate, and not Verilog
+        run: bash tests/rollout-detection.sh
       - name: Rust gate
         run: bash actions/rust-ci-check/test.sh
       - name: Scoped Rust documentation still rejects broken doctests
@@ -125,6 +164,14 @@ jobs:
         run: bash actions/spark-check/test.sh
       - name: miniKanren gate
         run: bash actions/kanren-check/test.sh
+      - name: Agda gate
+        run: bash actions/agda-check/test.sh
+      - name: Rocq gate
+        run: bash actions/rocq-check/test.sh
+      - name: Lean axioms gate
+        run: bash actions/lean-axioms-check/test.sh
+      - name: TLA+ gate (fetches the pinned tla2tools.jar and checks its SHA-256)
+        run: bash actions/tla-check/test.sh
       - name: Every gate uses only action owners the callers' Actions policy admits, at full SHAs
         # The policy is evaluated in the CALLER's repository, so cicd-suite's own
         # CI never sees a refusal; this guard is that refusal, moved here
@@ -134,7 +181,7 @@ jobs:
       - name: Caller templates carry the placeholder, a full-SHA form and no secrets
         run: |
           set -euo pipefail
-          for t in templates/rust-ci-caller.yml templates/creusot-gate-caller.yml templates/spark-gate-caller.yml templates/kanren-gate-caller.yml; do
+          for t in templates/rust-ci-caller.yml templates/creusot-gate-caller.yml templates/spark-gate-caller.yml templates/kanren-gate-caller.yml templates/agda-gate-caller.yml templates/rocq-gate-caller.yml templates/lean-axioms-gate-caller.yml templates/tla-gate-caller.yml; do
             grep -qE 'uses: hyperpolymath/proven-cicd-and-workflows/\.github/workflows/[a-z-]+\.yml@__CICD_SUITE_SHA__' "$t" \
               || { echo "$t does not call a cicd-suite reusable at __CICD_SUITE_SHA__"; exit 1; }
             ! grep -qE '^\s*secrets:' "$t" || { echo "$t hands secrets to a reusable that consumes none"; exit 1; }
