@@ -7,6 +7,16 @@
       "reason": "Bounded read-only recovery runner; full-SHA official actions, candidate artifacts only, no target writeback or policy changes."
     },
     {
+      "path": ".github/workflows/advisory-autofix-self-test.yml",
+      "mode": "immutable",
+      "reason": "Self-test for the advisory auto-fix; full-SHA actions outside the existing lock map."
+    },
+    {
+      "path": ".github/workflows/advisory-autofix.yml",
+      "mode": "immutable",
+      "reason": "Reusable advisory auto-fix; full-SHA actions outside the existing lock map (de-onboarded like rust-ci.yml); remote closure is not certified by this scope guard."
+    },
+    {
       "path": ".github/workflows/agda-gate.yml",
       "mode": "immutable",
       "reason": "Full-SHA source references outside the existing lock map; remote closure is not certified by this scope guard."
@@ -80,6 +90,16 @@
       "path": ".github/workflows/proven-lock-gate.yml",
       "mode": "immutable",
       "reason": "First canary of the stamped proven lock gate (templates/proven-lock-gate.yml); full-SHA actions, suite pinned by PROVEN_SHA, no lock-map onboarding."
+    },
+    {
+      "path": ".github/workflows/proven-self.yml",
+      "mode": "immutable",
+      "reason": "Dogfood caller (DOG-01): local reusable reference to proven.yml, no third-party actions."
+    },
+    {
+      "path": ".github/workflows/proven.yml",
+      "mode": "immutable",
+      "reason": "Umbrella reusable gate: full-SHA actions; the suite is pinned by the caller's uses: line and read back at run time, like rust-ci.yml; no lock-map onboarding."
     },
     {
       "path": ".github/workflows/rocq-gate.yml",

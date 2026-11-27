@@ -25,6 +25,12 @@ ok()  { printf '  ok   %s\n' "$1"; PASS=$((PASS+1)); }
 bad() { printf '  FAIL %s\n' "$1"; FAIL=$((FAIL+1)); }
 
 command -v java >/dev/null 2>&1 || { echo "tla-check/test.sh: java is not installed — NO CHECK WAS PERFORMED." >&2; exit 2; }
+# The gate accepts only its pinned Java package. A runner with some other Java has
+# no toolchain for these controls: that is NOT RUN, not a failed control.
+JAVA_PACKAGE="$(sed -n 's/^PIN_JAVA_PACKAGE="\(.*\)"$/\1/p' "$(dirname "$0")/check.sh")"
+[[ -n "$JAVA_PACKAGE" ]] || { echo "tla-check/test.sh: PIN_JAVA_PACKAGE not found in check.sh" >&2; exit 1; }
+[[ -n "$(dpkg-query -W -f='${Version}' "$JAVA_PACKAGE" 2>/dev/null || true)" ]] \
+  || { echo "tla-check/test.sh: package $JAVA_PACKAGE is not installed — NO CHECK WAS PERFORMED." >&2; exit 2; }
 BASH_BIN="$(command -v bash)"
 
 WORK="$(mktemp -d)"

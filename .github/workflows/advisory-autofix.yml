@@ -1,0 +1,300 @@
+# SPDX-License-Identifier: MPL-2.0
+# Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath) <j.d.a.jewell@open.ac.uk>
+#
+# advisory-autofix.yml — scheduled, permanent cure for "a new advisory turned
+# the daily cargo audit red", as a reusable workflow.
+#
+# WHY. RUSTSEC-2026-0538 (quinn-udp < 0.5.16) turned echidna's daily audit red
+# on main and on every PR, docs-only ones included, until it was fixed by hand
+# (echidna#507). Dependabot security updates cover advisories that have a GHSA
+# alias, for the manifests its config lists; RustSec-only advisories and
+# unlisted workspaces (echidna's fuzz/ has its own Cargo.lock) are the gap.
+# This workflow closes it the same way for every Cargo workspace that has a
+# tracked Cargo.lock (one without a lockfile is not covered):
+#   1. every tracked, non-vendored Cargo.lock is a workspace (discovered, never
+#      listed, so a new nested workspace is covered the day it lands);
+#   2. each is audited with cargo-deny's advisories check — the tool rust-ci.yml
+#      already runs, from the same pinned prebuilt;
+#   3. for an advisory with a patched version: `cargo update -p <crate>@<locked>
+#      --precise <lowest patched version>`, then audit again;
+#   4. the bumped lockfiles go into ONE signed PR (GitHub signs the commit made
+#      through the createCommitOnBranch API);
+#   5. an advisory with no compatible patched version, or one that cannot be bumped
+#      without a manifest change, opens or updates ONE issue instead of a PR.
+#
+# NEVER AUTO-MERGE. The PR is opened and left. The owner merges, and only when
+# the repository's full CI AND its declared proof lanes are green — Creusot
+# with Pearlite and Verus for first-party Rust, Kani and Aeneas where the repo
+# declares them (standards 3-practice/PROOF-POLICY.adoc §1.2). This workflow
+# cannot make them required; branch protection does. See docs/advisory-autofix.adoc.
+#
+# WHAT IT DOES NOT COVER. A dependency bump can break a Creusot/Pearlite,
+# Verus, Kani or Aeneas proof (they pin specific rustc builds). That is not an
+# advisory and this workflow cannot see it. The bump PR only ROUTES it: the
+# proof lanes run on the PR (because AUTOFIX_TOKEN starts CI) and a verifier
+# failure shows red there. Nothing here skips, silences or retries a lane.
+#
+# HOW THE SCRIPTS ARE PINNED, CONSUMING IT, DE-ONBOARDING: exactly as
+# rust-ci.yml's header (one caller pin selects workflow and scripts; every
+# `uses:` is a full SHA; the caller de-onboards from its actions.lock). The
+# caller template is templates/advisory-autofix-caller.yml. A final
+# `Advisory autofix verdict` job turns a skipped mandatory job into a failure.
+#
+# TOKEN. `secrets.AUTOFIX_TOKEN` (GitHub App or fine-grained token: contents,
+# pull-requests, issues write) is required to deliver a fix: a PR made with
+# GITHUB_TOKEN starts no CI, so it could never be green. Without it a found
+# fix exits red with the reason; nothing is pushed.
+
+name: Advisory autofix (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner label for every job
+        type: string
+        required: false
+        default: ubuntu-24.04
+      cargo_deny_version:
+        description: cargo-deny release (prebuilt, checksummed by taiki-e/install-action); keep equal to rust-ci.yml's
+        type: string
+        required: false
+        default: "0.20.2"
+      deny_args:
+        description: cargo-deny global options, placed before `check` (e.g. `--all-features`); the audit runs inside each workspace directory, so any paths here are relative to that workspace
+        type: string
+        required: false
+        default: ""
+      exclude:
+        description: Space-separated workspace directories to skip (vendored trees are always skipped)
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: Audit and fix in the runner but open no PR and no issue
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      AUTOFIX_TOKEN:
+        description: Token that opens the PR so the repo's CI and proof lanes run on it
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  detect:
+    name: Detect Cargo workspaces
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      count: ${{ steps.ws.outputs.count }}
+      dirs: ${{ steps.ws.outputs.dirs }}
+    steps:
+      - name: Check out the calling repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the suite repository and commit this caller pins
+        id: suite
+        env:
+          SUITE_WORKFLOW: advisory-autofix.yml
+        # Inside a reusable workflow the `github` context is the CALLER's, so
+        # GITHUB_WORKFLOW_REF names the caller's workflow file — which is in
+        # the tree just checked out and holds the very `uses:` line GitHub
+        # resolved to reach this file. That SHA pins the gate scripts: one
+        # pin, held by the caller, selects both the workflow and its scripts.
+        # (`github.job_workflow_sha` is an OIDC claim, not a context property,
+        # and reading the token would need id-token: write from every caller.)
+        run: |
+          set -euo pipefail
+          command -v yq >/dev/null || { echo '::error::yq is unavailable; source pin NOT VERIFIED'; exit 2; }
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/"* ]] || exit 2
+          path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
+          case "$path" in .github/workflows/*.yml|.github/workflows/*.yaml) ;; *) exit 2 ;; esac
+          [[ "${path#.github/workflows/}" != */* && -f "$path" && ! -L "$path" ]] \
+            || { echo '::error::caller workflow is absent or is not a direct workflow file; source pin NOT VERIFIED'; exit 2; }
+          candidates=$(yq -r '.jobs[] | select(has("uses")) | .uses' "$path") \
+            || { echo '::error::caller workflow cannot be parsed; source pin NOT VERIFIED'; exit 2; }
+          refs=''
+          while IFS= read -r ref; do
+            # Other reusable workflows do not select this gate's source.
+            [[ "$ref" == */.github/workflows/"$SUITE_WORKFLOW"* ]] || continue
+            case "$ref" in
+              hyperpolymath/cicd-suite/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd-and-workflows/.github/workflows/"$SUITE_WORKFLOW"@*)
+                repository=${ref%%/.github/workflows/*}
+                sha=${ref##*@}
+                [[ "$sha" =~ ^[0-9a-f]{40}$ && "$ref" == "$repository/.github/workflows/$SUITE_WORKFLOW@$sha" ]] \
+                  || { echo '::error::suite caller must pin one complete 40-hex SHA; source pin NOT VERIFIED'; exit 2; }
+                refs+="$repository@$sha"$'\n'
+                ;;
+              *) echo '::error::unexpected suite source reference; source pin NOT VERIFIED'; exit 2 ;;
+            esac
+          done <<< "$candidates"
+          refs=$(printf '%s' "$refs" | sort -u)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          [[ "$n" -eq 1 ]] \
+            || { echo "::error::$path selects $n distinct suite repository/commit pairs; exactly one is required. NO CHECK WAS PERFORMED."; exit 2; }
+          repository=${refs%@*}
+          sha=${refs##*@}
+          printf 'repository=%s\nsha=%s\n' "$repository" "$sha" >> "$GITHUB_OUTPUT"
+          echo "Suite source pinned at $repository@$sha by $path"
+      - name: Check out the selected suite at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.suite.outputs.repository }}
+          ref: ${{ steps.suite.outputs.sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Refuse gate scripts from an unverified cicd-suite commit
+        env:
+          EXPECTED: ${{ steps.suite.outputs.sha }}
+          EXPECTED_REPOSITORY: ${{ steps.suite.outputs.repository }}
+        run: bash .cicd-suite/scripts/verify-suite-checkout.sh
+      - name: Discover Cargo workspaces (every tracked, non-vendored Cargo.lock)
+        id: ws
+        env:
+          ADVISORY_AUTOFIX_EXCLUDE: ${{ inputs.exclude }}
+        run: |
+          dirs=$(bash .cicd-suite/scripts/advisory-autofix-discover.sh .)
+          count=$(printf '%s' "$dirs" | grep -c . || true)
+          { echo "count=$count"; echo "dirs=$(printf '%s' "$dirs" | tr '\n' ' ')"; } | tee -a "$GITHUB_OUTPUT"
+
+  autofix:
+    name: Audit, bump, deliver
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 45
+    needs: detect
+    if: ${{ needs.detect.outputs.count != '0' }}
+    # issues: write opens the no-patch issue; the PR itself is opened with
+    # AUTOFIX_TOKEN, not this job's token. The caller must grant issues: write.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out the calling repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the suite repository and commit this caller pins
+        id: suite
+        env:
+          SUITE_WORKFLOW: advisory-autofix.yml
+        # Inside a reusable workflow the `github` context is the CALLER's, so
+        # GITHUB_WORKFLOW_REF names the caller's workflow file — which is in
+        # the tree just checked out and holds the very `uses:` line GitHub
+        # resolved to reach this file. That SHA pins the gate scripts: one
+        # pin, held by the caller, selects both the workflow and its scripts.
+        # (`github.job_workflow_sha` is an OIDC claim, not a context property,
+        # and reading the token would need id-token: write from every caller.)
+        run: |
+          set -euo pipefail
+          command -v yq >/dev/null || { echo '::error::yq is unavailable; source pin NOT VERIFIED'; exit 2; }
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/"* ]] || exit 2
+          path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
+          case "$path" in .github/workflows/*.yml|.github/workflows/*.yaml) ;; *) exit 2 ;; esac
+          [[ "${path#.github/workflows/}" != */* && -f "$path" && ! -L "$path" ]] \
+            || { echo '::error::caller workflow is absent or is not a direct workflow file; source pin NOT VERIFIED'; exit 2; }
+          candidates=$(yq -r '.jobs[] | select(has("uses")) | .uses' "$path") \
+            || { echo '::error::caller workflow cannot be parsed; source pin NOT VERIFIED'; exit 2; }
+          refs=''
+          while IFS= read -r ref; do
+            # Other reusable workflows do not select this gate's source.
+            [[ "$ref" == */.github/workflows/"$SUITE_WORKFLOW"* ]] || continue
+            case "$ref" in
+              hyperpolymath/cicd-suite/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd/.github/workflows/"$SUITE_WORKFLOW"@*|hyperpolymath/proven-cicd-and-workflows/.github/workflows/"$SUITE_WORKFLOW"@*)
+                repository=${ref%%/.github/workflows/*}
+                sha=${ref##*@}
+                [[ "$sha" =~ ^[0-9a-f]{40}$ && "$ref" == "$repository/.github/workflows/$SUITE_WORKFLOW@$sha" ]] \
+                  || { echo '::error::suite caller must pin one complete 40-hex SHA; source pin NOT VERIFIED'; exit 2; }
+                refs+="$repository@$sha"$'\n'
+                ;;
+              *) echo '::error::unexpected suite source reference; source pin NOT VERIFIED'; exit 2 ;;
+            esac
+          done <<< "$candidates"
+          refs=$(printf '%s' "$refs" | sort -u)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          [[ "$n" -eq 1 ]] \
+            || { echo "::error::$path selects $n distinct suite repository/commit pairs; exactly one is required. NO CHECK WAS PERFORMED."; exit 2; }
+          repository=${refs%@*}
+          sha=${refs##*@}
+          printf 'repository=%s\nsha=%s\n' "$repository" "$sha" >> "$GITHUB_OUTPUT"
+          echo "Suite source pinned at $repository@$sha by $path"
+      - name: Check out the selected suite at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.suite.outputs.repository }}
+          ref: ${{ steps.suite.outputs.sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Refuse gate scripts from an unverified cicd-suite commit
+        env:
+          EXPECTED: ${{ steps.suite.outputs.sha }}
+          EXPECTED_REPOSITORY: ${{ steps.suite.outputs.repository }}
+        run: bash .cicd-suite/scripts/verify-suite-checkout.sh
+      - name: Install cargo-deny ${{ inputs.cargo_deny_version }} (prebuilt, pinned)
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@${{ inputs.cargo_deny_version }}
+      - name: Audit every workspace and apply the lowest patched versions
+        env:
+          DENY_ARGS: ${{ inputs.deny_args }}
+          ADVISORY_AUTOFIX_EXCLUDE: ${{ inputs.exclude }}
+          REPORT: ${{ runner.temp }}/advisory-autofix-report.json
+        # Exit 2 = an audit could not run: red, never clean.
+        run: bash .cicd-suite/scripts/advisory-autofix-fix.sh
+      - name: Summarise
+        if: ${{ always() }}
+        env:
+          REPORT: ${{ runner.temp }}/advisory-autofix-report.json
+        run: |
+          [ -f "$REPORT" ] || { echo "No report: the audit did not complete." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          {
+            echo "### Advisory autofix"
+            jq -r '.workspaces[] | "- `\(.dir)`: bumped \(.bumped|length), issues \(.issues|length), clean after: \(.clean_after)"' "$REPORT"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Open the signed PR and/or the no-patch issues
+        if: ${{ !inputs.dry_run }}
+        env:
+          REPORT: ${{ runner.temp }}/advisory-autofix-report.json
+          GH_REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          AUTOFIX_TOKEN: ${{ secrets.AUTOFIX_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .cicd-suite/scripts/advisory-autofix-deliver.sh
+
+  verdict:
+    # A skipped autofix job with workspaces present means no audit ran: VOID.
+    name: Advisory autofix verdict
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    needs: [detect, autofix]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+    env:
+      COUNT: ${{ needs.detect.outputs.count }}
+      R_DETECT: ${{ needs.detect.result }}
+      R_AUTOFIX: ${{ needs.autofix.result }}
+    steps:
+      - name: Adjudicate
+        run: |
+          set -euo pipefail
+          [ "$R_DETECT" = success ] || { echo "::error::detect: $R_DETECT — the workspaces were not established."; exit 1; }
+          if [ "$COUNT" = 0 ]; then
+            echo "::notice::No tracked Cargo.lock: nothing to audit. This verdict is silent, not green-as-assurance."
+            exit 0
+          fi
+          case "$R_AUTOFIX" in
+            success) echo "Advisory autofix verdict: GREEN — every workspace was audited; fixes and issues were delivered." ;;
+            skipped) echo "::error::autofix was SKIPPED with $COUNT workspace(s) present — a gate that did not run is VOID, not green."; exit 1 ;;
+            *) echo "::error::autofix: $R_AUTOFIX"; exit 1 ;;
+          esac
