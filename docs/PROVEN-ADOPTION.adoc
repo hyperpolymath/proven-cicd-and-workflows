@@ -61,6 +61,10 @@ na = "single binary, no inter-component seam"   # N/A needs a written reason
 reason = "toolchain not yet provisioned by the umbrella"
 until = "2026-12-31"
 
+# A language whose project is not at the repository root: preparation and every command run there.
+[languages.dir]
+elixir = "elixir-orchestration"
+
 # A source language with no runner must be accounted for, with a reason.
 [languages.ignore.c]
 reason = "vendored header only"

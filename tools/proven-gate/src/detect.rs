@@ -299,6 +299,26 @@ fn marker_languages(files: &[String]) -> (BTreeMap<String, String>, BTreeMap<Str
     (first, roots)
 }
 
+/// `[languages.dir] elixir = "elixir-orchestration"`: the project directory for a language whose project is not at
+/// the repository root. Dependency preparation and every command for that language run there.
+fn read_project_dirs(m: &Table, root: &Path, errors: &mut Vec<String>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(t) = sub(m, "languages").and_then(|l| sub(l, "dir")) else { return out };
+    for (name, v) in t {
+        let Some(d) = v.as_str().map(|s| s.trim_end_matches('/').to_string()) else {
+            errors.push(format!("language-dir-not-string: [languages.dir] {name} must be a relative directory string"));
+            continue;
+        };
+        let bad = d.is_empty() || d.starts_with('/') || d.split('/').any(|c| c == ".." || c.is_empty());
+        if bad || !root.join(&d).is_dir() {
+            errors.push(format!("language-dir-invalid: [languages.dir] {name} = \"{d}\" must be an existing directory inside the repository (no .. and not absolute)"));
+            continue;
+        }
+        out.insert(name.clone(), d);
+    }
+    out
+}
+
 fn read_ignores(m: &Table, errors: &mut Vec<String>) -> BTreeMap<String, String> {
     let mut ignores = BTreeMap::new();
     if let Some(ig) = sub(m, "languages").and_then(|l| sub(l, "ignore")) {
@@ -361,6 +381,7 @@ struct Ctx {
     roots: BTreeMap<String, Vec<String>>,
     recipes: BTreeSet<String>,
     filenames: BTreeSet<String>,
+    project_dirs: BTreeMap<String, String>,
 }
 
 fn check_waiver(wv: &T, cat: &str, lang: &str, ctx: &mut Ctx) {
@@ -452,8 +473,10 @@ fn plan_category(cat: &str, lang: &str, cmeta: &Table, ctx: &mut Ctx) -> (Vec<Va
         ctx.errors.push(format!("command-empty: {cat}/{lang} manifest command is empty"));
         return (vec![], None);
     }
-    // only language defaults run in the project dir
-    let dirs: Vec<String> = if source == "default" {
+    // an explicit [languages.dir] wins for every source; otherwise only language defaults run in the project dir
+    let dirs: Vec<String> = if let Some(d) = ctx.project_dirs.get(lang) {
+        vec![d.clone()]
+    } else if source == "default" {
         ctx.roots.get(lang).cloned().unwrap_or_else(|| vec![".".into()])
     } else {
         vec![".".into()]
@@ -537,6 +560,7 @@ fn compute(args: &[String]) -> Result<(i32, Value), i32> {
     let m = load_manifest(&root, &mut errors);
     let files = list_files(&root, &mut errors);
     let ignores = read_ignores(&m, &mut errors);
+    let project_dirs = read_project_dirs(&m, &root, &mut errors);
     let (langs, roots) = detect_languages(&files, &m, &ignores);
     let empty = Table::new();
     let cmeta = sub(&m, "categories").unwrap_or(&empty);
@@ -555,6 +579,7 @@ fn compute(args: &[String]) -> Result<(i32, Value), i32> {
         roots,
         recipes: just_recipes(&root),
         filenames: files.iter().cloned().collect(),
+        project_dirs,
     };
     let (mut jobs, mut na_list) = (Vec::new(), Vec::new());
     for lang in langs.keys() {
@@ -658,6 +683,19 @@ mod tests {
             ],
         );
         assert_eq!(plan(&d, "2026-01-01").0, 0);
+    }
+
+    #[test]
+    fn language_dir_moves_the_command_and_rejects_escapes() {
+        let m = "schema = \"proven/manifest/v1\"\n[categories.p2p]\nna = \"x\"\n";
+        let d = tmp("ldir", &[(".proven.toml", &format!("{m}[languages.dir]\nelixir = \"orch\"\n")), ("justfile", "test:\n\techo t\nsmoke:\n\techo s\nbuild:\n\techo b\n"), ("orch/mix.exs", "")]);
+        let (rc, v) = plan(&d, "2026-01-01");
+        assert_eq!(rc, 0, "{v}");
+        assert!(v["jobs"].as_array().unwrap().iter().all(|j| j["dir"] == "orch"), "{v}");
+        for bad in ["../x", "/etc", "missing", "a/../b"] {
+            let d = tmp("ldirbad", &[(".proven.toml", &format!("{m}[languages.dir]\nelixir = \"{bad}\"\n")), ("mix.exs", "")]);
+            assert_eq!(plan(&d, "2026-01-01").0, 1, "{bad} must fail");
+        }
     }
 
     #[test]
