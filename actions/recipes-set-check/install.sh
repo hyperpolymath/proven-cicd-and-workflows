@@ -44,7 +44,11 @@ base=https://github.com/casey/just/releases/download
 curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location --connect-timeout 10 --max-time 60 \
     --retry 2 --retry-max-time 60 \
     "${base}/${version}/just-${version}-${target}.tar.gz" \
-    -o "$tmp/just.tar.gz"
+    -o "$tmp/just.tar.gz" || {
+        rc=$?
+        printf 'just download failed (curl exit %s)\n' "$rc" >&2
+        exit "$rc"
+    }
 # macOS ships shasum, not sha256sum.
 if command -v sha256sum >/dev/null 2>&1; then
     printf '%s  %s\n' "$checksum" "$tmp/just.tar.gz" | sha256sum -c - >&2

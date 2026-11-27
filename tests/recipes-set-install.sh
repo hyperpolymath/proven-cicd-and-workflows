@@ -42,7 +42,7 @@ yq -r '.runs.steps[0].run' "$ACTION/action.yml" > "$WORK/step.sh"
 
 # A PATH with every tool the step needs except `just`.
 BIN="$WORK/bin"; mkdir -p "$BIN"
-for t in bash curl sha256sum tar gzip install mktemp mkdir rm uname wc make printf cat grep sed env dirname cp; do
+for t in bash curl sha256sum shasum tar gzip install mktemp mkdir rm uname wc make printf cat grep sed env dirname cp; do
     p=$(command -v "$t" 2>/dev/null) || continue
     [[ $p == /* ]] && ln -sf "$p" "$BIN/$t"
 done
@@ -83,17 +83,16 @@ chmod +x "$ALIEN/uname"
 # the pinned URL is wrong, and treating it as offline would let a broken pin
 # pass this suite. Review on #140.
 #
-# Only the LAST curl error counts. curl retries a timeout, so one run can
-# print "(28)" for an early attempt and "(22) ... 404" for the final one;
-# matching a connectivity code anywhere in the output would call that offline.
+# Use the download's exit status reported by the installer. A retried timeout
+# can precede a final HTTP error or a successful download followed by a
+# checksum or extraction failure.
 classify() {
-    local last
     if grep -q 'recipes parsed' "$1"; then echo parsed; return; fi
-    last=$(grep -Eo 'curl: \([0-9]+\)' "$1" | tail -n 1 || true)
-    case "$last" in
-        'curl: (5)' | 'curl: (6)' | 'curl: (7)' | 'curl: (28)' | 'curl: (35)') echo offline ;;
-        *) echo error ;;
-    esac
+    if grep -Eq '^just download failed \(curl exit (5|6|7|28|35)\)$' "$1"; then
+        echo offline
+    else
+        echo error
+    fi
 }
 
 # Stand-in curl for a retried download: a timeout first, then a 404.
@@ -101,10 +100,11 @@ MIXED="$WORK/mixed"; mkdir -p "$MIXED"
 printf '#!/bin/bash\necho "curl: (28) Operation timed out after 60000 milliseconds" >&2\necho "curl: (22) The requested URL returned error: 404" >&2\nexit 22\n' > "$MIXED/curl"
 chmod +x "$MIXED/curl"
 
-# Stand-in curl that "succeeds" with the wrong bytes.
+# Stand-in curl that times out once, then "succeeds" with the wrong bytes.
 WRONG="$WORK/wrong"; mkdir -p "$WRONG"
 cat > "$WRONG/curl" <<'EOF'
 #!/bin/bash
+echo "curl: (28) Operation timed out after 60000 milliseconds" >&2
 out=""
 while [ $# -gt 0 ]; do [ "$1" = -o ] && { out=$2; shift; }; shift; done
 [ -n "$out" ] && printf 'not the release archive\n' > "$out"
@@ -123,7 +123,8 @@ echo "== wrong bytes delivered =="
 run_step "$ACTION" "$WRONG"; rc=$?
 [[ $rc -eq 1 ]] && ok "exit 1" || bad "exit $rc, expected 1"
 [[ -e $WORK/rt/just-bin/just ]] && bad "an unverified binary was installed" || ok "nothing installed"
-grep -qi 'FAILED\|checksum' "$WORK/out" && ok "the checksum failure is shown" || bad "no checksum failure in the log"
+grep -Eq ': FAILED$' "$WORK/out" && ok "the checksum failure is shown" || bad "no checksum failure in the log"
+[[ $(classify "$WORK/out") == error ]] && ok "a checksum failure after a retried timeout is an error" || bad "wrong bytes after a timeout were classified as $(classify "$WORK/out")"
 
 echo "== an HTTP error is a failure, not an offline skip =="
 run_step "$ACTION" "$GONE"; rc=$?
