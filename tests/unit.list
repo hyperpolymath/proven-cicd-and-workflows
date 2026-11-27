@@ -27,3 +27,4 @@ ci-gate-tamper-guard
 rust-doc-package-scope
 proven-install-mode
 proven-lock-runtime-vendor
+proven-run-parser

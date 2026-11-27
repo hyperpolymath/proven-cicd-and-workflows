@@ -44,7 +44,7 @@ detect "$W/r" >/dev/null 2>&1; expect "declared language with no runner fails" 1
 mk; printf 'schema = "proven/manifest/v1"\n' > "$W/r/.proven.toml"; mkdir -p "$W/r/a" "$W/r/b"; : > "$W/r/a/go.mod"; : > "$W/r/b/go.mod"
 out=$(detect "$W/r" 2>&1); [[ $(jq '[.jobs[]|select(.category=="build")]|length' <<<"$out") == 2 && $(jq '[.jobs[].id]|unique|length' <<<"$out") == $(jq '.jobs|length' <<<"$out") ]] && ok "two Go roots plan two build jobs with unique ids" || bad "multi-root go"
 mk; printf 'schema = "proven/manifest/v1"\n' > "$W/r/.proven.toml"; mkdir -p "$W/r/apps/api" "$W/r/tests"; : > "$W/r/apps/api/Cargo.toml"; printf 'true\n' > "$W/r/tests/build.sh"
-out=$(detect "$W/r" 2>&1); [[ $(jq -r '.jobs[]|select(.id=="build-rust")|.dir' <<<"$out") == . ]] && ok "convention command runs from the repo root" || bad "convention dir"
+out=$(detect "$W/r" 2>&1); [[ $(jq -r '.jobs[]|select(.category=="build")|.dir' <<<"$out") == . ]] && ok "convention command runs once, from the repo root" || bad "convention dir"
 mk; printf 'schema = "proven/manifest/v1"\n[categories.chaos]\nna = "x"\n' > "$W/r/.proven.toml"
 detect "$W/r" >/dev/null 2>&1; expect "unknown category fails" 1 $?
 mk; printf 'schema = "proven/manifest/v1"\n' > "$W/r/.proven.toml"; : > "$W/r/Cargo.toml"; printf 'smoke:\n\techo hi\n' > "$W/r/justfile"
