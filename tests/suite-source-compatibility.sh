@@ -192,7 +192,7 @@ for selected in "$legacy" "$canonical" "$renamed" __omitted__ __null__ __false__
     : > "$plan/probes"
     : > "$plan/outputs"
     rc=0
-    (cd "$plan" && PATH="$plan/mocks:$PATH" PLAN_PROBE_LOG="$plan/probes" \
+    (cd "$plan" && PATH="$plan/mocks:$PATH" PIN_GIT_BASE="$plan/no-such-source" PLAN_PROBE_LOG="$plan/probes" \
       PLAN_EXPECTED_REPOSITORY=$expected_repository PLAN_EXPECTED_SHA=$sha \
       GITHUB_OUTPUT="$plan/outputs" bash plan.sh) > "$tmp/log" 2>&1 || rc=$?
     case "$selected" in
