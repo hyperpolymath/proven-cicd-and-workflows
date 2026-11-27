@@ -104,7 +104,7 @@ jobs:
         id: plan
         run: |
           set +e
-          gate=$(bash .cicd-suite/scripts/proven-gate-bin.sh)
+          gate=$(bash .cicd-suite/scripts/proven-gate-bin.sh) || { echo "::error::proven-gate failed to build"; exit 1; }
           "$gate" detect . > "$RUNNER_TEMP/plan.json"
           rc=$?
           set -e
@@ -144,7 +144,7 @@ jobs:
           persist-credentials: false
       - name: ER-A8 workflow integrity
         run: |
-          gate=$(bash .cicd-suite/scripts/proven-gate-bin.sh)
+          gate=$(bash .cicd-suite/scripts/proven-gate-bin.sh) || { echo "::error::proven-gate failed to build"; exit 1; }
           "$gate" integrity "$CALLER"
         env:
           CALLER: ${{ needs.plan.outputs.caller_path }}

@@ -3,8 +3,8 @@
   "artifacts": [
     {
       "artifact": "proven-lock-gate",
-      "version": "0.3.2",
-      "sha256": "07266ed730561719a7a1f6ac8859b49d1d126d45bcd8390cfaecc9f289789069",
+      "version": "0.3.3",
+      "sha256": "870340e4ad1ce67b9b9f7080d9c99782abf800aeb2a14b0410d0a60eb4a4f547",
       "template": "templates/proven-lock-gate.yml",
       "install_path": ".github/workflows/proven-lock-gate.yml",
       "history": [
@@ -31,6 +31,10 @@
         {
           "version": "0.3.2",
           "sha256": "07266ed730561719a7a1f6ac8859b49d1d126d45bcd8390cfaecc9f289789069"
+        },
+        {
+          "version": "0.3.3",
+          "sha256": "870340e4ad1ce67b9b9f7080d9c99782abf800aeb2a14b0410d0a60eb4a4f547"
         }
       ]
     },

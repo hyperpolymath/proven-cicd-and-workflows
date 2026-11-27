@@ -45,7 +45,8 @@ elif [[ ${GITHUB_EVENT_NAME:-} == merge_group && -n ${GH_TOKEN:-} ]]; then
 fi
 flags=(); [[ ${LOWER_IS_BETTER:-true} == false ]] && flags+=(--higher-is-better)
 [[ ${BASELINING:-false} == true ]] && flags+=(--baselining)
-gate=${PROVEN_GATE:-$(bash "$here/proven-gate-bin.sh")}
+gate=${PROVEN_GATE:-$(bash "$here/proven-gate-bin.sh")} || { echo "::error::proven-gate failed to build"; exit 1; }
+[[ -x $gate ]] || { echo "::error::proven-gate binary missing: $gate"; exit 1; }
 verdict=$("$gate" bench-gate "$value" --history "$hist" ${flags[@]+"${flags[@]}"}); rc=$?
 echo "$verdict"
 if (( rc > 3 )) || { (( rc != 0 )) && [[ -z $verdict ]]; }; then
