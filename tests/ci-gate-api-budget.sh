@@ -84,16 +84,21 @@ chmod +x "$WORK/clock" "$WORK/nap"
 BUSY='. + [range(344) as $i | .[3] | .id = 5000 + $i | .created_at = "2026-11-17T10:05:00Z"]'
 ACTIVE='map(if .id == 12 then .status = "in_progress" | .conclusion = null else . end)'
 
-old_fetch=$(git -C "$ROOT" show "$BASE:.github/workflows/ci-gate.yml" | grep -cE '^ +fetch [a-z"]')
-new_fetch_api=$(grep -cE '^ +fetch [a-z"]' "$ROOT/.github/workflows/ci-gate.yml")
-grep -q 'git -C "$git_dir" -c protocol.version=2 fetch' "$ROOT/.github/workflows/ci-gate.yml" && new_fetch=0 || new_fetch=$new_fetch_api
+# The suite files are read by one git fetch (#179), on both sides, so they cost no REST call on the
+# git route; the contents-API count is only what a private suite or a failed fetch would pay.
+suite_cost() { # <workflow text on stdin> -> 0 when the files come by git, else the contents-API fetch count
+  local t; t=$(cat)
+  if grep -q 'fetch -q --depth 1' <<< "$t"; then echo 0; else grep -cE '^ +fetch [a-z"]' <<< "$t"; fi
+}
+old_fetch=$(git -C "$ROOT" show "$BASE:.github/workflows/ci-gate.yml" | suite_cost)
+new_fetch=$(suite_cost < "$ROOT/.github/workflows/ci-gate.yml")
 
 printf '\n%-58s %8s %8s\n' "billed REST requests per gate job" before after
 row() { # <label> <before> <after>
   printf '%-58s %8s %8s\n' "$1" "$2" "$3"
   (( $3 <= $2 )) || { echo "  FAIL after bills more than before: $1"; FAIL=1; }
 }
-row "suite files (workflow fetch step; git route = 0)" "$old_fetch" "$new_fetch"
+row "suite files (workflow fetch step; git route = 0, as on main)" "$old_fetch" "$new_fetch"
 for s in "settled, 4 runs on the head:." "a required run still active:$ACTIVE" "settled, 348 runs on the head (main-head case):$BUSY"; do
   label=${s%%:*}; jqf=${s#*:}
   scenario "$jqf"; b=$(billed before); scenario "$jqf"; a=$(billed after)

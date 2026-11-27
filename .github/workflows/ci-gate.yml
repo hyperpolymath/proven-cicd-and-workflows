@@ -74,6 +74,11 @@ on:
         type: number
         required: false
         default: 20
+      quiet_seconds:
+        description: workflow_run only. Seconds to wait, after the early pending and before the first read, so a newer event for the same commit cancels this run before it spends API calls. 0 to 120.
+        type: number
+        required: false
+        default: 30
 
 permissions:
   contents: read
@@ -104,6 +109,7 @@ jobs:
       TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
       WAIT_MINUTES: ${{ inputs.wait_minutes }}
       POLL_SECONDS: ${{ inputs.poll_seconds }}
+      QUIET_SECONDS: ${{ inputs.quiet_seconds }}
       GATE_NAME: ${{ github.workflow }}
       SERVER_URL: ${{ github.server_url }}
       RUN_ID: ${{ github.run_id }}
@@ -132,6 +138,8 @@ jobs:
             || { echo "::error::timeout_minutes must be a positive integer"; exit 1; }
           [[ "$WAIT_MINUTES" =~ ^[0-9]+$ && "$POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::wait_minutes must be a non-negative and poll_seconds a positive integer"; exit 1; }
+          [[ "$QUIET_SECONDS" =~ ^[0-9]+$ && ${#QUIET_SECONDS} -le 3 ]] && ((10#$QUIET_SECONDS <= 120)) \
+            || { echo "::error::quiet_seconds must be an integer from 0 to 120"; exit 1; }
           # Reserve ten minutes of the 60-minute job for setup and final publication.
           if [[ "$EVENT_NAME" == pull_request ]]; then
             [[ ${#WAIT_MINUTES} -le 2 ]] && ((10#$WAIT_MINUTES <= 50)) \
@@ -385,11 +393,20 @@ jobs:
             exit 1
           }
           echo "$CONTEXT = pending: $desc"
+      - name: Let a burst of workflow_run events settle
+        # Several runs of one commit start and finish within seconds. The job's concurrency
+        # group cancels this run when a newer event for the same commit arrives, so waiting
+        # here, before the suite is read, lets a cancelled run spend no further API call.
+        # The early pending above has already stopped a previous verdict from standing.
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == workflow_run && "$QUIET_SECONDS" -gt 0 ]] || { echo "no quiet period for $EVENT_NAME"; exit 0; }
+          echo "waiting ${QUIET_SECONDS}s for newer events for $HEAD_SHA"
+          sleep "$QUIET_SECONDS"
       - name: Read the profile and the verdict scripts from this suite at its own commit
         env:
           WF_REPO: ${{ job.workflow_repository }}
           WF_SHA: ${{ job.workflow_sha }}
-          SERVER_URL: ${{ github.server_url }}
         # job.workflow_repository / job.workflow_sha name the reusable workflow file's own
         # repository and commit, so the profile selected by github.repository is read at
         # the SHA the caller pinned. Empty means the runner cannot say: fail, do not guess.
@@ -401,22 +418,22 @@ jobs:
             || { echo "::error::job.workflow_sha is empty or not a 40-hex commit ('$WF_SHA'); no profile can be pinned. NO CHECK WAS PERFORMED."; exit 1; }
           suite="$RUNNER_TEMP/ci-gate-suite"
           rm -rf "$suite"; mkdir -p "$suite/scripts" "$suite/profiles/ci-gate"
-          # The suite files come through git, which costs no REST quota (the contents API cost one
-          # request per file, on every gate run). git checks every object against the commit id, so
-          # the files are exactly those of $WF_SHA. A fetch that fails (a private suite, a git outage)
-          # falls back to the contents API, file by file, as before.
-          git_dir="$RUNNER_TEMP/ci-gate-suite.git"; rm -rf "$git_dir"
-          via_git=0
-          if git init -q --bare "$git_dir" \
-            && git -C "$git_dir" -c protocol.version=2 fetch -q --depth 1 --no-tags "$SERVER_URL/$WF_REPO" "$WF_SHA" 2> /dev/null \
-            && [[ $(git -C "$git_dir" rev-parse --verify -q "$WF_SHA^{commit}") == "$WF_SHA" ]]; then
-            via_git=1
+          # One shallow git fetch of the suite commit replaces seven contents-API reads, so the
+          # REST budget the gate shares with every other workflow is not spent on these files.
+          # The fetch is anonymous: a private suite, or a network that refuses it, falls back
+          # to the contents API. FETCH_HEAD must be the pinned commit, or nothing is read from it.
+          src="$RUNNER_TEMP/ci-gate-src"
+          rm -rf "$src"; git init -q "$src"
+          via=api
+          if GIT_TERMINAL_PROMPT=0 git -C "$src" fetch -q --depth 1 --no-tags "https://github.com/$WF_REPO" "$WF_SHA" 2>/dev/null \
+            && [[ "$(git -C "$src" rev-parse FETCH_HEAD)" == "$WF_SHA" ]]; then
+            via=git
           else
-            echo "::notice::git fetch of $WF_REPO@$WF_SHA failed; reading the suite files through the contents API"
+            echo "::notice::could not git-fetch $WF_REPO@$WF_SHA; reading the suite through the contents API"
           fi
           fetch() { # <path in the suite> -> same path under $suite; refuses an empty file
-            if ((via_git)); then
-              git -C "$git_dir" show "$WF_SHA:$1" > "$suite/$1" 2> /dev/null \
+            if [[ "$via" == git ]]; then
+              git -C "$src" cat-file blob "$WF_SHA:$1" > "$suite/$1" 2>/dev/null \
                 || { echo "::error::could not read $1 from $WF_REPO@$WF_SHA"; return 1; }
             else
               gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WF_REPO/contents/$1?ref=$WF_SHA" > "$suite/$1" \
@@ -428,13 +445,15 @@ jobs:
           fetch scripts/validate-ci-gate-profile.sh
           fetch scripts/ci-gate-publish.sh
           fetch scripts/ci-gate-sweep.sh
+          fetch scripts/ci-gate-tamper-guard.sh
+          fetch scripts/ci-gate-tamper-status.sh
           fetch profiles/ci-gate/validate.jq
           fetch profiles/ci-gate/select-runs.jq
           mkdir -p "$suite/profiles/ci-gate/${REPO%%/*}"
           fetch "profiles/ci-gate/$REPO.json" \
             || { echo "::error::no CI/gate profile for $REPO at $WF_REPO@$WF_SHA; add profiles/ci-gate/$REPO.json to the suite. The gate fails closed without one."; exit 1; }
           echo "suite=$suite" >> "$GITHUB_ENV"
-          echo "Profile for $REPO read from $WF_REPO@$WF_SHA"
+          echo "Profile for $REPO read from $WF_REPO@$WF_SHA (via $via)"
       - name: Validate the profile
         run: bash "$suite/scripts/validate-ci-gate-profile.sh" "$suite/profiles/ci-gate/$REPO.json" "$REPO" "$CONTEXT"
       - name: Evaluate the commit and publish the status
@@ -457,6 +476,20 @@ jobs:
           else
             SUITE="$suite" WORK="$RUNNER_TEMP/ci-gate-sweep" bash "$suite/scripts/ci-gate-sweep.sh"
           fi
+      - name: Publish the gate tamper guard status (default-branch evaluators only)
+        # The tamper guard used to run from a pull_request_target caller, which an Actions event policy
+        # blocks (and GitHub blocks by default in public repositories from 2 Dec 2026). It now runs here,
+        # from the default branch: on workflow_run `completed` for every open pull request whose head is the
+        # run's head SHA, forks included (the publisher lists the open pull requests itself; PR_NUMBERS is
+        # deliberately NOT set, because workflow_run.pull_requests names same-repository pull requests only
+        # and would hide an unapproved fork pull request sharing the head), and in the sweep for every open
+        # pull request head. Never on the pull_request job, which a pull request can edit. It publishes
+        # `CI/gate-tamper-guard` and does not change the CI/gate verdict.
+        # AGENTS MUST NEVER APPLY THE APPROVAL LABEL.
+        if: ${{ !cancelled() && github.event_name == 'workflow_run' && github.event.action == 'completed' }}
+        run: |
+          set -euo pipefail
+          SUITE="$suite" bash "$suite/scripts/ci-gate-tamper-status.sh"
       - name: Publish a failure status when no verdict could be produced
         if: ${{ failure() && steps.publish.outputs.published != 'true' }}
         run: |
