@@ -22,7 +22,11 @@
 #     most recently updated. It never skips silently.
 #  3. Runs the publisher for each SHA, with no early in_progress pending. A failure on one SHA
 #     does not stop the others, except "rate limited, no verdict": the rest would meet the same
-#     limit, so they are listed as not evaluated and the next sweep takes them.
+#     limit, so they are listed as not evaluated (the tamper guard for that head too) and the next
+#     sweep takes them. This bounds the sweep: one throttled head, not one per head.
+#  3b. For a SHA that heads open pull requests, runs scripts/ci-gate-tamper-status.sh (when the suite
+#     has it), which publishes `CI/gate-tamper-guard`. This is how a label change reaches the guard:
+#     labels trigger no workflow_run, so the guard sees one at the next sweep, or at a manual dispatch.
 #  4. Writes a table (SHA, source, state, description) to the step summary and exits non-zero if
 #     any SHA ended in failure or error, or if a listing could not be read.
 #
@@ -43,9 +47,12 @@ done
 [[ -n $WORK ]] || WORK=$(mktemp -d) || exit 1
 mkdir -p "$WORK" || exit 1
 PUBLISH="$SUITE/scripts/ci-gate-publish.sh"
+TAMPER="$SUITE/scripts/ci-gate-tamper-status.sh"   # optional: absent in a suite that predates it
 [[ -f $PUBLISH ]] || { echo "::error::ci-gate-sweep: $PUBLISH is missing; NO VERDICT WAS PRODUCED"; exit 1; }
 TAB=$'\t'
 errors=0
+# One rate-limit retry budget for the whole sweep (scripts/ci-gate-api.sh), not one per commit.
+: > "$WORK/api-retry-ledger" || exit 1
 rows="$WORK/rows.tsv"; : > "$rows"        # sha<TAB>source<TAB>state<TAB>description
 cand="$WORK/candidates.tsv"; : > "$cand"  # updated_at<TAB>sha<TAB>source
 
@@ -101,7 +108,7 @@ while IFS=$'\t' read -r _ sha src; do
   echo "::group::$CONTEXT for $sha ($src)"
   rc=0
   env -u GITHUB_OUTPUT HEAD_SHA="$sha" WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/summary.md" \
-    SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" WF_REPO="$WF_REPO" WF_SHA="$WF_SHA" \
+    SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" WF_REPO="$WF_REPO" WF_SHA="$WF_SHA" API_RETRY_LEDGER="$WORK/api-retry-ledger" \
     bash "$PUBLISH" > "$dir/out.txt" 2>&1 || rc=$?
   cat "$dir/out.txt"
   echo "::endgroup::"
@@ -116,13 +123,28 @@ while IFS=$'\t' read -r _ sha src; do
     state=error; desc='no verdict line in the publisher output'; errors=$((errors + 1))
   fi
   printf '%s\t%s\t%s\t%s\n' "$sha" "$src" "$state" "$desc" >> "$rows"
+  # The tamper guard for every open pull request with this head (a SHA can head several). It publishes
+  # its own context and never changes the CI/gate row; a guard that could not publish is an error.
+  prs=$(awk -F'\t' -v s="$sha" '$2 == s && $3 ~ /^PR #[0-9]+$/ {sub(/^PR #/, "", $3); print $3}' "$WORK/pulls.tsv" 2> /dev/null | sort -un | paste -sd' ' -)
   if grep -qF 'rate limited, no verdict' "$dir/out.txt"; then
     left=$(($(grep -c . "$WORK/todo.tsv") - n))
     if ((left > 0)); then
       echo "::warning::ci-gate-sweep: rate limited; the $left remaining head SHA(s) were NOT evaluated by this sweep"
       printf '%s\t%s\tskipped\t%s not evaluated: rate limited\n' '-' 'rate limited' "$left" >> "$rows"
     fi
+    [[ -z $prs ]] || printf '%s\t%s\tskipped\t%s\n' "$sha" "$src (tamper guard)" 'not evaluated: rate limited' >> "$rows"
     break
+  fi
+  if [[ -n $prs && -f $TAMPER ]]; then
+    trc=0
+    env -u GITHUB_OUTPUT HEAD_SHA="$sha" PR_NUMBERS="$prs" SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" \
+      bash "$TAMPER" > "$dir/tamper.txt" 2>&1 || trc=$?
+    cat "$dir/tamper.txt"
+    if (( trc != 0 )); then
+      tdesc=$(grep -h '^::error::' "$dir/tamper.txt" | tail -n 1 | cut -c1-140)
+      printf '%s\t%s\terror\t%s\n' "$sha" "$src (tamper guard)" "${tdesc:-the tamper guard published no status}" >> "$rows"
+      errors=$((errors + 1))
+    fi
   fi
 done < "$WORK/todo.tsv"
 
@@ -130,7 +152,7 @@ done < "$WORK/todo.tsv"
 {
   echo "### $CONTEXT sweep of $REPO"
   echo
-  echo "$(grep -c . "$WORK/todo.tsv" || true) of $total distinct head SHAs evaluated (cap $MAX). Profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`."
+  echo "$n of $total distinct head SHAs evaluated (cap $MAX). Profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`."
   echo
   echo '| Commit | Source | State | Description |'
   echo '|---|---|---|---|'
