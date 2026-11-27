@@ -127,7 +127,7 @@ fn default_command(lang: &str, cat: &str) -> Option<&'static str> {
         ("python", "build") => "python -m compileall -q .",
         ("python", "smoke") => "python -m pytest -m smoke",
         ("python", "p2p") => "python -m pytest -m p2p",
-        ("zig", "unit") => "zig build test",
+        ("zig", "unit") => "zig build test --summary all",
         ("zig", "build") => "zig build",
         _ => return None,
     })
