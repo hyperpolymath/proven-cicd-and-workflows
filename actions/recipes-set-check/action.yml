@@ -32,12 +32,14 @@ runs:
         for c in Justfile justfile .justfile; do [ -f "$c" ] && { jf="$c"; break; }; done
         if [ -n "$jf" ]; then
           if ! command -v just >/dev/null 2>&1; then
-            echo "Installing just (not on PATH)..."
-            mkdir -p "$RUNNER_TEMP/just-bin"
-            if curl --proto '=https' --tlsv1.2 -sSf \
-                 https://just.systems/install.sh \
-               | bash -s -- --to "$RUNNER_TEMP/just-bin" >/dev/null 2>&1; then
+            # A pinned, checksummed archive (install.sh beside this file). The
+            # installer's own output is shown: when the install fails, the log
+            # must say why, not only that the gate verified nothing.
+            echo "Installing pinned just (not on PATH)..."
+            if bash "$GITHUB_ACTION_PATH/install.sh" "$RUNNER_TEMP/just-bin"; then
               export PATH="$RUNNER_TEMP/just-bin:$PATH"
+            else
+              echo "::error::pinned just install failed; see the installer output above."
             fi
           fi
 
@@ -55,8 +57,7 @@ runs:
             # A gate whose tool is missing must say so, not pass. Silently
             # skipping is how a check becomes decorative.
             echo "::error::$jf present but 'just' is unavailable and could not be"
-            echo "::error::installed, so this gate verified nothing. Add a setup"
-            echo "::error::step (e.g. extractions/setup-just) before this gate."
+            echo "::error::installed, so this gate verified nothing."
             fail=1
           fi
         fi
