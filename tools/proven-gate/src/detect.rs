@@ -400,9 +400,19 @@ fn check_waiver(wv: &T, cat: &str, lang: &str, ctx: &mut Ctx) {
     }
 }
 
+/// `bash tests/unit.sh` run from `dir` must still find the script at the repository root.
+fn rel_to_root(dir: &str, cmd: &str) -> String {
+    let up = "../".repeat(dir.split('/').filter(|c| !c.is_empty() && *c != ".").count());
+    match cmd.strip_prefix("bash ") {
+        Some(script) => format!("bash {up}{script}"),
+        None => cmd.to_string(),
+    }
+}
+
 fn resolve_command(entry: &Table, per: &Table, cat: &str, lang: &str, ctx: &Ctx) -> (Option<String>, &'static str) {
     if let Some(c) = per.get("command").or_else(|| entry.get("command")) {
-        return (Some(tstr(c)), "manifest");
+        let src = if per.contains_key("command") { "manifest-lang" } else { "manifest" };
+        return (Some(tstr(c)), src);
     }
     for r in just_recipes_for(cat) {
         if ctx.recipes.contains(*r) {
@@ -481,12 +491,14 @@ fn plan_category(cat: &str, lang: &str, cmeta: &Table, ctx: &mut Ctx) -> (Vec<Va
     } else {
         vec![".".into()]
     };
+    // a root convention script stays addressable from a configured project dir (the command runs inside it)
+    let cmd = |d: &str| if source == "convention" && d != "." { rel_to_root(d, &cmd) } else { cmd.clone() };
     let multi = dirs.len() > 1;
     let jobs = dirs
         .iter()
         .map(|d| {
             let id = if multi { format!("{cat}-{lang}-{}", job_suffix(d)) } else { format!("{cat}-{lang}") };
-            json!({"id": id, "category": cat, "lang": lang, "dir": d, "command": cmd, "source": source})
+            json!({"id": id, "category": cat, "lang": lang, "dir": d, "command": cmd(d), "source": source})
         })
         .collect();
     (jobs, None)
@@ -519,7 +531,7 @@ fn plan_benches(m: &Table, errors: &mut Vec<String>) -> Vec<Value> {
 /// command for the whole repository: run it once, labelled "all", not once per detected language.
 fn merge_shared_jobs(jobs: Vec<Value>) -> Vec<Value> {
     let key_of = |j: &Value| (j["category"].as_str().unwrap_or("").to_string(), j["command"].as_str().unwrap_or("").to_string(), j["dir"].as_str().unwrap_or("").to_string());
-    let shared = |j: &Value| !matches!(j["source"].as_str().unwrap_or("default"), "default" | "");
+    let shared = |j: &Value| !matches!(j["source"].as_str().unwrap_or("default"), "default" | "manifest-lang" | "");
     let mut group: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
     for j in &jobs {
         if shared(j) {
@@ -534,15 +546,14 @@ fn merge_shared_jobs(jobs: Vec<Value>) -> Vec<Value> {
         if shared(&j) {
             let k = key_of(&j);
             let langs = group.get(&k).cloned().unwrap_or_default();
-            if langs.len() > 1 {
-                if !emitted.insert(k) {
-                    continue;
-                }
-                let cat = j["category"].as_str().unwrap_or("").to_string();
-                j["lang"] = json!("all");
-                j["langs"] = json!(langs.join(","));
-                j["id"] = json!(format!("{cat}-all"));
+            let dir = j["dir"].as_str().unwrap_or(".").to_string();
+            if !emitted.insert(k) {
+                continue;
             }
+            let cat = j["category"].as_str().unwrap_or("").to_string();
+            j["lang"] = json!("all");
+            j["langs"] = json!(langs.join(","));
+            j["id"] = json!(if dir == "." { format!("{cat}-all") } else { format!("{cat}-all-{}", job_suffix(&dir)) });
         }
         merged.push(j);
     }
@@ -725,6 +736,27 @@ mod tests {
         let jobs = v["jobs"].as_array().unwrap();
         assert_eq!(jobs.len(), 3, "one job per category, got {v}");
         assert!(jobs.iter().all(|j| j["lang"] == "all" && j["langs"].as_str().unwrap().contains("rust") && j["langs"].as_str().unwrap().contains("shell")));
+    }
+
+    #[test]
+    fn rust_only_repo_wide_command_is_all_and_per_language_stays_per_language() {
+        let na = "[categories.smoke]\nna = \"n\"\n[categories.build]\nna = \"n\"\n[categories.p2p]\nna = \"n\"\n";
+        let d = tmp("single", &[(".proven.toml", &format!("schema = \"proven/manifest/v1\"\n[categories.unit]\ncommand = \"bash t.sh\"\n{na}")), ("Cargo.toml", ""), ("src/main.rs", "")]);
+        let (rc, v) = plan(&d, "2026-01-01");
+        assert_eq!(rc, 0, "{v}");
+        assert_eq!(v["jobs"][0]["lang"], "all", "{v}");
+        let d = tmp("perlang", &[(".proven.toml", &format!("schema = \"proven/manifest/v1\"\n[categories.unit.rust]\ncommand = \"bash t.sh\"\n[categories.unit.shell]\ncommand = \"bash t.sh\"\n{na}")), ("Cargo.toml", ""), ("src/main.rs", ""), ("a.sh", "")]);
+        let (rc, v) = plan(&d, "2026-01-01");
+        assert_eq!(rc, 0, "{v}");
+        let unit: Vec<_> = v["jobs"].as_array().unwrap().iter().filter(|j| j["category"] == "unit").collect();
+        assert_eq!(unit.len(), 2, "per-language manifest commands stay separate: {v}");
+    }
+
+    #[test]
+    fn convention_script_reachable_from_project_dir() {
+        assert_eq!(rel_to_root("orch", "bash tests/unit.sh"), "bash ../tests/unit.sh");
+        assert_eq!(rel_to_root("a/b", "bash tests/unit.sh"), "bash ../../tests/unit.sh");
+        assert_eq!(rel_to_root(".", "just x"), "just x");
     }
 
     #[test]
