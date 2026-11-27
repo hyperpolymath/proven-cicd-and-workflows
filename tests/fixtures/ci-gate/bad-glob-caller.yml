@@ -1,0 +1,6 @@
+# Negative control: a caller whose workflow_run list is the retired glob.
+name: CI gate
+on:
+  workflow_run:
+    workflows: ["**", "!CI gate"]
+    types: [completed]
