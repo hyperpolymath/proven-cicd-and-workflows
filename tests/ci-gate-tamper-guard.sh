@@ -21,7 +21,9 @@ D=${FAKEGH_DIR:?}
 args="$*"; jqarg=''; prev=''
 for a in "$@"; do [[ $prev == --jq ]] && jqarg=$a; prev=$a; done
 case $args in
-  *"/pulls/"*"/files"*)   [[ ! -f $D/failfiles ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -c "$jqarg" "$D/files.json" ;;
+  *"/pulls?state=open"*)  echo "$args" >> "$D/pulls.calls"
+    [[ ! -f $D/failpulls ]] || { echo "gh: HTTP 500 (pulls)" >&2; exit 1; }; jq -c "$jqarg" "$D/pulls.json" ;;
+  *"/pulls/"*"/files"*)  [[ ! -f $D/failfiles ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -c "$jqarg" "$D/files.json" ;;
   *"/issues/"*"/events"*) [[ ! -f $D/failevents ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -c "$jqarg" "$D/events.json" ;;
   *"/collaborators/"*"/permission"*)
     [[ ! -f $D/failperm ]] || { echo "gh: HTTP 500" >&2; exit 1; }
@@ -162,7 +164,15 @@ pub() { # [VAR=value ...] -> PRC, POUT, NP (posts), LASTP (context<TAB>state<TAB
   POUT=$(env PATH="$D/bin:$PATH" FAKEGH_DIR="$D" FAKE_HEAD="$SHA" REPO=o/r HEAD_SHA="$SHA" PR_NUMBERS=7 SUITE="$SUITE_T" RUN_ID=1 "$@" bash "$SUT" 2>&1); PRC=$?
   NP=$(grep -c . "$D/posts.log"); LASTP=$(tail -n 1 "$D/posts.log")
 }
-preset() { reset; rm -f "$D/standing" "$D/posts.log" "$D/failhead"; echo '{}' > "$D/heads.json"; }
+preset() { reset; rm -f "$D/standing" "$D/posts.log" "$D/failhead" "$D/pulls.calls"; echo '{}' > "$D/heads.json"; echo '[]' > "$D/pulls.json"; }
+# plist <number>:<sha> ... -> the open-pull-request listing (other fields as GitHub sends them)
+plist() { printf '%s\n' "$@" | jq -R 'split(":") | {number: (.[0] | tonumber), head: {sha: .[1]}, state: "open"}' | jq -s . > "$D/pulls.json"; }
+# lpub: the workflow_run mode, PR_NUMBERS unset, so the publisher lists the open pull requests itself.
+lpub() { : > "$D/posts.log"
+  POUT=$(env -u PR_NUMBERS PATH="$D/bin:$PATH" FAKEGH_DIR="$D" FAKE_HEAD="$SHA" REPO=o/r HEAD_SHA="$SHA" SUITE="$SUITE_T" RUN_ID=1 "$@" bash "$SUT" 2>&1); PRC=$?
+  NP=$(grep -c . "$D/posts.log"); LASTP=$(tail -n 1 "$D/posts.log"); NL=$(grep -c . "$D/pulls.calls" 2> /dev/null || true); NL=${NL:-0}
+}
+OTHER=$(printf 'd%.0s' $(seq 40))
 # Each case prints nothing and returns 0 when the publisher behaves; the mutants below must make one fail.
 case_silence()      { preset; pub; [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tsuccess\t'* ]]; }
 case_firing()       { preset; files .github/workflows/ci-gate.yml; pub; [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\t#7: this pull request touches gate files'* ]]; }
@@ -183,7 +193,34 @@ case_moved()        { preset; files .github/workflows/ci-gate.yml; echo "{\"7\":
 case_moved_one()    { preset; files .github/workflows/ci-gate.yml; echo "{\"7\":\"$MOVED\"}" > "$D/heads.json"; pub PR_NUMBERS="7 9"; [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\t#9: '* ]]; }
 case_head_fail()    { preset; touch "$D/failhead"; pub; [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\t#7: could not read the head of #7'* ]]; }
 case_head_fail_keeps() { preset; files .github/workflows/ci-gate.yml; touch "$D/failhead"; pub; [[ $LASTP == $'CI/gate-tamper-guard\tfailure\t#7: this pull request touches gate files'* ]]; }
-CASES=(case_silence case_firing case_approved case_one_of_two case_no_pr case_bad_number case_bad_sha case_bad_repo
+# The workflow_run mode: the publisher lists every open pull request (forks included) headed by the SHA.
+# Fork pull request #12 is never in workflow_run.pull_requests; only the listing finds it.
+case_list_fork_fails() { preset; files .github/workflows/ci-gate.yml; plist "7:$SHA" "12:$SHA" "13:$OTHER"; lpub
+  [[ $PRC == 0 && $NP == 1 && $NL == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\t#7 #12: this pull request touches gate files'* ]]; }
+case_list_fork_only() { preset; files .github/workflows/ci-gate.yml; plist "12:$SHA"; lpub
+  [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\t#12: '* ]]; }
+case_list_clean()   { preset; files README.adoc; plist "7:$SHA" "12:$SHA" "13:$OTHER"; lpub
+  [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tsuccess\tno unapproved gate-file change in PR #7 #12' ]]; }
+case_list_other_head() { preset; files .github/workflows/ci-gate.yml; plist "13:$OTHER" "14:$OTHER"; lpub
+  [[ $PRC == 0 && $NP == 0 && $NL == 1 && $POUT == *'nothing to judge'* ]]; }
+case_list_empty()   { preset; lpub; [[ $PRC == 0 && $NP == 0 ]]; }
+case_list_fail()    { preset; files README.adoc; plist "7:$SHA"; touch "$D/failpulls"; lpub
+  [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\tcould not list the open pull requests' ]]; }
+case_list_malformed() { preset; echo '[{"number":7,"head":{"sha":"x"}},{"head":{"sha":"y"}}]' > "$D/pulls.json"; lpub
+  [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\tcould not list the open pull requests' ]]; }
+case_list_garbage() { preset; echo '{"message":"Not Found"}' > "$D/pulls.json"; lpub
+  [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\tcould not list the open pull requests' ]]; }
+case_list_badnumber() { preset; files README.adoc; echo "[{\"number\":0,\"head\":{\"sha\":\"$SHA\"}}]" > "$D/pulls.json"; lpub
+  [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\tthe pull request listing held a malformed number' ]]; }
+case_list_failure_over_success() { preset; files README.adoc
+  printf '{"context":"CI/gate-tamper-guard","state":"success","description":"no unapproved gate-file change in PR #7"}\n' > "$D/standing"
+  touch "$D/failpulls"; lpub; [[ $PRC == 0 && $NP == 1 && $LASTP == *$'\tfailure\t'* ]]; }
+case_list_pages()   { preset; files README.adoc; plist "7:$SHA"; lpub; [[ $NL == 1 && $(cat "$D/pulls.calls") == *'--paginate'*'state=open'*'per_page=100'* ]]; }
+case_sweep_list_unused() { preset; files README.adoc; pub; [[ $PRC == 0 && $NP == 1 && ! -e $D/pulls.calls ]]; }
+case_sweep_empty_no_list() { preset; plist "7:$SHA"; pub PR_NUMBERS=''; [[ $PRC == 0 && $NP == 0 && ! -e $D/pulls.calls ]]; }
+CASES=(case_list_fork_fails case_list_fork_only case_list_clean case_list_other_head case_list_empty case_list_fail case_list_malformed
+       case_list_garbage case_list_badnumber case_list_failure_over_success case_list_pages case_sweep_list_unused case_sweep_empty_no_list \
+       case_silence case_firing case_approved case_one_of_two case_no_pr case_bad_number case_bad_sha case_bad_repo
        case_no_guard case_guard_error case_standing case_other_ctx case_status_fail case_post_fail case_clip
        case_moved case_moved_one case_head_fail case_head_fail_keeps)
 for c in "${CASES[@]}"; do "$c" && ok "$c" || bad "$c (rc=$PRC posts=$NP last='$LASTP')"; done
@@ -201,11 +238,11 @@ mutant() {
 mutant case_firing      'a guard failure does not fail the status'       'state=failure; failed+=("#$n")'        'failed+=("#$n")'
 mutant case_guard_error 'a guard error is ignored'                         'if ((rc != 0)); then'                   'if ((rc > 1)); then'
 mutant case_one_of_two  'only the first pull request is judged'            'for n in "${prs[@]}"; do'$'\n''  out='   'for n in "${prs[@]:0:1}"; do'$'\n''  out='
-mutant case_bad_number  'a malformed pull request number is accepted'      '|| fail "pull request number'           '|| true "pull request number'
+mutant case_bad_number  'a malformed pull request number is accepted'      'fail "pull request number'              'true "pull request number'
 mutant case_bad_sha     'the head SHA is not checked'                      '|| fail '"'"'HEAD_SHA is not a 40-hex commit'"'" '|| true '"'"'HEAD_SHA is not a 40-hex commit'"'"
 mutant case_bad_repo    'the repository coordinate is not checked'         '|| fail '"'"'REPO is not'                   '|| true '"'"'REPO is not'
 mutant case_no_guard    'a missing guard script is not refused'            '|| fail '"'"'the guard script is missing'   '|| true '"'"'the guard script is missing'
-mutant case_no_pr       'no pull request still publishes'                  'if ((${#prs[@]} == 0)); then'           'if ((${#prs[@]} < 0)); then'
+mutant case_no_pr       'no pull request still publishes'                  'if [[ -z $listfail ]] && ((${#prs[@]} == 0)); then'  'if [[ -z $listfail ]] && ((${#prs[@]} < 0)); then'
 mutant case_standing    'a standing status is written again'               'if [[ $same == same ]]; then'           'if [[ $same == never ]]; then'
 mutant case_other_ctx   'another context counts as standing'               '.context == $c and'                     'true and'
 mutant case_post_fail   'a failed POST counts as published'                '|| fail "could not publish the'         '|| true "could not publish the'
@@ -214,6 +251,15 @@ mutant case_moved      'a moved head is still published'              '&& $now !
 mutant case_head_fail  'a failed head read counts as the same head'   '|| now='"''"   '|| now=$HEAD_SHA'
 mutant case_moved_one  'a moved pull request is still counted'         '    continue'$'\n''  fi'   '    :'$'\n''  fi'
 mutant case_head_fail_keeps 'a failed head read hides the guard reason' '((rc != 0)) || out='   'out='
+mutant case_list_fork_fails 'the workflow_run mode does not list (a fork PR goes unjudged)' 'if [[ -z ${PR_NUMBERS+x} ]]; then' 'if false; then'
+mutant case_sweep_empty_no_list 'an empty PR_NUMBERS lists instead of meaning nothing to judge' 'if [[ -z ${PR_NUMBERS+x} ]]; then' 'if [[ -z ${PR_NUMBERS:-} ]]; then'
+mutant case_list_pages     'the listing reads only the first page'          'gh api --paginate "repos/$REPO/pulls?state=open'   'gh api "repos/$REPO/pulls?state=open'
+mutant case_list_fork_fails 'the listing is not narrowed to the head SHA'    'select(.sha == $h)'                                  'select(.sha != "")'
+mutant case_list_fail      'a failed listing is not a failure'              "    listfail='could not list the open pull requests'"    '    prs=()'
+mutant case_list_malformed 'a malformed listing entry is accepted'          'if all(.[]; type == "object"'                        'if true or all(.[]; type == "object"'
+mutant case_list_garbage   'a non-array listing is accepted'                '2> /dev/null) \'$'\n''    && picked='                    '2> /dev/null) || true \'$'\n''    && picked='
+mutant case_list_badnumber 'a malformed listed number is refused, not failed' "[[ -n \${PR_NUMBERS+x} ]] || { listfail='the pull request listing held a malformed number'; break; }" 'true'
+mutant case_list_failure_over_success 'a listing failure stays success'     '  state=failure; prs=(); first=$listfail'              '  prs=(); first=$listfail'
 
 echo "== static guards: no pull_request_target anywhere; the gate runs the guard from the default branch =="
 code() { grep -vE '^[[:space:]]*#' "$1"; }
@@ -231,8 +277,9 @@ done
 tstep=$(awk '/- name: Publish the gate tamper guard status/{p=1} p&&/- name: Publish a failure status/{exit} p' "$GATE_WF")
 grep -qE "if: \\$\\{\\{ !cancelled\\(\\) && github\\.event_name == 'workflow_run' && github\\.event\\.action == 'completed' \\}\\}" <<< "$tstep" \
   && ok "the gate's tamper step runs only on workflow_run completed (never on the pull_request job)" || bad "the tamper step's condition is wrong"
-grep -qF 'PR_NUMBERS: ${{ join(github.event.workflow_run.pull_requests.*.number, '"' '"') }}' <<< "$tstep" \
-  && ok "the tamper step takes its pull requests from the workflow_run payload through env" || bad "the tamper step does not take PR_NUMBERS from the payload"
+! grep -vE '^[[:space:]]*#' <<< "$tstep" | grep -qE 'PR_NUMBERS|pull_requests' \
+  && ok "the tamper step sets no PR_NUMBERS and reads no workflow_run.pull_requests (the publisher lists all open pull requests)" \
+  || bad "the tamper step still takes its pull requests from the workflow_run payload (fork pull requests would go unjudged)"
 ! grep -vE '^[[:space:]]*#' <<< "$tstep" | sed -n '/run: |/,$p' | grep -q '\${{' && ok "the tamper step has no \${{ }} inside its run: script" || bad "the tamper step interpolates into run:"
 grep -q 'ci-gate-tamper-status.sh' "$SWEEP" && ok "the sweep runs the tamper status for pull request heads" || bad "the sweep does not run the tamper status"
 for f in "$STATUS" "$GATE_WF" "$ROOT/templates/ci-gate-caller.yml" "$ROOT/.github/workflows/ci-gate-caller.yml"; do

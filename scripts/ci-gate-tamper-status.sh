@@ -11,7 +11,13 @@
 #
 # Environment (all through env:, never interpolated into a script):
 #   REPO HEAD_SHA          the commit to publish on
-#   PR_NUMBERS             space-separated pull request numbers whose head is HEAD_SHA; empty = nothing to do
+#   PR_NUMBERS             SET (the sweep, which already holds the list): the space-separated open pull request
+#                          numbers whose head is HEAD_SHA; empty = nothing to do. UNSET (the workflow_run job): the
+#                          publisher lists the open pull requests itself (repos/REPO/pulls?state=open, every page) and
+#                          judges each one whose head is HEAD_SHA, forks included. The workflow_run payload must not
+#                          supply the list: GitHub names only same-repository pull requests there, so an unapproved
+#                          fork pull request sharing the head would go unjudged and a later success could mask the
+#                          sweep's failure. A listing that fails or is malformed publishes failure (fail closed).
 #   SUITE                  directory holding scripts/ci-gate-tamper-guard.sh at the suite's pinned commit
 #   SERVER_URL RUN_ID      for target_url
 #
@@ -31,18 +37,45 @@ fail() { echo "::error::ci-gate-tamper-status: $1; NO TAMPER VERDICT WAS PRODUCE
 GUARD="${SUITE:-}/scripts/ci-gate-tamper-guard.sh"
 [[ -n ${SUITE:-} && -s $GUARD ]] || fail 'the guard script is missing from the suite'
 
-read -r -a prs <<< "${PR_NUMBERS:-}"
-if ((${#prs[@]} == 0)); then
+listfail=''; prs=()
+if [[ -z ${PR_NUMBERS+x} ]]; then
+  # List mode: judge every open pull request headed by HEAD_SHA, forks included (one listing per run).
+  # Any failure of the listing, or an entry that is not {number, head.sha}, fails closed below.
+  if listing=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[] | {number: .number, sha: .head.sha}' 2> /dev/null) \
+    && picked=$(jq -rs --arg h "$HEAD_SHA" 'if all(.[]; type == "object" and (.number | type) == "number" and (.sha | type) == "string")
+        then (.[] | select(.sha == $h) | .number | tostring) else error("malformed") end' <<< "$listing" 2> /dev/null); then
+    mapfile -t prs <<< "$picked"
+    [[ -n $picked ]] || prs=()
+  else
+    listfail='could not list the open pull requests'
+  fi
+else
+  read -r -a prs <<< "${PR_NUMBERS:-}"
+fi
+if [[ -z $listfail ]] && ((${#prs[@]} == 0)); then
   echo "ci-gate-tamper-status: no pull request has $HEAD_SHA as its head; nothing to judge"
   exit 0
 fi
-for n in "${prs[@]}"; do [[ $n =~ ^[1-9][0-9]{0,9}$ ]] || fail "pull request number '$n' is malformed"; done
-mapfile -t prs < <(printf '%s\n' "${prs[@]}" | sort -un)
+if [[ -z $listfail ]]; then
+  for n in "${prs[@]}"; do
+    if [[ ! $n =~ ^[1-9][0-9]{0,9}$ ]]; then
+      # A malformed number from our own listing is a failed listing; from the caller it is a refused input.
+      [[ -n ${PR_NUMBERS+x} ]] || { listfail='the pull request listing held a malformed number'; break; }
+      fail "pull request number '$n' is malformed"
+    fi
+  done
+  [[ -n $listfail ]] || mapfile -t prs < <(printf '%s\n' "${prs[@]}" | sort -un)
+fi
 
 # By characters: a character outside the BMP becomes '?' (GitHub answers HTTP 422 to it), then 140 at most.
 clip() { jq -rn --arg d "$1" '($d | explode | map(if . > 65535 then 63 else . end) | implode) | if length > 140 then .[0:139] + "…" else . end'; }
 
 state=success; failed=() first='' judged=()
+if [[ -n $listfail ]]; then
+  # Fail closed: without the list nothing can be called clean, and a standing success must not stand.
+  echo "::error::gate tamper guard: $listfail; failing closed"
+  state=failure; prs=(); first=$listfail
+fi
 for n in "${prs[@]}"; do
   out=$(env REPO="$REPO" PR_NUMBER="$n" bash "$GUARD" 2>&1); rc=$?
   printf '%s\n' "$out"
@@ -67,12 +100,14 @@ for n in "${prs[@]}"; do
     fi
   fi
 done
-if ((${#judged[@]} == 0)); then
+if [[ -z $listfail ]] && ((${#judged[@]} == 0)); then
   echo "ci-gate-tamper-status: no listed pull request still has $HEAD_SHA as its head; nothing to judge"
   exit 0
 fi
 # The failing pull requests come first, so the clip can only shorten the reason, never drop a number.
-if [[ $state == success ]]; then
+if [[ -n $listfail ]]; then
+  desc="$first"
+elif [[ $state == success ]]; then
   desc="no unapproved gate-file change in PR $(printf '#%s ' "${judged[@]}" | sed 's/ $//')"
 else
   desc="$(printf '%s ' "${failed[@]}" | sed 's/ $//'): $first"

@@ -298,13 +298,14 @@ jobs:
       - name: Publish the gate tamper guard status (default-branch evaluators only)
         # The tamper guard used to run from a pull_request_target caller, which an Actions event policy
         # blocks (and GitHub blocks by default in public repositories from 2 Dec 2026). It now runs here,
-        # from the default branch: on workflow_run `completed` for the pull requests GitHub lists for the
-        # run (same-repository ones), and in the sweep for every open pull request head. Never on the
-        # pull_request job, which a pull request can edit. It publishes `CI/gate-tamper-guard` and does not
-        # change the CI/gate verdict. AGENTS MUST NEVER APPLY THE APPROVAL LABEL.
+        # from the default branch: on workflow_run `completed` for every open pull request whose head is the
+        # run's head SHA, forks included (the publisher lists the open pull requests itself; PR_NUMBERS is
+        # deliberately NOT set, because workflow_run.pull_requests names same-repository pull requests only
+        # and would hide an unapproved fork pull request sharing the head), and in the sweep for every open
+        # pull request head. Never on the pull_request job, which a pull request can edit. It publishes
+        # `CI/gate-tamper-guard` and does not change the CI/gate verdict.
+        # AGENTS MUST NEVER APPLY THE APPROVAL LABEL.
         if: ${{ !cancelled() && github.event_name == 'workflow_run' && github.event.action == 'completed' }}
-        env:
-          PR_NUMBERS: ${{ join(github.event.workflow_run.pull_requests.*.number, ' ') }}
         run: |
           set -euo pipefail
           SUITE="$suite" bash "$suite/scripts/ci-gate-tamper-status.sh"
