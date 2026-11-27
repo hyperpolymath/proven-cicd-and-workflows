@@ -34,6 +34,10 @@
         "templates/**",
         "scripts/proven-stamp.sh",
         "scripts/proven-coverage-collect.sh",
+        "scripts/proven-shell-coverage.sh",
+        "scripts/proven-coverage-gate.sh",
+        "scripts/proven-coverage.sh",
+        ".proven/**",
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
         "scripts/ci-gate-publish.sh",
@@ -88,6 +92,10 @@
         "templates/**",
         "scripts/proven-stamp.sh",
         "scripts/proven-coverage-collect.sh",
+        "scripts/proven-shell-coverage.sh",
+        "scripts/proven-coverage-gate.sh",
+        "scripts/proven-coverage.sh",
+        ".proven/**",
         "scripts/coverdata-to-lcov.exs",
         "scripts/ci-gate-verdict.sh",
         "scripts/ci-gate-publish.sh",
@@ -211,6 +219,37 @@
         {
           # The tamper guard: file matching, label logic, fail-closed errors, static guards.
           run: "bash tests/ci-gate-tamper-guard.sh",
+        },
+        {
+          # The shell coverage tracer and gate: lcov statements and hits on
+          # fixtures, exclusion matching, and the firing and silence controls.
+          # Hard: a tracer that miscounts would make every coverage report lie.
+          run: "bash tests/proven-coverage-gate.sh",
+        },
+      ],
+    },
+    # The whole-repository coverage run (scripts/proven-coverage.sh). Report
+    # only: it writes its findings to the job summary and never blocks a merge,
+    # until the estate decides the uncovered statements are worth gating.
+    # actionlint comes from the pin in proven/pins/toolchain.tsv, built with the
+    # runner's Go toolchain, so this job adds no `uses:` to the actions.lock closure.
+    coverage-report: {
+      name: "Coverage report (non-blocking)",
+      runs-on: "ubuntu-latest",
+      timeout-minutes: 20,
+      continue-on-error: true,
+      steps: [
+        {
+          uses: "actions/checkout@v7.0.1",
+          with: { persist-credentials: false },
+        },
+        {
+          name: "Install pinned actionlint",
+          run: "v=$(awk -F'\\t' '$1 == \"actionlint\" { print $2 }' proven/pins/toolchain.tsv)\ntest -n \"$v\"\nGOBIN=\"$RUNNER_TEMP/bin\" go install \"github.com/rhysd/actionlint/cmd/actionlint@v$v\"\necho \"$RUNNER_TEMP/bin\" >> \"$GITHUB_PATH\"\n",
+        },
+        {
+          name: "Coverage run",
+          run: "rc=0\nbash scripts/proven-coverage.sh \"$RUNNER_TEMP/coverage\" > \"$RUNNER_TEMP/coverage.log\" 2>&1 || rc=$?\n{\n  echo \"## Coverage report (exit $rc, non-blocking)\"\n  echo '```'\n  tail -n 200 \"$RUNNER_TEMP/coverage.log\"\n  echo '```'\n} >> \"$GITHUB_STEP_SUMMARY\"\ncat \"$RUNNER_TEMP/coverage.log\"\nif [ \"$rc\" -ne 0 ]; then echo \"::warning title=Coverage report::proven-coverage.sh exited $rc (report only, see the job summary)\"; fi\n",
         },
       ],
     },
