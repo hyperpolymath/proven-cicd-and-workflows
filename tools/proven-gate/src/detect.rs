@@ -559,18 +559,7 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-fn compute(args: &[String]) -> Result<(i32, Value), i32> {
-    let Some(first) = args.first() else {
-        eprintln!("proven-gate detect: usage: detect REPO_DIR [--today YYYY-MM-DD] [--categories a,b]");
-        return Err(2);
-    };
-    let root = match fs::canonicalize(first) {
-        Ok(r) if r.is_dir() && !first.contains('\0') => r,
-        _ => {
-            eprintln!("proven-gate detect: {first} is not a directory");
-            return Err(2);
-        }
-    };
+fn parse_options(args: &[String]) -> Result<(Date, Vec<String>), i32> {
     let mut today = date::today();
     let mut cats: Vec<String> = KNOWN_CATEGORIES.iter().map(|s| s.to_string()).collect();
     let mut i = 1;
@@ -591,6 +580,22 @@ fn compute(args: &[String]) -> Result<(i32, Value), i32> {
         }
         i += 2;
     }
+    Ok((today, cats))
+}
+
+fn compute(args: &[String]) -> Result<(i32, Value), i32> {
+    let Some(first) = args.first() else {
+        eprintln!("proven-gate detect: usage: detect REPO_DIR [--today YYYY-MM-DD] [--categories a,b]");
+        return Err(2);
+    };
+    let root = match fs::canonicalize(first) {
+        Ok(r) if r.is_dir() && !first.contains('\0') => r,
+        _ => {
+            eprintln!("proven-gate detect: {first} is not a directory");
+            return Err(2);
+        }
+    };
+    let (today, cats) = parse_options(args)?;
     let mut errors = Vec::new();
     let m = load_manifest(&root, &mut errors);
     let files = list_files(&root, &mut errors);
