@@ -33,6 +33,12 @@ The pin is a full SHA with its release tag in the comment. Dependabot
 aspects and checks reach you. The stamped `proven-lock-gate.yml`
 (`templates/proven-lock-gate.yml`) must also be present (SR-005).
 
+A repository that has `.github/workflows/actions.lock` keeps the umbrella call OUT of it: a
+cross-repo reusable workflow that is onboarded startup-fails with zero jobs under
+`sha_pinning_required`. Pin the full SHA and add no lock entry for the `proven.yml` call, and never
+run a full-directory `gh actions-lock` over the caller. Only the `uses:` lines inside
+`proven-lock-gate.yml` (checkout and the like) need entries at their locked tags.
+
 == 2. The manifest: `.proven.toml` (schema `proven/manifest/v1`)
 
 [source,toml]
