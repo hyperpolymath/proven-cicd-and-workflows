@@ -127,7 +127,7 @@ fn default_command(lang: &str, cat: &str) -> Option<&'static str> {
         ("python", "build") => "python -m compileall -q .",
         ("python", "smoke") => "python -m pytest -m smoke",
         ("python", "p2p") => "python -m pytest -m p2p",
-        ("zig", "unit") => "zig build test",
+        ("zig", "unit") => "zig build test --summary all",
         ("zig", "build") => "zig build",
         _ => return None,
     })
@@ -299,6 +299,26 @@ fn marker_languages(files: &[String]) -> (BTreeMap<String, String>, BTreeMap<Str
     (first, roots)
 }
 
+/// `[languages.dir] elixir = "elixir-orchestration"`: the project directory for a language whose project is not at
+/// the repository root. Dependency preparation and every command for that language run there.
+fn read_project_dirs(m: &Table, root: &Path, errors: &mut Vec<String>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(t) = sub(m, "languages").and_then(|l| sub(l, "dir")) else { return out };
+    for (name, v) in t {
+        let Some(d) = v.as_str().map(|s| s.trim_end_matches('/').to_string()) else {
+            errors.push(format!("language-dir-not-string: [languages.dir] {name} must be a relative directory string"));
+            continue;
+        };
+        let bad = d.is_empty() || d.starts_with('/') || d.split('/').any(|c| c == ".." || c.is_empty());
+        if bad || !root.join(&d).is_dir() {
+            errors.push(format!("language-dir-invalid: [languages.dir] {name} = \"{d}\" must be an existing directory inside the repository (no .. and not absolute)"));
+            continue;
+        }
+        out.insert(name.clone(), d);
+    }
+    out
+}
+
 fn read_ignores(m: &Table, errors: &mut Vec<String>) -> BTreeMap<String, String> {
     let mut ignores = BTreeMap::new();
     if let Some(ig) = sub(m, "languages").and_then(|l| sub(l, "ignore")) {
@@ -361,6 +381,7 @@ struct Ctx {
     roots: BTreeMap<String, Vec<String>>,
     recipes: BTreeSet<String>,
     filenames: BTreeSet<String>,
+    project_dirs: BTreeMap<String, String>,
 }
 
 fn check_waiver(wv: &T, cat: &str, lang: &str, ctx: &mut Ctx) {
@@ -379,9 +400,19 @@ fn check_waiver(wv: &T, cat: &str, lang: &str, ctx: &mut Ctx) {
     }
 }
 
+/// `bash tests/unit.sh` run from `dir` must still find the script at the repository root.
+fn rel_to_root(dir: &str, cmd: &str) -> String {
+    let up = "../".repeat(dir.split('/').filter(|c| !c.is_empty() && *c != ".").count());
+    match cmd.strip_prefix("bash ") {
+        Some(script) => format!("bash {up}{script}"),
+        None => cmd.to_string(),
+    }
+}
+
 fn resolve_command(entry: &Table, per: &Table, cat: &str, lang: &str, ctx: &Ctx) -> (Option<String>, &'static str) {
     if let Some(c) = per.get("command").or_else(|| entry.get("command")) {
-        return (Some(tstr(c)), "manifest");
+        let src = if per.contains_key("command") { "manifest-lang" } else { "manifest" };
+        return (Some(tstr(c)), src);
     }
     for r in just_recipes_for(cat) {
         if ctx.recipes.contains(*r) {
@@ -452,18 +483,22 @@ fn plan_category(cat: &str, lang: &str, cmeta: &Table, ctx: &mut Ctx) -> (Vec<Va
         ctx.errors.push(format!("command-empty: {cat}/{lang} manifest command is empty"));
         return (vec![], None);
     }
-    // only language defaults run in the project dir
-    let dirs: Vec<String> = if source == "default" {
+    // an explicit [languages.dir] wins for every source; otherwise only language defaults run in the project dir
+    let dirs: Vec<String> = if let Some(d) = ctx.project_dirs.get(lang) {
+        vec![d.clone()]
+    } else if source == "default" {
         ctx.roots.get(lang).cloned().unwrap_or_else(|| vec![".".into()])
     } else {
         vec![".".into()]
     };
+    // a root convention script stays addressable from a configured project dir (the command runs inside it)
+    let cmd = |d: &str| if source == "convention" && d != "." { rel_to_root(d, &cmd) } else { cmd.clone() };
     let multi = dirs.len() > 1;
     let jobs = dirs
         .iter()
         .map(|d| {
             let id = if multi { format!("{cat}-{lang}-{}", job_suffix(d)) } else { format!("{cat}-{lang}") };
-            json!({"id": id, "category": cat, "lang": lang, "dir": d, "command": cmd, "source": source})
+            json!({"id": id, "category": cat, "lang": lang, "dir": d, "command": cmd(d), "source": source})
         })
         .collect();
     (jobs, None)
@@ -491,18 +526,51 @@ fn plan_benches(m: &Table, errors: &mut Vec<String>) -> Vec<Value> {
     out
 }
 
-pub fn run(args: &[String]) -> i32 {
-    let Some(first) = args.first() else {
-        eprintln!("proven-gate detect: usage: detect REPO_DIR [--today YYYY-MM-DD] [--categories a,b]");
-        return 2;
-    };
-    let root = match fs::canonicalize(first) {
-        Ok(r) if r.is_dir() && !first.contains('\0') => r,
-        _ => {
-            eprintln!("proven-gate detect: {first} is not a directory");
-            return 2;
+
+/// A command that is not per-language (manifest category-level, justfile recipe, tests/<category>.sh) is one
+/// command for the whole repository: run it once, labelled "all", not once per detected language.
+fn merge_shared_jobs(jobs: Vec<Value>) -> Vec<Value> {
+    let key_of = |j: &Value| (j["category"].as_str().unwrap_or("").to_string(), j["command"].as_str().unwrap_or("").to_string(), j["dir"].as_str().unwrap_or("").to_string());
+    let shared = |j: &Value| !matches!(j["source"].as_str().unwrap_or("default"), "default" | "manifest-lang" | "");
+    let mut group: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    for j in &jobs {
+        if shared(j) {
+            group.entry(key_of(j)).or_default().push(j["lang"].as_str().unwrap_or("").to_string());
         }
-    };
+    }
+    let mut emitted: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut merged: Vec<Value> = Vec::new();
+    for mut j in jobs {
+        let own = j["lang"].as_str().unwrap_or("").to_string();
+        j["langs"] = json!(own);
+        if shared(&j) {
+            let k = key_of(&j);
+            let langs = group.get(&k).cloned().unwrap_or_default();
+            let dir = j["dir"].as_str().unwrap_or(".").to_string();
+            if !emitted.insert(k) {
+                continue;
+            }
+            let cat = j["category"].as_str().unwrap_or("").to_string();
+            j["lang"] = json!("all");
+            j["langs"] = json!(langs.join(","));
+            j["id"] = json!(if dir == "." { format!("{cat}-all") } else { format!("{cat}-all-{}", job_suffix(&dir)) });
+        }
+        merged.push(j);
+    }
+    merged
+}
+
+pub fn run(args: &[String]) -> i32 {
+    match compute(args) {
+        Ok((rc, plan)) => {
+            println!("{}", serde_json::to_string_pretty(&plan).unwrap_or_default());
+            rc
+        }
+        Err(rc) => rc,
+    }
+}
+
+fn parse_options(args: &[String]) -> Result<(Date, Vec<String>), i32> {
     let mut today = date::today();
     let mut cats: Vec<String> = KNOWN_CATEGORIES.iter().map(|s| s.to_string()).collect();
     let mut i = 1;
@@ -512,21 +580,38 @@ pub fn run(args: &[String]) -> i32 {
                 Some(d) => today = d,
                 None => {
                     eprintln!("proven-gate detect: --today needs YYYY-MM-DD, got {v}");
-                    return 2;
+                    return Err(2);
                 }
             },
             ("--categories", Some(v)) => cats = v.split(',').filter(|c| !c.is_empty()).map(String::from).collect(),
             (other, _) => {
                 eprintln!("proven-gate detect: unknown argument {other}");
-                return 2;
+                return Err(2);
             }
         }
         i += 2;
     }
+    Ok((today, cats))
+}
+
+fn compute(args: &[String]) -> Result<(i32, Value), i32> {
+    let Some(first) = args.first() else {
+        eprintln!("proven-gate detect: usage: detect REPO_DIR [--today YYYY-MM-DD] [--categories a,b]");
+        return Err(2);
+    };
+    let root = match fs::canonicalize(first) {
+        Ok(r) if r.is_dir() && !first.contains('\0') => r,
+        _ => {
+            eprintln!("proven-gate detect: {first} is not a directory");
+            return Err(2);
+        }
+    };
+    let (today, cats) = parse_options(args)?;
     let mut errors = Vec::new();
     let m = load_manifest(&root, &mut errors);
     let files = list_files(&root, &mut errors);
     let ignores = read_ignores(&m, &mut errors);
+    let project_dirs = read_project_dirs(&m, &root, &mut errors);
     let (langs, roots) = detect_languages(&files, &m, &ignores);
     let empty = Table::new();
     let cmeta = sub(&m, "categories").unwrap_or(&empty);
@@ -545,6 +630,7 @@ pub fn run(args: &[String]) -> i32 {
         roots,
         recipes: just_recipes(&root),
         filenames: files.iter().cloned().collect(),
+        project_dirs,
     };
     let (mut jobs, mut na_list) = (Vec::new(), Vec::new());
     for lang in langs.keys() {
@@ -557,14 +643,14 @@ pub fn run(args: &[String]) -> i32 {
             na_list.extend(na);
         }
     }
+    let jobs = merge_shared_jobs(jobs);
     let benches = plan_benches(&m, &mut ctx.errors);
     let ok = ctx.errors.is_empty();
     let plan = json!({
         "ok": ok, "errors": ctx.errors, "languages": langs.keys().collect::<Vec<_>>(), "jobs": jobs,
         "waivers": ctx.waivers, "na": na_list, "benches": benches, "categories": cats,
     });
-    println!("{}", serde_json::to_string_pretty(&plan).unwrap_or_default());
-    if ok { 0 } else { 1 }
+    Ok((if ok { 0 } else { 1 }, plan))
 }
 
 #[cfg(test)]
@@ -584,8 +670,10 @@ mod tests {
 
     fn plan(d: &Path, today: &str) -> (i32, Value) {
         // run() prints; re-plan through the same pieces for assertions
-        let code = run(&[d.to_string_lossy().into(), "--today".into(), today.into()]);
-        (code, Value::Null)
+        match compute(&[d.to_string_lossy().into(), "--today".into(), today.into()]) {
+            Ok(r) => r,
+            Err(c) => (c, Value::Null),
+        }
     }
 
     #[test]
@@ -616,6 +704,59 @@ mod tests {
             ],
         );
         assert_eq!(plan(&d, "2026-01-01").0, 0);
+    }
+
+    #[test]
+    fn language_dir_moves_the_command_and_rejects_escapes() {
+        let m = "schema = \"proven/manifest/v1\"\n[categories.p2p]\nna = \"x\"\n";
+        let d = tmp("ldir", &[(".proven.toml", &format!("{m}[languages.dir]\nelixir = \"orch\"\n")), ("justfile", "test:\n\techo t\nsmoke:\n\techo s\nbuild:\n\techo b\n"), ("orch/mix.exs", "")]);
+        let (rc, v) = plan(&d, "2026-01-01");
+        assert_eq!(rc, 0, "{v}");
+        assert!(v["jobs"].as_array().unwrap().iter().all(|j| j["dir"] == "orch"), "{v}");
+        for bad in ["../x", "/etc", "missing", "a/../b"] {
+            let d = tmp("ldirbad", &[(".proven.toml", &format!("{m}[languages.dir]\nelixir = \"{bad}\"\n")), ("mix.exs", "")]);
+            assert_eq!(plan(&d, "2026-01-01").0, 1, "{bad} must fail");
+        }
+    }
+
+    #[test]
+    fn repo_wide_command_runs_once_not_per_language() {
+        let d = tmp(
+            "polyglot",
+            &[
+                (".proven.toml", "schema = \"proven/manifest/v1\"\n[categories.p2p]\nna = \"no seam\"\n"),
+                ("justfile", "test:\n\techo t\nsmoke:\n\techo s\nbuild:\n\techo b\n"),
+                ("a.sh", ""),
+                ("src/main.rs", ""),
+                ("Cargo.toml", ""),
+            ],
+        );
+        let (rc, v) = plan(&d, "2026-01-01");
+        assert_eq!(rc, 0, "{v}");
+        let jobs = v["jobs"].as_array().unwrap();
+        assert_eq!(jobs.len(), 3, "one job per category, got {v}");
+        assert!(jobs.iter().all(|j| j["lang"] == "all" && j["langs"].as_str().unwrap().contains("rust") && j["langs"].as_str().unwrap().contains("shell")));
+    }
+
+    #[test]
+    fn rust_only_repo_wide_command_is_all_and_per_language_stays_per_language() {
+        let na = "[categories.smoke]\nna = \"n\"\n[categories.build]\nna = \"n\"\n[categories.p2p]\nna = \"n\"\n";
+        let d = tmp("single", &[(".proven.toml", &format!("schema = \"proven/manifest/v1\"\n[categories.unit]\ncommand = \"bash t.sh\"\n{na}")), ("Cargo.toml", ""), ("src/main.rs", "")]);
+        let (rc, v) = plan(&d, "2026-01-01");
+        assert_eq!(rc, 0, "{v}");
+        assert_eq!(v["jobs"][0]["lang"], "all", "{v}");
+        let d = tmp("perlang", &[(".proven.toml", &format!("schema = \"proven/manifest/v1\"\n[categories.unit.rust]\ncommand = \"bash t.sh\"\n[categories.unit.shell]\ncommand = \"bash t.sh\"\n{na}")), ("Cargo.toml", ""), ("src/main.rs", ""), ("a.sh", "")]);
+        let (rc, v) = plan(&d, "2026-01-01");
+        assert_eq!(rc, 0, "{v}");
+        let unit: Vec<_> = v["jobs"].as_array().unwrap().iter().filter(|j| j["category"] == "unit").collect();
+        assert_eq!(unit.len(), 2, "per-language manifest commands stay separate: {v}");
+    }
+
+    #[test]
+    fn convention_script_reachable_from_project_dir() {
+        assert_eq!(rel_to_root("orch", "bash tests/unit.sh"), "bash ../tests/unit.sh");
+        assert_eq!(rel_to_root("a/b", "bash tests/unit.sh"), "bash ../../tests/unit.sh");
+        assert_eq!(rel_to_root(".", "just x"), "just x");
     }
 
     #[test]

@@ -11,4 +11,4 @@ fail=0
 [[ $(jq '.jobs|length' "${TMPDIR:-/tmp}/proven-smoke-plan.json") -gt 0 ]] || { echo "smoke: the plan holds no jobs"; fail=1; }
 "$GATE" integrity .github/workflows/proven-self.yml || fail=1
 "$GATE" bench-gate 1 --history 1 >/dev/null || fail=1
-(( fail == 0 )) && echo "smoke: ok"; exit "$fail"
+(( fail == 0 )) && echo "ok - smoke: plan, integrity and bench gate all passed"; exit "$fail"

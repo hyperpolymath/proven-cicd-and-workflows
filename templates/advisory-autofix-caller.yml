@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: MPL-2.0
+# Advisory autofix — thin caller of the estate's scheduled auto-fix, which
+# lives in hyperpolymath/proven-cicd-and-workflows as a reusable workflow. Do
+# not copy its steps in here. It audits EVERY Cargo workspace (every tracked,
+# non-vendored Cargo.lock, nested ones like fuzz/ included), bumps a vulnerable
+# crate to the lowest patched version with `cargo update --precise`, and opens
+# ONE signed PR; an advisory with no patched version opens ONE issue instead.
+#
+# NEVER AUTO-MERGED. The owner merges, when the repo's full CI and its declared
+# proof lanes (Creusot/Pearlite, Verus; Kani, Aeneas where declared) pass.
+# Make those required checks in branch protection: this workflow cannot.
+#
+# SETUP, once per repo:
+#   1. secret AUTOFIX_TOKEN: a GitHub App or fine-grained token with contents,
+#      pull-requests and issues write. Needed so CI and the proof lanes RUN on
+#      the PR (a GITHUB_TOKEN PR starts no workflows and could never be green).
+#   2. Settings > Code security: enable "Dependabot security updates".
+#   3. .github/dependabot.yml from scripts/advisory-autofix-dependabot.sh.
+#
+# The pin is a full SHA advanced by track-estate-audit.yml; never @main or a
+# tag. DE-ONBOARDED from actions.lock like the other callers: an onboarded
+# cross-repo reusable startup-fails with zero jobs under sha_pinning_required.
+name: Advisory autofix
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  advisory-autofix:
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/advisory-autofix.yml@__CICD_SUITE_SHA__ # cicd-suite main
+    secrets:
+      AUTOFIX_TOKEN: ${{ secrets.AUTOFIX_TOKEN }}
+    # Inputs (all optional):
+    #   exclude: "third_party/foo"   # extra workspace dirs to skip
+    #   deny_args: "--all-features"
+    #   dry_run: true                # audit and fix in the runner only

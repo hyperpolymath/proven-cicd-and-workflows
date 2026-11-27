@@ -32,6 +32,7 @@ actions/tla-check/                   TLA+: detect · TLC must-pass and must-refu
 .github/workflows/tla-gate.yml        reusable; pinned TLC v1.7.4 on Java 21
 .github/workflows/language-gates-self-test.yml  each gate's test.sh, every PR
 templates/*-caller.yml                the thin callers for the eight language and prover gates
+.github/workflows/advisory-autofix.yml  reusable; scheduled audit + lowest-patched bump (scripts/advisory-autofix-*.sh)
 scripts/verify-suite-checkout.sh      proves the self-checkout is the caller's pin
 scripts/deonboard-workflow.sh         the one de-onboard implementation, every caller
 rollout_language_gates.sh             installs the callers by what a tree contains
