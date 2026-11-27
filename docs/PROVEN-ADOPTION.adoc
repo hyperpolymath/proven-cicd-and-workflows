@@ -33,6 +33,13 @@ The pin is a full SHA with its release tag in the comment. Dependabot
 aspects and checks reach you. The stamped `proven-lock-gate.yml`
 (`templates/proven-lock-gate.yml`) must also be present (SR-005).
 
+A repository that has `.github/workflows/actions.lock` must have the lock regenerated with
+`gh actions-lock` after the caller and `proven-lock-gate.yml` are added, so that both files are lock
+keys and the umbrella ref is recorded as locked (verisimdb's lock-sync check requires it). Never
+hand-edit the lock. OPEN: whether a repo that leaves the umbrella call out of its lock still starts
+the `Proven` job is unconfirmed (proven-tests-and-benches#124 startup-fails without an entry); this
+paragraph is updated when the owner reads that run's "Invalid workflow file" line.
+
 == 2. The manifest: `.proven.toml` (schema `proven/manifest/v1`)
 
 [source,toml]
