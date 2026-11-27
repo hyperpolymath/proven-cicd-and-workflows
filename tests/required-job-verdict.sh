@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 Jonathan D.A. Jewell (hyperpolymath)
+# Silence / firing / void controls for the final summary check.
+set -euo pipefail
+script=$(cd "$(dirname "$0")/.." && pwd)/scripts/required-job-verdict.sh
+temp=$(mktemp -d)
+trap 'rm -rf "$temp"' EXIT
+export REQUIRED_JOB_IDS=$'native\npolicy'
+check() {
+  local want=$1 label=$2 data=$3
+  local got=0
+  REQUIRED_RESULTS="$data" bash --noprofile --norc -e -o pipefail "$script" > "$temp/output" 2>&1 || got=$?
+  if [[ "$got" != "$want" ]]; then
+    printf 'FAIL: %s returned %s expected %s\n' "$label" "$got" "$want" >&2
+    cat "$temp/output" >&2
+    exit 1
+  fi
+  printf 'ok: %s (exit %s)\n' "$label" "$want"
+}
+check 0 'silence: two real required successes' $'native=success\npolicy=success'
+check 1 'firing: required native test failed' $'native=failure\npolicy=success'
+check 1 'firing: required policy failed' $'native=success\npolicy=failure'
+check 2 'void: required check skipped' $'native=success\npolicy=skipped'
+check 2 'void: required check cancelled' $'native=cancelled\npolicy=success'
+check 1 'firing: failed policy plus skipped native retains failure verdict' $'native=skipped\npolicy=failure'
+check 1 'firing: failed native plus cancelled policy retains failure verdict' $'native=failure\npolicy=cancelled'
+check 2 'void: no mandatory jobs' ''
+check 2 'void: duplicate required observation' $'native=success\nnative=success'
+check 2 'void: unknown status' $'native=success\npolicy=unknown'
+check 2 'void: still pending' $'native=success\npolicy=pending'
+check 2 'void: malformed observation' 'native success'
+check 2 'void: expected policy missing from observations' 'native=success'
+check 2 'void: unexpected extra named job' $'native=success\npolicy=success\nrogue=success'
+check 2 'void: expected name differs from observation' $'native=success\n_policy=success'
+REQUIRED_JOB_IDS=$'native\n_policy' check 0 'silence: underscore-prefixed job identity' $'native=success\n_policy=success'
+REQUIRED_JOB_IDS='' check 2 'void: mandatory identity manifest missing' $'native=success\npolicy=success'
+echo 'ok: verdict cannot make a missing, failed or skipped required job green'
