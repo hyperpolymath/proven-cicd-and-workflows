@@ -42,6 +42,7 @@ triggers, `if:` conditions and `continue-on-error`.
 |`hyperpolymath/echidnabot` |`0d6f6872572f6963e70c8e236d1d3b8c27505032` (PR 211; PR 214 `146b4715` agrees) |`7a5b8c48ffef8236b06b7174d855d88124b7f380`
 |`hyperpolymath/panic-attack` |`ef1842e951b3b3df72ca8680fc3ca0b8579ac59d` (PR 306) |`7b9f145c2194eb0d46ace82a5a4518db5db38a5e`
 |`catachresis-colloquium/enaction-engine` |`ca71493265d2b8ca067271f67e2706e8a20bd3c1` (PR 139, merged) |`8bf43d18159cd4b612ebe0804113161d4cf5f4cf`
+|`hyperpolymath/scaffoldia` (2026-11-27, see "Onboarded 2026-11-27") |`0f9e8ce27efea4e5e69abcc9cecbcd95b9601be3` (PR 81) |`8c833fbe38c63561b7a9d7bc1c74f786c95d49d1`
 |===
 
 Each name below was migrated to one entry per producing workflow, using the `path` of the workflow runs read at the two commits above (the producers were identical at both). Included in all three: `estate-rules`, `Estate Governance Policy`, `Central Estate CI/CD Audit`,
@@ -98,6 +99,18 @@ The exclusions in "Excluded, and why" apply unchanged. The CodeQL matrix jobs (`
 * `estate-rules` (trope-checker) failed on PR 131 and `estate-audit / manifests` failed on PR 130 (a runner that could not install `just`). Both passed on `main` and on the other head and are listed: those were real pull-request failures, not checks that cannot pass.
 
 Seen across these repositories and NOT a gate property: pull requests opened by bots (ijson-jcs 37 and 38, hermeneia 89 and 90, marches 66, panic-attack 308) end with every workflow in `startup_failure`. The gate fails such a pull request closed, which is correct. The cause is unverified (an Actions policy or a missing `actions.lock` entry are the candidates) and is owner follow-up.
+
+== Onboarded 2026-11-27
+
+`hyperpolymath/scaffoldia`. Its `main` ruleset requires `CI / gate` (with spaces), and no workflow produced it, so every pull request was blocked. The gap was confirmed the same way as in "Onboarded 2026-11-23": the ruleset requires the context, no workflow mentions it, and no status of that name exists on `main` or on PR 81. The list was read from the authenticated API (`actions/runs?head_sha=`, then each run's jobs) at the two commits in the table above, under the rule at the top of this file, and checked with `validate-ci-gate-profile.sh`. The caller publishes `CI / gate`.
+
+Listed: `Empty-linter (invisible characters)` (`dogfood-gate.yml`), `estate-rules`, `check` (`guix-nix-policy.yml`), `openssf-compliance`, `docs` and `lint` (`quality.yml`), `Runtime Policy`, and `check` (`security-policy.yml`). Each passed on the pull request head and on the `main` push, and none is path-filtered or conditional at job level. The `lint` job has a step with `continue-on-error`, not the job.
+
+Left out, beyond the general exclusions (CodeQL matrix jobs and the advisory dogfood validators):
+
+* `secret-scanner.yml`, `governance.yml` and `hypatia-scan.yml` ended with no jobs on PR 81, and `static-analysis-gate.yml` in `startup_failure`. `scan / gitleaks` is required by the ruleset on its own, so it is not repeated here. The scaffoldia pull request that adds the caller also moves `secret-scanner.yml` to this suite's reusable.
+* `workflow-linter.yml` and `e2e.yml` are red on `main` (`e2e.yml` is also path-filtered).
+* `wellknown-enforcement.yml`, `rhodibot.yml`, `label-triage.yml` and `boj-build.yml` are scheduled, issue-driven or skipped.
 
 == The suite's own profile (`hyperpolymath/proven-cicd-and-workflows.json`)
 
