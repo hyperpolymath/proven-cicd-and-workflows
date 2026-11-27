@@ -97,6 +97,11 @@ https_only() { # FILE -> exit 0 when every non-comment curl call carries both fl
   [[ -z $bad_calls ]]
 }
 https_only "$template" && ok 'every curl call is HTTPS only, redirects included' || bad 'a curl call lacks --proto =https or --proto-redir =https'
+
+# A required check must report on a merge-queue commit too (verisimdb-data#179), so the trigger list
+# of the stamped gate carries merge_group beside pull_request and push.
+awk '/^on:/{o=1;next} o&&/^[^ ]/{o=0} o' "$template" | grep -qE '^  merge_group:' \
+  && ok 'the gate triggers on merge_group' || bad 'the stamped gate has no merge_group trigger'
 for flag in "--proto-redir '=https' " "--proto '=https' "; do
   sed "s/ $flag/ /" "$template" > "$tmp/plain.yml"
   if cmp -s "$template" "$tmp/plain.yml"; then bad "control: removing $flag changed nothing"
