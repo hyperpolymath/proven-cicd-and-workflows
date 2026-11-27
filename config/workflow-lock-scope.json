@@ -52,6 +52,11 @@
       "reason": "Existing actions.lock onboarding; preserve direct and declared composite closure."
     },
     {
+      "path": ".github/workflows/codeql.yml",
+      "mode": "immutable",
+      "reason": "CodeQL for actions and rust (replaces default setup): full-SHA actions/checkout and github/codeql-action references outside the existing lock map; remote closure is not certified by this scope guard."
+    },
+    {
       "path": ".github/workflows/creusot-gate.yml",
       "mode": "immutable",
       "reason": "Full-SHA source references outside the existing lock map; remote closure is not certified by this scope guard."
