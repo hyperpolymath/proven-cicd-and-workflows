@@ -29,6 +29,8 @@ case $args in
     p=$(jq -r --arg u "$u" '.[$u] // empty' "$D/perms.json") && [[ -n $p ]] || { echo "gh: HTTP 404" >&2; exit 1; }
     echo "$p" ;;
   *"/pulls/"*"/commits"*) [[ ! -f $D/failcommits ]] || { echo "gh: HTTP 500" >&2; exit 1; }; jq -r "$jqarg" "$D/commits.json" ;;
+  *"/pulls/"[0-9]*) [[ ! -f $D/failhead ]] || { echo "gh: HTTP 500 (pull)" >&2; exit 1; }
+    n=${args#*/pulls/}; n=${n%%[!0-9]*}; jq -r --arg n "$n" --arg d "${FAKE_HEAD:-}" '.[$n] // $d' "$D/heads.json" ;;
   *"-X POST"*"/statuses/"*)
     [[ ! -f $D/failpost ]] || { echo "gh: HTTP 500 (post)" >&2; exit 1; }
     st=''; ds=''; cx=''
@@ -152,14 +154,15 @@ chk "the guard never applies a label: it calls only read endpoints" "$(grep -c -
 
 echo "== CI/gate-tamper-guard publisher: Silence and Firing =="
 SHA=$(printf 'b%.0s' $(seq 40))
+MOVED=$(printf 'c%.0s' $(seq 40))
 SUT="$STATUS"
 SUITE_T="$WORK/suite"; mkdir -p "$SUITE_T/scripts"; cp "$GUARD" "$SUITE_T/scripts/"
 pub() { # [VAR=value ...] -> PRC, POUT, NP (posts), LASTP (context<TAB>state<TAB>description)
   : > "$D/posts.log"
-  POUT=$(env PATH="$D/bin:$PATH" FAKEGH_DIR="$D" REPO=o/r HEAD_SHA="$SHA" PR_NUMBERS=7 SUITE="$SUITE_T" RUN_ID=1 "$@" bash "$SUT" 2>&1); PRC=$?
+  POUT=$(env PATH="$D/bin:$PATH" FAKEGH_DIR="$D" FAKE_HEAD="$SHA" REPO=o/r HEAD_SHA="$SHA" PR_NUMBERS=7 SUITE="$SUITE_T" RUN_ID=1 "$@" bash "$SUT" 2>&1); PRC=$?
   NP=$(grep -c . "$D/posts.log"); LASTP=$(tail -n 1 "$D/posts.log")
 }
-preset() { reset; rm -f "$D/standing" "$D/posts.log"; }
+preset() { reset; rm -f "$D/standing" "$D/posts.log" "$D/failhead"; echo '{}' > "$D/heads.json"; }
 # Each case prints nothing and returns 0 when the publisher behaves; the mutants below must make one fail.
 case_silence()      { preset; pub; [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tsuccess\t'* ]]; }
 case_firing()       { preset; files .github/workflows/ci-gate.yml; pub; [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\t#7: this pull request touches gate files'* ]]; }
@@ -176,8 +179,13 @@ case_other_ctx()    { preset; printf '{"context":"CI/gate","state":"success","de
 case_status_fail()  { preset; touch "$D/failstatus"; pub; [[ $PRC == 0 && $NP == 1 ]]; }
 case_post_fail()    { preset; touch "$D/failpost"; pub; [[ $PRC == 1 && $POUT == *'NO TAMPER VERDICT'* ]]; }
 case_clip()         { preset; files .github/workflows/ci-gate.yml; pub PR_NUMBERS="$(seq 1 30 | paste -sd' ' -)"; d=${LASTP##*$'\t'}; [[ $(jq -rn --arg d "$d" '$d | length') -le 140 ]]; }
+case_moved()        { preset; files .github/workflows/ci-gate.yml; echo "{\"7\":\"$MOVED\"}" > "$D/heads.json"; pub; [[ $PRC == 0 && $NP == 0 && $POUT == *"#7 now heads $MOVED"* ]]; }
+case_moved_one()    { preset; files .github/workflows/ci-gate.yml; echo "{\"7\":\"$MOVED\"}" > "$D/heads.json"; pub PR_NUMBERS="7 9"; [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\t#9: '* ]]; }
+case_head_fail()    { preset; touch "$D/failhead"; pub; [[ $PRC == 0 && $NP == 1 && $LASTP == $'CI/gate-tamper-guard\tfailure\t#7: could not read the head of #7'* ]]; }
+case_head_fail_keeps() { preset; files .github/workflows/ci-gate.yml; touch "$D/failhead"; pub; [[ $LASTP == $'CI/gate-tamper-guard\tfailure\t#7: this pull request touches gate files'* ]]; }
 CASES=(case_silence case_firing case_approved case_one_of_two case_no_pr case_bad_number case_bad_sha case_bad_repo
-       case_no_guard case_guard_error case_standing case_other_ctx case_status_fail case_post_fail case_clip)
+       case_no_guard case_guard_error case_standing case_other_ctx case_status_fail case_post_fail case_clip
+       case_moved case_moved_one case_head_fail case_head_fail_keeps)
 for c in "${CASES[@]}"; do "$c" && ok "$c" || bad "$c (rc=$PRC posts=$NP last='$LASTP')"; done
 chk "the publisher writes only commit statuses (no label, no other write)" \
   "$(grep -oE -- '-X (POST|PUT|PATCH|DELETE) "[^"]*' "$STATUS" | sort -u)" '-X POST "repos/$REPO/statuses/$HEAD_SHA'
@@ -202,6 +210,10 @@ mutant case_standing    'a standing status is written again'               'if [
 mutant case_other_ctx   'another context counts as standing'               '.context == $c and'                     'true and'
 mutant case_post_fail   'a failed POST counts as published'                '|| fail "could not publish the'         '|| true "could not publish the'
 mutant case_clip        'the description is not clipped'                   'if length > 140 then'                   'if length > 99999 then'
+mutant case_moved      'a moved head is still published'              '&& $now != "$HEAD_SHA" ]]; then'   '&& $now == never ]]; then'
+mutant case_head_fail  'a failed head read counts as the same head'   '|| now='"''"   '|| now=$HEAD_SHA'
+mutant case_moved_one  'a moved pull request is still counted'         '    continue'$'\n''  fi'   '    :'$'\n''  fi'
+mutant case_head_fail_keeps 'a failed head read hides the guard reason' '((rc != 0)) || out='   'out='
 
 echo "== static guards: no pull_request_target anywhere; the gate runs the guard from the default branch =="
 code() { grep -vE '^[[:space:]]*#' "$1"; }

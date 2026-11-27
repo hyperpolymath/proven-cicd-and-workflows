@@ -42,10 +42,23 @@ mapfile -t prs < <(printf '%s\n' "${prs[@]}" | sort -un)
 # By characters: a character outside the BMP becomes '?' (GitHub answers HTTP 422 to it), then 140 at most.
 clip() { jq -rn --arg d "$1" '($d | explode | map(if . > 65535 then 63 else . end) | implode) | if length > 140 then .[0:139] + "…" else . end'; }
 
-state=success; failed=() first=''
+state=success; failed=() first='' judged=()
 for n in "${prs[@]}"; do
   out=$(env REPO="$REPO" PR_NUMBER="$n" bash "$GUARD" 2>&1); rc=$?
   printf '%s\n' "$out"
+  # The guard reads the pull request as it is NOW, not as of HEAD_SHA. Read the head after the guard: if it
+  # is no longer HEAD_SHA the verdict may describe another commit, and this pull request no longer heads
+  # HEAD_SHA, so it is left out (its new head gets its own verdict). A failed read fails closed. This does
+  # not see a head that moves away and back during the guard.
+  now=$(gh api "repos/$REPO/pulls/$n" --jq .head.sha 2> /dev/null) || now=''
+  if [[ $now =~ ^[0-9a-f]{40}$ && $now != "$HEAD_SHA" ]]; then
+    echo "ci-gate-tamper-status: #$n now heads $now, not $HEAD_SHA; its verdict is not published here"
+    continue
+  fi
+  judged+=("$n")
+  if [[ $now != "$HEAD_SHA" ]]; then
+    ((rc != 0)) || out="::error::gate tamper guard: could not read the head of #$n after judging it"; rc=1
+  fi
   if ((rc != 0)); then
     state=failure; failed+=("#$n")
     if [[ -z $first ]]; then
@@ -54,9 +67,13 @@ for n in "${prs[@]}"; do
     fi
   fi
 done
+if ((${#judged[@]} == 0)); then
+  echo "ci-gate-tamper-status: no listed pull request still has $HEAD_SHA as its head; nothing to judge"
+  exit 0
+fi
 # The failing pull requests come first, so the clip can only shorten the reason, never drop a number.
 if [[ $state == success ]]; then
-  desc="no unapproved gate-file change in PR $(printf '#%s ' "${prs[@]}" | sed 's/ $//')"
+  desc="no unapproved gate-file change in PR $(printf '#%s ' "${judged[@]}" | sed 's/ $//')"
 else
   desc="$(printf '%s ' "${failed[@]}" | sed 's/ $//'): $first"
 fi

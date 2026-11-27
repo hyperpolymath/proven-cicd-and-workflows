@@ -866,6 +866,27 @@ sweep CONTEXT='CI / gate'
 chk "third sweep, one head now failing: exactly that one is written" "$(cut -f1,3 "$FAKEGH/posts.log" | tr '\t' ' ')/$RC" "failure $(sha_n 12)/1"
 pubreset
 
+echo "-- a sweep that meets a rate limit stops: the rest would meet the same limit --"
+pubreset; set_pulls "1 $T1 1" "2 $T1 3"; set_default 2
+sweep_sha 1 "$DONE"; sweep_sha 2 "$DONE"; sweep_sha 3 "$DONE"
+for _ in 1 2 3 4 5; do echo '429 Too Many Requests|Retry-After: 3'; done > "$FAKEGH/ratelimit"
+sweep CI_GATE_SLEEP="$RL/sleep" CI_GATE_CLOCK="$RL/clock"
+chk "rate limited on the first head: exit 1, 5 attempts, nothing written" "$RC/$(attempts)/$([ -s "$FAKEGH/posts.log" ] && echo posted || echo none)" "1/5/none"
+grep -q '| rate limited | skipped | 2 not evaluated: rate limited |' "$WORK/gss" && ok "the table lists the 2 heads left for the next sweep" || bad "the table does not list the heads left by the rate limit"
+grep -q 'rate limited; the 2 remaining head SHA(s) were NOT evaluated' <<<"$SOUT" && ok "the sweep warns that it stopped" || bad "no warning for the stopped sweep"
+grep -qF '(tamper guard)' "$WORK/gss" && bad "silence: the throttled head heads no pull request, yet a tamper row was written" || ok "silence: no tamper row for a throttled head that heads no pull request"
+pubreset; set_pulls "1 $T1 1" "2 $T1 3"; set_default 2
+sweep_sha 1 "$DONE"; sweep_sha 2 "$DONE"; sweep_sha 3 "$DONE"
+echo '429 Too Many Requests|Retry-After: 3' > "$FAKEGH/ratelimit"
+sweep CI_GATE_SLEEP="$RL/sleep" CI_GATE_CLOCK="$RL/clock"
+chk "control: rate limited once and recovered: all 3 heads written, exit 0" "$(grep -c . "$FAKEGH/posts.log")/$RC/$(grep -c 'not evaluated: rate limited' "$WORK/gss")" "3/0/0"
+pubreset; set_pulls "1 $T1 1"; set_default 1
+sweep_sha 1 "$DONE"
+for _ in 1 2 3 4 5; do echo '429 Too Many Requests|Retry-After: 3'; done > "$FAKEGH/ratelimit"
+sweep CI_GATE_SLEEP="$RL/sleep" CI_GATE_CLOCK="$RL/clock"
+grep -qF '(tamper guard) | skipped | not evaluated: rate limited |' "$WORK/gss" && ok "firing: the throttled head heads PR #1, so its tamper guard is listed as not evaluated" || bad "firing: the throttled head's tamper guard is not listed as not evaluated"
+pubreset
+
 echo "-- the sweep runs the tamper guard publisher for each pull request head (Silence, Firing, mutants) --"
 mk_tamper() { # [exit code] -> a stand-in scripts/ci-gate-tamper-status.sh that logs what it was asked
   cat > "$SUITE_DIR/scripts/ci-gate-tamper-status.sh" <<TAMPER_EOF

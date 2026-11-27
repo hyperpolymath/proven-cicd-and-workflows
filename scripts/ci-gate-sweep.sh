@@ -21,7 +21,9 @@
 #     prints a ::warning:: naming how many were skipped. The default branch head counts as the
 #     most recently updated. It never skips silently.
 #  3. Runs the publisher for each SHA, with no early in_progress pending. A failure on one SHA
-#     does not stop the others.
+#     does not stop the others, except "rate limited, no verdict": the rest would meet the same
+#     limit, so they are listed as not evaluated (the tamper guard for that head too) and the next
+#     sweep takes them. This bounds the sweep: one throttled head, not one per head.
 #  3b. For a SHA that heads open pull requests, runs scripts/ci-gate-tamper-status.sh (when the suite
 #     has it), which publishes `CI/gate-tamper-guard`. This is how a label change reaches the guard:
 #     labels trigger no workflow_run, so the guard sees one at the next sweep, or at a manual dispatch.
@@ -122,6 +124,15 @@ while IFS=$'\t' read -r _ sha src; do
   # The tamper guard for every open pull request with this head (a SHA can head several). It publishes
   # its own context and never changes the CI/gate row; a guard that could not publish is an error.
   prs=$(awk -F'\t' -v s="$sha" '$2 == s && $3 ~ /^PR #[0-9]+$/ {sub(/^PR #/, "", $3); print $3}' "$WORK/pulls.tsv" 2> /dev/null | sort -un | paste -sd' ' -)
+  if grep -qF 'rate limited, no verdict' "$dir/out.txt"; then
+    left=$(($(grep -c . "$WORK/todo.tsv") - n))
+    if ((left > 0)); then
+      echo "::warning::ci-gate-sweep: rate limited; the $left remaining head SHA(s) were NOT evaluated by this sweep"
+      printf '%s\t%s\tskipped\t%s not evaluated: rate limited\n' '-' 'rate limited' "$left" >> "$rows"
+    fi
+    [[ -z $prs ]] || printf '%s\t%s\tskipped\t%s\n' "$sha" "$src (tamper guard)" 'not evaluated: rate limited' >> "$rows"
+    break
+  fi
   if [[ -n $prs && -f $TAMPER ]]; then
     trc=0
     env -u GITHUB_OUTPUT HEAD_SHA="$sha" PR_NUMBERS="$prs" SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" \
