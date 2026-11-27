@@ -46,7 +46,7 @@ case $lang in
   zig)    grep -qE 'All [1-9][0-9]* tests? passed|[1-9][0-9]*/[1-9][0-9]* .*(OK|passed)' "$out" && ran=yes || ran=no ;;
   shell)  grep -qE '^(ok|PASS|ok:)([ :]|$)|^1\.\.[1-9]|[1-9][0-9]* tests? (run|passed)' "$out" && ran=yes || ran=no ;;
   all)    # one repo-wide command (justfile recipe, convention file or manifest): any recognised test-count line counts
-          grep -v "no tests to run" "$out" | grep -qE "$zero_re_rust|[1-9][0-9]* tests?, 0 failures|^(ok|PASS)([ :]|$)|^1\.\.[1-9]|[1-9][0-9]* (passed|passing)|All [1-9][0-9]* tests? passed|tests? [1-9][0-9]*|# pass [1-9]" && ran=yes || ran=no ;;
+          grep -v "no tests to run" "$out" | grep -qE "$zero_re_rust|[1-9][0-9]* tests?, 0 failures|^ok( [0-9]+)? - |^ok [0-9]+( |$)|^--- PASS:|^ok[[:space:]]+[^[:space:]]+[[:space:]]+[0-9.]+s|^1\.\.[1-9]|[1-9][0-9]* (passed|passing)|[1-9][0-9]* tests? (run|passed)|All [1-9][0-9]* tests? passed|# pass [1-9]" && ran=yes || ran=no ;;
   rust)   grep -qE '^running [1-9][0-9]* tests?' "$out" && ran=yes || ran=no ;;
   elixir) grep -qE '^[0-9]+ (doctests?, )?[1-9][0-9]* tests?,|[1-9][0-9]* tests?, 0 failures' "$out" && ran=yes || ran=no ;;
   go)     grep -E '^(ok|PASS)' "$out" | grep -qv 'no tests to run' && ran=yes || ran=no ;;
