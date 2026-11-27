@@ -514,6 +514,41 @@ fn plan_benches(m: &Table, errors: &mut Vec<String>) -> Vec<Value> {
     out
 }
 
+
+/// A command that is not per-language (manifest category-level, justfile recipe, tests/<category>.sh) is one
+/// command for the whole repository: run it once, labelled "all", not once per detected language.
+fn merge_shared_jobs(jobs: Vec<Value>) -> Vec<Value> {
+    let key_of = |j: &Value| (j["category"].as_str().unwrap_or("").to_string(), j["command"].as_str().unwrap_or("").to_string(), j["dir"].as_str().unwrap_or("").to_string());
+    let shared = |j: &Value| !matches!(j["source"].as_str().unwrap_or("default"), "default" | "");
+    let mut group: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    for j in &jobs {
+        if shared(j) {
+            group.entry(key_of(j)).or_default().push(j["lang"].as_str().unwrap_or("").to_string());
+        }
+    }
+    let mut emitted: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut merged: Vec<Value> = Vec::new();
+    for mut j in jobs {
+        let own = j["lang"].as_str().unwrap_or("").to_string();
+        j["langs"] = json!(own);
+        if shared(&j) {
+            let k = key_of(&j);
+            let langs = group.get(&k).cloned().unwrap_or_default();
+            if langs.len() > 1 {
+                if !emitted.insert(k) {
+                    continue;
+                }
+                let cat = j["category"].as_str().unwrap_or("").to_string();
+                j["lang"] = json!("all");
+                j["langs"] = json!(langs.join(","));
+                j["id"] = json!(format!("{cat}-all"));
+            }
+        }
+        merged.push(j);
+    }
+    merged
+}
+
 pub fn run(args: &[String]) -> i32 {
     match compute(args) {
         Ok((rc, plan)) => {
@@ -592,37 +627,7 @@ fn compute(args: &[String]) -> Result<(i32, Value), i32> {
             na_list.extend(na);
         }
     }
-    // A command that is not per-language (manifest category-level, justfile recipe, tests/<category>.sh) is one
-    // command for the whole repository: run it once, labelled "all", not once per detected language.
-    let key_of = |j: &Value| (j["category"].as_str().unwrap_or("").to_string(), j["command"].as_str().unwrap_or("").to_string(), j["dir"].as_str().unwrap_or("").to_string());
-    let shared = |j: &Value| !matches!(j["source"].as_str().unwrap_or("default"), "default" | "");
-    let mut group: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
-    for j in &jobs {
-        if shared(j) {
-            group.entry(key_of(j)).or_default().push(j["lang"].as_str().unwrap_or("").to_string());
-        }
-    }
-    let mut emitted: BTreeSet<(String, String, String)> = BTreeSet::new();
-    let mut merged: Vec<Value> = Vec::new();
-    for mut j in jobs {
-        let own = j["lang"].as_str().unwrap_or("").to_string();
-        j["langs"] = json!(own);
-        if shared(&j) {
-            let k = key_of(&j);
-            let langs = group.get(&k).cloned().unwrap_or_default();
-            if langs.len() > 1 {
-                if !emitted.insert(k) {
-                    continue;
-                }
-                let cat = j["category"].as_str().unwrap_or("").to_string();
-                j["lang"] = json!("all");
-                j["langs"] = json!(langs.join(","));
-                j["id"] = json!(format!("{cat}-all"));
-            }
-        }
-        merged.push(j);
-    }
-    let jobs = merged;
+    let jobs = merge_shared_jobs(jobs);
     let benches = plan_benches(&m, &mut ctx.errors);
     let ok = ctx.errors.is_empty();
     let plan = json!({
