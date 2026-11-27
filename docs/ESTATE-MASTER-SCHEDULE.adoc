@@ -2,7 +2,7 @@
 = Estate master schedule (F2: proven-cicd-and-workflows)
 :toc:
 
-Kept current as F2 works, so the direction is visible at a glance. Updated: 2026-11-27 (04:30Z).
+Kept current as F2 works, so the direction is visible at a glance. Updated: 2026-11-27 (13:00Z).
 
 == Where this is going
 
@@ -53,6 +53,10 @@ hand-wired per repo, and nothing passes on absence.
 . 27 Nov: #174 review round 3 (5 CodeRabbit majors, all valid, fixed in one push): merged jobs prep every language, Go "no tests to run" rejected by the shared parser, per-language manifest commands never merge, single-language repo-wide commands normalise to `-all`, root convention scripts reachable from `[languages.dir]`. Green and waiting to merge: 153, 140, 167, 159, 173, 148 (each needs update-branch after the one before).
 . 27 Nov: #174 review round 4 (CodeRabbit, 1 valid finding): the shared `all` parser no longer accepts a loose "test N" mention or a bare ok/PASS; it takes only anchored count forms (TAP, `N tests run`, cargo, Go package line with a duration, `--- PASS:`). A parser regression test (`tests/proven-run-parser.sh`, 10 checks, mutation-checked) is in the unit list. CodeRabbit allows about one review per hour, so re-reviews are sequenced one PR at a time; Codex is out of its usage limit.
 . 27 Nov: #174 review round 5 (CodeRabbit, 3 valid majors): the default zig unit command is `zig build test --summary all` (0.15 prints nothing on success otherwise); the shell parser takes only anchored count forms (no bare ok/PASS); the shared `all` parser accepts Bun `N pass` and `Ran N tests across`. Eight clearing-list PRs closed (#153, #173 merged this window). CodeRabbit re-review quota (about 1 an hour) and strict up-to-date are the bottlenecks; the Actions installation API rate limit also fails controls and gate-pr jobs without a code cause.
+. 27 Nov 13:00Z: #174 MERGED as 9009d1d (v0.1.2, tag pending; CodeRabbit approved, gate green, no bypass). Pin for every caller; F1 #124 and the swap threads are on it. Clearing list: about 10 of 14 closed. #140 (head up to date, gate green) is blocked only by CodeRabbit's stale review; the free review quota is exhausted and GitHub's secondary rate limit also blocked my review-request comment, so retries are spaced (next 13:11Z). Then 148, 167, 159, 162, 143, 134; 151 and 163/166 stack on 148.
+. 27 Nov, owner answers (hub selector): do not dismiss CodeRabbit reviews, wait for slots. #166 kept (tamper guard inside the `CI / gate` verdict, no ruleset change); #163 superseded, the owner closes it. Coverage enforcement confirmed: the umbrella runs F1's `kit/check-coverage.sh --through-sweep N` (N = latest released sweep, 1 now; exit 2 = not-pass) as a `coverage` job once F1 #121 is on main. Sweep 2 GO: E2E, reflexive, contract, aspects, regression, proof-regression, type-safe, coupling/drift.
+. 27 Nov, F1 (13:00Z): #124 marked ready by the owner; #127 (WH008) and #128 (sweep 2 slice 1: regression, drift, reflexive and e2e kit libs, 31 assertions) are drafts stacked on #126 and #121; merged 0, all merges blocked on Branch-Floor reporting. Next F1: contract, 14 aspects, proof-regression, type-safe, baselined benches. kit-v0.1.0 is signed by the owner after #121 merges.
+. Open owner choice (selector pending): lock-recovery admitted set is hard-coded at five (hypatia, boj-server-cartridges, echidna, cicd-squabbler, panic-attack); verisimdb and verisimdb-data make seven. Options: swap two, raise the limit to seven (recommended), or admit one now.
 . Release v0.1.0, send the hub the SHA, check name and allow-list.
 . Toolchains: deno, julia, gleam, idris2, ocaml, zig 0.15.2 and idris 0.8.0 version pins (asked by the proven thread), ada, just (extractions/setup-crate if setup-just is used) (needs pinned setup-action SHAs).
 . Sweep 2 runners: E2E, reflexive, contract, aspects (14), regression, proof-regression, type-safe, coupling/drift.
