@@ -185,6 +185,11 @@
           run: "bash tests/proven-manifest.sh",
         },
         {
+          # Install mode: the contract for the applier's content-only rewrite,
+          # checked as a model with mutant controls (spec: docs/proven/INSTALL-MODE.adoc).
+          run: "bash tests/proven-install-mode.sh",
+        },
+        {
           # The stamped coverage collector: stamp, manifest entry, lint, exit
           # codes (never 1), and real runs on tiny Rust, Mix and JS fixtures
           # where the toolchain is present (a missing one is named SKIP).

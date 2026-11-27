@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MPL-2.0
+# Rocq Gate — thin caller of the estate's Rocq gate in
+# hyperpolymath/proven-cicd-and-workflows. Enforcing: the pinned Coq 8.18.0
+# compiles each listed .v file, then coqchk re-checks the compiled modules
+# out of process. Any axiom (an Admitted lemma is one), type-in-type, unsafe
+# fixpoint or assumed positivity anywhere in the module fails. Nothing the
+# file prints is evidence. Planted controls prove the judge can say no before
+# its green is credited.
+#
+# Require `rocq / Rocq verdict`.
+#
+# Full-SHA pin, DE-ONBOARDED from actions.lock, no `secrets:` — see
+# rust-ci.yml in this directory for why. This gate calls no other reusable
+# workflow, so `contents: read` is all it holds.
+name: Rocq Gate
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rocq:
+    uses: hyperpolymath/proven-cicd-and-workflows/.github/workflows/rocq-gate.yml@__CICD_SUITE_SHA__ # cicd-suite main
+    # Inputs (optional; the defaults are hvn-dehallucinator's layout):
+    #   files: verification/proofs/coq/Haruspex.v   # whitespace-separated, dependencies first
+    #   required_theorems: "name1 name2"             # each must exist in a listed module
+    #   allowed_axioms: ""                          # full names coqchk prints; empty by default
+    #                                               # (empty by default: name the theorems that matter)

@@ -28,7 +28,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ALLOWED_OWNERS='^(actions|github|hyperpolymath|dtolnay|swatinem|goto-bus-stop|taiki-e)$'
-GATES=(rust-ci creusot-gate spark-gate kanren-gate secret-scanner-reusable advisory-autofix)
+GATES=(rust-ci creusot-gate spark-gate kanren-gate agda-gate rocq-gate lean-axioms-gate tla-gate secret-scanner-reusable advisory-autofix)
 
 command -v yq >/dev/null || { echo "yq is required (mikefarah v4)"; exit 2; }
 
