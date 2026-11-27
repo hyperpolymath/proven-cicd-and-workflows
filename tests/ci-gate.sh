@@ -744,10 +744,10 @@ pubreset
 
 echo "-- the workflow's first step marks a started run pending before any suite file is read --"
 step_line() { grep -n -- "- name: $1" "$WORKFLOW" | head -1 | cut -d: -f1; }
-L_REFUSE=$(step_line 'Refuse anything'); L_PEND=$(step_line 'Mark a started or re-run'); L_READ=$(step_line 'Read the profile')
+L_REFUSE=$(step_line 'Refuse anything'); L_PEND=$(step_line 'Mark a started or re-run'); L_READ=$(step_line 'Read the profile'); L_QS=$(step_line 'Let a burst')
 { [ -n "$L_REFUSE" ] && [ -n "$L_PEND" ] && [ -n "$L_READ" ] && [ "$L_REFUSE" -lt "$L_PEND" ] && [ "$L_PEND" -lt "$L_READ" ]; } \
   && ok "step order: input validation, then the early pending, then the profile fetch" || bad "step order is wrong ($L_REFUSE, $L_PEND, $L_READ)"
-EARLY=$(sed -n "${L_PEND},$((L_READ - 1))p" "$WORKFLOW")
+EARLY=$(sed -n "${L_PEND},$((L_QS - 1))p" "$WORKFLOW")
 grep -q 'EVENT_ACTION' <<<"$EARLY" && grep -q 'in_progress' <<<"$EARLY" && grep -q 'post_status pending' <<<"$EARLY" && grep -q 're-run started' <<<"$EARLY" \
   && ok "the early step posts pending 're-run started' for an in_progress action" || bad "the early step lacks the in_progress pending"
 ! grep -qE '\$suite|fetch |scripts/' <<<"$EARLY" && ok "the early step reads no suite file" || bad "the early step touches the suite"
@@ -1086,7 +1086,7 @@ step_script "$WORKFLOW" "Refuse anything but a workflow_run" > "$WORK/refuse.sh"
 [ -s "$WORK/refuse.sh" ] && ok "extracted the workflow's validation step" || bad "could not extract the validation step"
 refuse() { # VAR=value ... -> RC; defaults: a valid pull_request
   env EVENT_NAME=pull_request HEAD_SHA="$(printf 'b%.0s' $(seq 40))" REPO=example/repo CONTEXT=CI/gate TIMEOUT_MINUTES=180 \
-    WAIT_MINUTES=30 POLL_SECONDS=20 "$@" bash "$WORK/refuse.sh" > /dev/null 2>&1
+    WAIT_MINUTES=30 POLL_SECONDS=20 QUIET_SECONDS=30 "$@" bash "$WORK/refuse.sh" > /dev/null 2>&1
   RC=$?
 }
 refuse; chk "the default inputs are accepted" "$RC" 0
@@ -1096,6 +1096,24 @@ refuse REPO=o/r.js; chk "the workflow accepts a dot inside a name" "$RC" 0
 for r in a/b/c /x a/ a/. a/.. notacoordinate '' 'a b/c' .a/b -a/b 'a/b c' a//b ../x a/b/; do
   refuse REPO="$r"; chk "the workflow rejects REPO '$r'" "$RC" 1
 done
+for q in 0 30 120 007; do refuse QUIET_SECONDS="$q"; chk "the workflow accepts quiet_seconds $q" "$RC" 0; done
+for q in 121 -1 '' x 1.5 0120 999999; do refuse QUIET_SECONDS="$q"; chk "the workflow rejects quiet_seconds '$q'" "$RC" 1; done
+step_script "$WORKFLOW" "Let a burst of workflow_run events settle" > "$WORK/quiet.sh"
+mkdir -p "$WORK/qs/bin"
+printf '#!/usr/bin/env bash\necho "$1" >> "$QSDIR/slept"\n' > "$WORK/qs/bin/sleep"; chmod +x "$WORK/qs/bin/sleep"
+quiet() { rm -f "$WORK/qs/slept"; env PATH="$WORK/qs/bin:$PATH" QSDIR="$WORK/qs" HEAD_SHA=abc "$@" bash "$WORK/quiet.sh" > /dev/null 2>&1; RC=$?; }
+qslept() { [ -f "$WORK/qs/slept" ] && paste -sd, "$WORK/qs/slept" || echo none; }
+quiet EVENT_NAME=workflow_run QUIET_SECONDS=30; chk "workflow_run: the quiet step sleeps quiet_seconds once" "$RC/$(qslept)" "0/30"
+quiet EVENT_NAME=workflow_run QUIET_SECONDS=0; chk "workflow_run with quiet_seconds 0: no sleep" "$RC/$(qslept)" "0/none"
+for ev in pull_request schedule workflow_dispatch; do
+  quiet EVENT_NAME=$ev QUIET_SECONDS=30; chk "$ev: no quiet period" "$RC/$(qslept)" "0/none"
+done
+L_QUIET=$(grep -n -- '- name: Let a burst of workflow_run events settle' "$WORKFLOW" | cut -d: -f1)
+L_RD=$(grep -n -- '- name: Read the profile and the verdict scripts' "$WORKFLOW" | cut -d: -f1)
+L_PD=$(grep -n -- '- name: Mark a started or re-run' "$WORKFLOW" | cut -d: -f1)
+{ [ -n "$L_QUIET" ] && [ "$L_PD" -lt "$L_QUIET" ] && [ "$L_QUIET" -lt "$L_RD" ]; } \
+  && ok "the quiet step sits after the early pending and before the first suite read" || bad "the quiet step is misplaced ($L_PD/$L_QUIET/$L_RD)"
+! grep -q 'gh ' "$WORK/quiet.sh" && ok "the quiet step makes no API call" || bad "the quiet step calls gh"
 step_script "$WORKFLOW" "Read the profile and the verdict scripts" > "$WORK/readprofile.sh"
 [ -s "$WORK/readprofile.sh" ] && ok "extracted the profile-fetch step" || bad "could not extract the profile-fetch step"
 mkdir -p "$WORK/rp/bin"
@@ -1105,11 +1123,37 @@ for a in "$@"; do case $a in repos/*/contents/*) p=${a#repos/*/contents/}; echo 
 exit 1
 RPGH
 chmod +x "$WORK/rp/bin/gh"
-rm -f "$WORK/rp/fetched"; : > "$WORK/rp/gh_env"
-env PATH="$WORK/rp/bin:$PATH" RPDIR="$WORK/rp" RUNNER_TEMP="$WORK/rp/tmp" GITHUB_ENV="$WORK/rp/gh_env" REPO=example/.github \
-  WF_REPO=hyperpolymath/proven-cicd-and-workflows WF_SHA="$(printf 'c%.0s' $(seq 40))" bash "$WORK/readprofile.sh" > "$WORK/rp/out" 2>&1
-chk "a .github repository: the profile is fetched from profiles/ci-gate/example/.github.json and lands under the owner in the suite" \
-  "$?/$(grep -c '^profiles/ci-gate/example/\.github\.json$' "$WORK/rp/fetched")/$([ -f "$WORK/rp/tmp/ci-gate-suite/profiles/ci-gate/example/.github.json" ] && echo yes || echo no)" "0/1/yes"
+# A stub git: GITMODE=fail refuses the fetch (the API fallback runs); ok serves every blob;
+# wronghead fetches but reports another FETCH_HEAD (must not be trusted). Blob reads are logged.
+cat > "$WORK/rp/bin/git" <<'RPGIT'
+#!/usr/bin/env bash
+[ "$1" = -C ] && shift 2
+case $1 in
+  init) mkdir -p "${@: -1}"; exit 0 ;;
+  fetch) [ "$GITMODE" = fail ] && exit 128; echo "${@: -2}" >> "$RPDIR/gitfetch"; exit 0 ;;
+  rev-parse) [ "$GITMODE" = wronghead ] && { printf 'd%.0s' $(seq 40); echo; exit 0; }; echo "$WF_SHA"; exit 0 ;;
+  cat-file) p=${3#*:}; echo "$p" >> "$RPDIR/gitread"; echo "x"; exit 0 ;;
+esac
+exit 1
+RPGIT
+chmod +x "$WORK/rp/bin/git"
+rp_run() { # GITMODE -> RC; logs in $WORK/rp/{fetched,gitfetch,gitread}
+  rm -rf "$WORK/rp/fetched" "$WORK/rp/gitfetch" "$WORK/rp/gitread" "$WORK/rp/tmp"; : > "$WORK/rp/gh_env"
+  env PATH="$WORK/rp/bin:$PATH" GITMODE="$1" RPDIR="$WORK/rp" RUNNER_TEMP="$WORK/rp/tmp" GITHUB_ENV="$WORK/rp/gh_env" REPO=example/.github \
+    WF_REPO=hyperpolymath/proven-cicd-and-workflows WF_SHA="$(printf 'c%.0s' $(seq 40))" bash "$WORK/readprofile.sh" > "$WORK/rp/out" 2>&1
+  RC=$?
+}
+rpc() { [ -f "$WORK/rp/$1" ] && grep -c "${2:-.}" "$WORK/rp/$1" || echo 0; }
+rp_landed() { [ -f "$WORK/rp/tmp/ci-gate-suite/profiles/ci-gate/example/.github.json" ] && echo yes || echo no; }
+rp_run fail
+chk "git refused: a .github repository's profile is read through the contents API from profiles/ci-gate/example/.github.json and lands under the owner" \
+  "$RC/$(rpc fetched '^profiles/ci-gate/example/\.github\.json$')/$(rpc fetched)/$(rp_landed)" "0/1/7/yes"
+rp_run ok
+chk "git works: one fetch of the pinned commit, all seven files read from it, no contents-API call, the profile lands under the owner" \
+  "$RC/$(rpc gitfetch)/$(rpc gitfetch "github.com/hyperpolymath/proven-cicd-and-workflows $(printf 'c%.0s' $(seq 40))")/$(rpc gitread)/$(rpc gitread '^profiles/ci-gate/example/\.github\.json$')/$(rpc fetched)/$(rp_landed)/$(grep -c 'via git' "$WORK/rp/out")" "0/1/1/7/1/0/yes/1"
+rp_run wronghead
+chk "git fetched another commit than the pin: nothing is read from it, the contents API is used instead" \
+  "$RC/$(rpc gitread)/$(rpc fetched)/$(grep -c 'via api' "$WORK/rp/out")" "0/0/7/1"
 echo "== the publisher and the sweep refuse a malformed coordinate; a .github repository resolves =="
 jq '.repository = "example/.github"' "$FX/profile.json" > "$SUITE_DIR/profiles/ci-gate/example/.github.json"
 pubreset; snap 1 "$DONE"; publish REPO=example/.github
@@ -1260,6 +1304,8 @@ grep -qE "^      pull-requests: read" "$WORKFLOW" && ok "ci-gate.yml asks for pu
 grep -q "fetch scripts/ci-gate-sweep.sh" "$WORKFLOW" && grep -q "scripts/ci-gate-sweep.sh" <(sed -n "/- name: Evaluate the commit/,/- name: Publish a failure/p" "$WORKFLOW") \
   && ok "ci-gate.yml fetches the sweep script and runs it for events other than workflow_run" || bad "ci-gate.yml does not fetch or run the sweep script"
 grep -q "fetch scripts/ci-gate-publish.sh" "$WORKFLOW" && ok "ci-gate.yml fetches the publisher from the suite" || bad "ci-gate.yml does not fetch ci-gate-publish.sh"
+grep -q 'git -C "$src" fetch -q --depth 1 --no-tags "https://github.com/$WF_REPO" "$WF_SHA"' "$WORKFLOW" && grep -q 'rev-parse FETCH_HEAD)" == "$WF_SHA"' "$WORKFLOW" \
+  && ok "ci-gate.yml reads the suite with one shallow git fetch of the pinned commit and checks FETCH_HEAD" || bad "ci-gate.yml does not git-fetch the pinned suite commit with a FETCH_HEAD check"
 ! grep -qE '^[[:space:]]*gh api -X POST' <(sed -n '/- name: Evaluate the commit/,/- name: Publish a failure/p' "$WORKFLOW") && ok "the evaluate step publishes only through the script" || bad "the evaluate step posts a status itself"
 grep -qE '^  gate:' "$WORKFLOW" && ok "job id is gate" || bad "job id is not gate"
 grep -qE 'default: *"?CI/gate"?' "$WORKFLOW" && ok "context input defaults to CI/gate" || bad "context default is not CI/gate"
@@ -1335,6 +1381,11 @@ self_code | grep -qE 'context: *"CI / gate"' && ok "it publishes the context the
 self_code | grep -qE '^  gate:' && ok "its job id is gate" || bad "its job id is not gate"
 pr_start_ok self_code "$SELF" && ok "the suite's caller: pull_request appears only as the gate-pr job" || bad "the suite's caller: the gate-pr shape is wrong"
 self_code | grep -qE '^[[:space:]]*concurrency:' && bad "the suite's caller has a concurrency block" || ok "the suite's caller has no concurrency block"
+NAMED=$(sed -n 's/^    workflows: \[\(.*\)\]$/\1/p' "$SELF" | tr ',' '\n' | sed 's/^ *"//; s/" *$//' | sort)
+NEEDED=$(jq -r '.checks[].workflow' "$ROOT/profiles/ci-gate/hyperpolymath/proven-cicd-and-workflows.json" | sort -u \
+  | while read -r w; do sed -n 's/^name: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$ROOT/$w" | head -1; done | sort)
+[ -n "$NAMED" ] && [ "$NAMED" = "$NEEDED" ] \
+  && ok "the suite's caller names exactly the workflows its profile requires (no more events than the verdict needs)" || bad "the caller's workflow_run list ($NAMED) is not the profile's workflows ($NEEDED)"
 self_code | grep -qE '^    types: \[[^]]*\bcompleted\b[^]]*\]' && self_code | grep -qE '^    types: \[[^]]*\bin_progress\b[^]]*\]' && self_code | grep -qE '^  schedule:' && self_code | grep -qE '^  workflow_dispatch:' \
   && ok "it has workflow_run (completed, in_progress), schedule and workflow_dispatch" || bad "its triggers are not the caller shape"
 caller_shape self_code "$SELF" "the suite's caller"
