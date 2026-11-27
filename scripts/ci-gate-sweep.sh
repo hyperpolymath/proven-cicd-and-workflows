@@ -51,6 +51,8 @@ TAMPER="$SUITE/scripts/ci-gate-tamper-status.sh"   # optional: absent in a suite
 [[ -f $PUBLISH ]] || { echo "::error::ci-gate-sweep: $PUBLISH is missing; NO VERDICT WAS PRODUCED"; exit 1; }
 TAB=$'\t'
 errors=0
+# One rate-limit retry budget for the whole sweep (scripts/ci-gate-api.sh), not one per commit.
+: > "$WORK/api-retry-ledger" || exit 1
 rows="$WORK/rows.tsv"; : > "$rows"        # sha<TAB>source<TAB>state<TAB>description
 cand="$WORK/candidates.tsv"; : > "$cand"  # updated_at<TAB>sha<TAB>source
 
@@ -106,7 +108,7 @@ while IFS=$'\t' read -r _ sha src; do
   echo "::group::$CONTEXT for $sha ($src)"
   rc=0
   env -u GITHUB_OUTPUT HEAD_SHA="$sha" WORK="$dir/work" GITHUB_STEP_SUMMARY="$dir/summary.md" \
-    SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" WF_REPO="$WF_REPO" WF_SHA="$WF_SHA" \
+    SERVER_URL="$SERVER_URL" RUN_ID="$RUN_ID" WF_REPO="$WF_REPO" WF_SHA="$WF_SHA" API_RETRY_LEDGER="$WORK/api-retry-ledger" \
     bash "$PUBLISH" > "$dir/out.txt" 2>&1 || rc=$?
   cat "$dir/out.txt"
   echo "::endgroup::"
@@ -150,7 +152,7 @@ done < "$WORK/todo.tsv"
 {
   echo "### $CONTEXT sweep of $REPO"
   echo
-  echo "$(grep -c . "$WORK/todo.tsv" || true) of $total distinct head SHAs evaluated (cap $MAX). Profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`."
+  echo "$n of $total distinct head SHAs evaluated (cap $MAX). Profile \`$REPO\` at \`${WF_REPO:-?}@${WF_SHA:-?}\`."
   echo
   echo '| Commit | Source | State | Description |'
   echo '|---|---|---|---|'

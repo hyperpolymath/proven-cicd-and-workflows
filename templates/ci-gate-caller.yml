@@ -47,9 +47,9 @@
 # own job cancels a running evaluation of the same SHA instead, and re-reads the runs just before it
 # writes (scripts/ci-gate-publish.sh; tests/ci-gate.sh asserts the template has no concurrency).
 #
-# API budget: "**" starts the gate for every workflow. If the profile's required checks come from a
+# REST budget: "**" starts the gate for every workflow. If the profile's required checks come from a
 # few workflows, naming them (workflows: ["CI", "Lint"]) cuts the events; keep that list in step with
-# the profile (docs/CI-GATE.adoc, "API budget").
+# the profile (docs/CI-GATE.adoc, "REST budget and rate limits").
 #
 # No `secrets:` line: the reusable consumes none.
 name: CI gate
