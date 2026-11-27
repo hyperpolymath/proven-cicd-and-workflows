@@ -97,6 +97,142 @@ trap 'record_execution' EXIT
 cd "$dir" || { echo "::error::creusot-check[$phase]: cannot enter $dir — NO CHECK WAS PERFORMED." >&2; exit 2; }
 source_revision="$(git rev-parse HEAD 2>/dev/null || true)"
 
+# ---------------------------------------------------------------- facts ----
+# manifest_facts — read one Cargo.toml on stdin, print `select` when the
+# manifest is a package that depends on the proof library, and `version=<v>`
+# for the first version string found for it. Line-oriented over the TOML
+# subset Cargo manifests use; comment lines are ignored; a header's section
+# decides what a key means. Exactly what selects a manifest:
+#
+#   1. it has a `[package]` table (a virtual workspace root is never selected;
+#      it only declares `[workspace.dependencies]` for its members), AND
+#   2. a dependency table T is one of `dependencies`, `dev-dependencies`,
+#      `build-dependencies` (underscore spellings too), optionally prefixed
+#      `target.<cfg-or-triple>.`, AND the crate N is `creusot-std` or
+#      `creusot-contracts` (optionally quoted), spelled as one of
+#        [T]              N = ...          inline value or inline table
+#        [T]              N.<key> = ...    dotted key (workspace, version,
+#                                          path, git, features, optional,
+#                                          default-features, package, ...)
+#        [T.N]                             table header
+#
+# Keys of the same name under any other table — `[features]`,
+# `[package.metadata.*]`, `[workspace.dependencies]` — never select.
+# CRLF line endings, quoted header keys (`["package"]`) and multiline strings
+# are handled. Not recognised: a dependency renamed away from these names
+# (`x = { package = "creusot-std" }`), and a header whose target
+# expression itself contains `]`.
+manifest_facts() {
+  awk '
+    function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
+    # Header key path as bare components: split on unquoted dots, drop quotes
+    # and unquoted padding; whitespace inside quotes belongs to the key. A dot
+    # inside a quoted component becomes \001 so that "dependencies.creusot-std"
+    # is one key, not the table dependencies.creusot-std.
+    function normkey(h,   i, c, q, out, cur) {
+      out = ""; cur = ""; q = ""
+      for (i = 1; i <= length(h); i++) {
+        c = substr(h, i, 1)
+        if (q != "") { if (c == q) q = ""; else cur = cur (c == "." ? "\001" : c) }
+        else if (c == "\"" || c == sprintf("%c", 39)) q = c
+        else if (c == ".") { out = out cur "."; cur = "" }
+        else if (c != " " && c != "\t") cur = cur c
+      }
+      return out cur
+    }
+    # The line up to a TOML comment: cut at the first `#` outside a string.
+    function strip_comment(line,   i, c, q) {
+      q = ""
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (q != "") {
+          if (q == "\"" && c == "\\") i++
+          else if (c == q) q = ""
+        } else if (c == "#") return substr(line, 1, i - 1)
+        else if (c == "\"" || c == sprintf("%c", 39)) q = c
+      }
+      return line
+    }
+    function ver_of(line, named,   v) {
+      v = ""
+      line = strip_comment(line)
+      # `version` may be bare or quoted (TOML treats them as the same key).
+      if (match(line, vre)) {
+        v = substr(line, RSTART, RLENGTH)
+      } else if (named && match(line, /^[^=]*=[ \t]*"[^"]+"/)) {
+        v = substr(line, RSTART, RLENGTH)
+      } else return ""
+      sub(/^[^=]*=[ \t]*"/, "", v); sub(/".*$/, "", v)   # value = after the `=`, not the first quote
+      return v
+    }
+    # Scan strings before interpreting headers/keys. Comments and ordinary
+    # strings cannot open multiline values; only multiline state crosses lines.
+    function scan_strings(line,   i, c, three, q) {
+      q = ""
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1); three = substr(line, i, 3)
+        if (ml != "") {
+          if (ml == "\"\"\"" && c == "\\") { i++; continue }
+          if (three == ml) { ml = ""; i += 2 }
+        } else if (q != "") {
+          if (q == "\"" && c == "\\") i++
+          else if (c == q) q = ""
+        } else if (c == "#") break
+        else if (three == "\"\"\"" || three == "\x27\x27\x27") { ml = three; i += 2 }
+        else if (c == "\"" || c == "\x27") q = c
+      }
+    }
+    BEGIN {
+      dep  = "(dependencies|dev[-_]dependencies|build[-_]dependencies)"
+      tgt  = "(target\\.[^\\[\\]]+\\.)?"
+      name = "[\"\x27]?(creusot-std|creusot-contracts)[\"\x27]?"
+      key  = "^[ \t]*" name "([ \t]*\\.[ \t]*([A-Za-z_-]+|\"[^\"]+\"|\x27[^\x27]+\x27))?[ \t]*="
+      vre = "(^|[ \t,{.])(version|\"version\"|\x27version\x27)[ \t]*=[ \t]*\"[^\"]+\""
+      vline = "^[ \t]*(version|\"version\"|\x27version\x27)[ \t]*="
+      pkg = 0; sel = 0; ver = ""; kind = "other"; ml = ""
+    }
+    # CRLF manifests; then skip the body of multiline strings, whose lines are
+    # content (never headers or keys).
+    {
+      sub(/\r$/, "")
+      in_multiline = (ml != "")
+      scan_strings($0)
+      if (in_multiline) next
+    }
+    /^[ \t]*#/ || /^[ \t]*$/ { next }
+    /^[ \t]*\[\[/ { kind = "other"; next }
+    /^[ \t]*\[/ {
+      h = $0
+      if (!match(h, /^[ \t]*\[[^\[\]]+\][ \t]*(#.*)?$/)) { kind = "other"; next }
+      sub(/^[ \t]*\[[ \t]*/, "", h); sub(/[ \t]*\].*$/, "", h)
+      h = normkey(h)
+      if (h == "package") { pkg = 1; kind = "other" }
+      else if (h ~ ("^" tgt dep "$")) kind = "deps"
+      else if (h == "workspace.dependencies") kind = "ws"
+      else if (h ~ ("^" tgt dep "\\." name "$")) { kind = "entry"; sel = 1 }
+      else if (h ~ ("^workspace\\.dependencies\\." name "$")) kind = "wsentry"
+      else kind = "other"
+      next
+    }
+    kind == "deps" && $0 ~ key {
+      sel = 1
+      if (ver == "") ver = ver_of($0, $0 ~ ("^[ \t]*" name "[ \t]*="))
+      next
+    }
+    kind == "ws" && $0 ~ key {
+      if (ver == "") ver = ver_of($0, $0 ~ ("^[ \t]*" name "[ \t]*="))
+      next
+    }
+    (kind == "entry" || kind == "wsentry") && $0 ~ vline {
+      if (ver == "") ver = ver_of($0, 0)
+    }
+    END {
+      if (pkg && sel) print "select"
+      if (ver != "") print "version=" ver
+    }
+  '
+}
+
 # Tracked files only: an untracked checkout of this suite (.cicd-suite/) or a
 # target/ tree must never count as the caller's sources.
 list_files() { # <ere on path>
@@ -108,19 +244,15 @@ list_files() { # <ere on path>
   fi
 }
 
-# ---------------------------------------------------------------- facts ----
 manifests="$(list_files '(^|/)Cargo\.toml$')"
 obligation_manifests=""
 creusot_version=""
 while IFS= read -r m; do
   [[ -n "$m" ]] || continue
-  # A dependency line for the proof library, under any dependency table.
-  if grep -qE '^[[:space:]]*(creusot-std|creusot-contracts)[[:space:]]*=' "$m" \
-     || grep -qE '^[[:space:]]*\[(workspace\.)?dependencies\.(creusot-std|creusot-contracts)\]' "$m"; then
-    obligation_manifests="${obligation_manifests}${m}"$'\n'
-    if [[ -z "$creusot_version" ]]; then
-      creusot_version="$(sed -nE 's/^[[:space:]]*(creusot-std|creusot-contracts)[[:space:]]*=[[:space:]]*(\{[^}]*version[[:space:]]*=[[:space:]]*)?"([^"]+)".*$/\3/p' "$m" | head -n 1 || true)"
-    fi
+  facts="$(manifest_facts < "$m")"
+  grep -qx 'select' <<< "$facts" && obligation_manifests="${obligation_manifests}${m}"$'\n'
+  if [[ -z "$creusot_version" ]]; then
+    creusot_version="$(sed -n 's/^version=//p' <<< "$facts" | head -n 1)"
   fi
 done <<< "$manifests"
 
