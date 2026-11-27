@@ -868,12 +868,12 @@ pubreset
 
 echo "-- the sweep runs the tamper guard publisher for each pull request head (Silence, Firing, mutants) --"
 mk_tamper() { # [exit code] -> a stand-in scripts/ci-gate-tamper-status.sh that logs what it was asked
-  cat > "$SUITE_DIR/scripts/ci-gate-tamper-status.sh" <<STUB
+  cat > "$SUITE_DIR/scripts/ci-gate-tamper-status.sh" <<TAMPER_EOF
 #!/usr/bin/env bash
 printf '%s\t%s\n' "\$HEAD_SHA" "\$PR_NUMBERS" >> "$FAKEGH/tamper.calls"
 [[ ${1:-0} == 0 ]] || { echo "::error::ci-gate-tamper-status: stand-in refused; NO TAMPER VERDICT WAS PRODUCED"; exit ${1:-0}; }
 echo "CI/gate-tamper-guard = success: stand-in"
-STUB
+TAMPER_EOF
 }
 SWEEP_UT="$SUITE_DIR/scripts/ci-gate-sweep.sh"
 tsweep_case() { # <tamper exit> -> TC (calls), RC
