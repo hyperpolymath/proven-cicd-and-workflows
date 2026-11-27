@@ -1,0 +1,317 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# proven.yml: the estate's umbrella gate, as ONE reusable workflow.
+#
+# A repository calls this once (templates/proven-caller.yml) and requires one
+# check: `proven / verdict`. The umbrella detects the repository's languages,
+# reads its manifest (.proven.toml, schema proven/manifest/v1), and runs the
+# ER-A8 integrity check, the proven lock gate, every applicable category
+# runner, and the Six Sigma bench gate. Categories, aspects and checks are
+# added HERE (or in proven-tests-and-benches) once and reach every caller on
+# the next pin bump; callers hand-wire nothing.
+#
+# FAIL CLOSED (ER-A8, DOG-01). An unknown language, a category with no command
+# and no written N/A reason, an unparseable or missing workflow, a test run
+# that executed zero tests, a skipped or cancelled job: each fails `verdict`.
+#
+# PINNING. The caller's own `uses:` line is the one pin. Every job reads it
+# back out of the caller's workflow file (GITHUB_WORKFLOW_REF), checks THIS
+# repository out at that SHA, and runs the scripts from there. This repository
+# calls itself with `uses: ./.github/workflows/proven.yml`, which pins to the
+# commit under test (dogfood, DOG-01).
+name: Proven (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner label for every job
+        type: string
+        default: ubuntu-24.04
+      zig_version:
+        description: Zig version when a Zig project is detected
+        type: string
+        default: "0.15.2"
+      elixir_version:
+        description: Elixir version when a mix project is detected
+        type: string
+        default: "1.18"
+      otp_version:
+        description: OTP version when a mix project is detected
+        type: string
+        default: "27"
+      bun_version:
+        description: Bun version installed (npm install -g) when a node project has a bun.lock
+        type: string
+        default: "1.4.5"
+
+permissions: {}
+
+jobs:
+  plan:
+    permissions:
+      contents: read
+    name: plan
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 10
+    outputs:
+      suite_repo: ${{ steps.suite.outputs.repository }}
+      suite_sha: ${{ steps.suite.outputs.sha }}
+      caller_path: ${{ steps.suite.outputs.caller_path }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_jobs: ${{ steps.plan.outputs.has_jobs }}
+      benches: ${{ steps.plan.outputs.benches }}
+      has_benches: ${{ steps.plan.outputs.has_benches }}
+      waivers: ${{ steps.plan.outputs.waivers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the suite commit this caller pins
+        id: suite
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/"* ]] || { echo '::error::cannot resolve the caller workflow'; exit 2; }
+          path="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}"; path="${path%@*}"
+          case "$path" in .github/workflows/*.yml|.github/workflows/*.yaml) ;; *) echo '::error::caller is not a workflow file'; exit 2 ;; esac
+          [[ -f "$path" && ! -L "$path" ]] || { echo '::error::caller workflow file is absent; source pin NOT VERIFIED'; exit 2; }
+          mapfile -t uses < <(sed -nE "s/^[[:space:]]*uses:[[:space:]]*[\"']?([^[:space:]\"'#]*proven\.yml[^[:space:]\"'#]*).*/\1/p" "$path")
+          refs=()
+          for u in "${uses[@]}"; do
+            if [[ $u == ./.github/workflows/proven.yml ]]; then
+              [[ $GITHUB_REPOSITORY == hyperpolymath/proven-cicd-and-workflows ]] \
+                || { echo "::error::a local umbrella call is only valid inside the suite repository"; exit 2; }
+              refs+=("$GITHUB_REPOSITORY $GITHUB_SHA")
+            elif [[ $u =~ ^(hyperpolymath/proven-cicd-and-workflows)/\.github/workflows/proven\.yml@([0-9a-f]{40})$ ]]; then
+              refs+=("${BASH_REMATCH[1]} ${BASH_REMATCH[2]}")
+            else
+              echo "::error::the umbrella must be pinned to one full 40-hex SHA; source pin NOT VERIFIED"; exit 2
+            fi
+          done
+          mapfile -t refs < <(printf "%s\n" "${refs[@]}" | sort -u | sed "/^$/d")
+          (( ${#refs[@]} == 1 )) || { echo "::error::$path selects ${#refs[@]} umbrella pins; exactly one is required. NO CHECK WAS PERFORMED."; exit 2; }
+          read -r repo sha <<<"${refs[0]}"
+          printf "repository=%s\nsha=%s\ncaller_path=%s\n" "$repo" "$sha" "$path" >> "$GITHUB_OUTPUT"
+      - name: Check out the suite at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.suite.outputs.repository }}
+          ref: ${{ steps.suite.outputs.sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
+      - name: Refuse scripts from an unverified suite commit
+        env:
+          EXPECTED: ${{ steps.suite.outputs.sha }}
+          EXPECTED_REPOSITORY: ${{ steps.suite.outputs.repository }}
+          SUITE_DIR: ${{ runner.temp }}/cicd-suite
+        run: bash "$SUITE/scripts/verify-suite-checkout.sh"
+      - name: Plan (languages, manifest, categories)
+        id: plan
+        run: |
+          set +e
+          gate=$(bash "$SUITE/scripts/proven-gate-bin.sh") || { echo "::error::proven-gate failed to build"; exit 1; }
+          "$gate" detect . > "$RUNNER_TEMP/plan.json"
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/plan.json"
+          {
+            echo "matrix=$(jq -c "{include: .jobs}" "$RUNNER_TEMP/plan.json")"
+            echo "has_jobs=$(jq -r "(.jobs|length)>0" "$RUNNER_TEMP/plan.json")"
+            echo "benches=$(jq -c "{include: .benches}" "$RUNNER_TEMP/plan.json")"
+            echo "has_benches=$(jq -r "(.benches|length)>0" "$RUNNER_TEMP/plan.json")"
+            echo "waivers=$(jq -c .waivers "$RUNNER_TEMP/plan.json")"
+          } >> "$GITHUB_OUTPUT"
+          jq -r ".errors[]|\"::error::\(.)\"" "$RUNNER_TEMP/plan.json" >&2
+          exit "$rc"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: proven-plan
+          path: ${{ runner.temp }}/plan.json
+          if-no-files-found: ignore
+
+  integrity:
+    permissions:
+      contents: read
+    name: integrity
+    needs: plan
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.plan.outputs.suite_repo }}
+          ref: ${{ needs.plan.outputs.suite_sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
+      - name: ER-A8 workflow integrity
+        run: |
+          gate=$(bash "$SUITE/scripts/proven-gate-bin.sh") || { echo "::error::proven-gate failed to build"; exit 1; }
+          "$gate" integrity "$CALLER"
+        env:
+          CALLER: ${{ needs.plan.outputs.caller_path }}
+
+  lock:
+    permissions:
+      contents: read
+    name: lock
+    needs: plan
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.plan.outputs.suite_repo }}
+          ref: ${{ needs.plan.outputs.suite_sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
+      - name: Proven lock gate (SR-005)
+        run: |
+          [[ -f .github/workflows/proven-lock-gate.yml ]] || { echo '::error::stamped proven-lock-gate.yml is missing'; exit 1; }
+          bash "$SUITE/scripts/proven-lock-gate.sh" "$GITHUB_WORKSPACE" .github/workflows/proven-lock-gate.yml
+
+  category:
+    permissions:
+      contents: read
+    name: ${{ matrix.category }}-${{ matrix.lang }}
+    needs: plan
+    if: needs.plan.outputs.has_jobs == 'true'
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.plan.outputs.suite_repo }}
+          ref: ${{ needs.plan.outputs.suite_sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        if: contains(matrix.langs, 'elixir')
+        with:
+          elixir-version: ${{ inputs.elixir_version }}
+          otp-version: ${{ inputs.otp_version }}
+          version-type: loose
+      - uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406 # v2.2.1
+        if: contains(matrix.langs, 'zig')
+        with:
+          version: ${{ inputs.zig_version }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        if: contains(matrix.command, 'just')
+        with:
+          tool: just
+      - name: Run ${{ matrix.category }} for ${{ matrix.lang }} (${{ matrix.source }})
+        env:
+          CATEGORY: ${{ matrix.category }}
+          LANGUAGE: ${{ matrix.lang }}
+          WORKDIR: ${{ matrix.dir }}
+          LANGS: ${{ matrix.langs }}
+          BUN_VERSION: ${{ inputs.bun_version }}
+          COMMAND: ${{ matrix.command }}
+        run: bash "$SUITE/scripts/proven-run.sh" "$CATEGORY" "$LANGUAGE" "$WORKDIR" "$COMMAND"
+
+  bench:
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    name: bench-${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.has_benches == 'true'
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.benches) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.plan.outputs.suite_repo }}
+          ref: ${{ needs.plan.outputs.suite_sha }}
+          path: .cicd-suite
+          persist-credentials: false
+      - name: Move the suite out of the workspace (root-shape checks must not see it)
+        run: mv .cicd-suite "$RUNNER_TEMP/cicd-suite" && echo "SUITE=$RUNNER_TEMP/cicd-suite" >> "$GITHUB_ENV"
+      - name: Measure, classify against the last 10 main runs, record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BENCH_NAME: ${{ matrix.name }}
+          BENCH_COMMAND: ${{ matrix.command }}
+          BENCH_METRIC: ${{ matrix.metric }}
+          LOWER_IS_BETTER: ${{ matrix.lower_is_better }}
+          BASELINING: ${{ matrix.baselining }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: bash "$SUITE/scripts/proven-bench-run.sh"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
+        with:
+          name: proven-bench-${{ matrix.name }}
+          path: ${{ runner.temp }}/bench-${{ matrix.name }}.json
+          retention-days: 90
+
+  verdict:
+    permissions:
+      contents: none
+    name: verdict
+    needs: [plan, integrity, lock, category, bench]
+    if: always()
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    steps:
+      - name: Every required job succeeded; none was skipped or cancelled
+        env:
+          PLAN: ${{ needs.plan.result }}
+          INTEGRITY: ${{ needs.integrity.result }}
+          LOCK: ${{ needs.lock.result }}
+          CATEGORY: ${{ needs.category.result }}
+          BENCH: ${{ needs.bench.result }}
+          HAS_JOBS: ${{ needs.plan.outputs.has_jobs }}
+          HAS_BENCHES: ${{ needs.plan.outputs.has_benches }}
+          WAIVERS: ${{ needs.plan.outputs.waivers }}
+        run: |
+          bad=0
+          row() { local a=$1 b=$2; printf '| %s | %s |\n' "$a" "$b" >> "$GITHUB_STEP_SUMMARY"; }
+          { echo '### proven verdict'; echo '| job | result |'; echo '|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
+          need() { # name result required-expression
+            local name=$1 result=$2 mode=$3
+            row "$name" "$result"
+            if [[ $result != success ]]; then
+              if [[ $result == skipped && $mode == optional ]]; then return; fi
+              echo "::error::proven: $name is '$result', required 'success' (a skipped or cancelled gate is void, not green)"; bad=1
+            fi
+          }
+          need plan "$PLAN" required
+          need integrity "$INTEGRITY" required
+          need lock "$LOCK" required
+          # With no job planned (every category N/A with a written reason) the
+          # matrix job is legitimately skipped; a failed plan fails above.
+          if [[ $HAS_JOBS == true ]]; then need category "$CATEGORY" required; else need category "$CATEGORY" optional; fi
+          if [[ $HAS_BENCHES == true ]]; then need bench "$BENCH" required; else need bench "$BENCH" optional; fi
+          # Waivers are visible, never silent: category, language, reason, expiry.
+          if [[ -n ${WAIVERS:-} && $WAIVERS != '[]' ]]; then
+            { echo; echo '### active waivers (expire; an expired waiver fails the gate)'; echo '| category | lang | until | reason |'; echo '|---|---|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.[]|"| \(.category) | \(.lang) | \(.until) | \(.reason) |"' <<<"$WAIVERS" >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+          exit "$bad"

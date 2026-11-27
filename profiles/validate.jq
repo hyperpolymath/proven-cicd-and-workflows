@@ -41,10 +41,11 @@ def valid_profile($mothers; $catalogue):
   (.lifecycles | type == "array" and (sort == ["maintenance", "validate"])) and
   (.capabilities | nonempty_array) and
   ([.capabilities[].id] | unique_items) and
-  all(.capabilities[];
+  # Bind first. With `A and . as $r | ...` the jq on ubuntu-26.04 runners bound
+  # $r to a boolean ("Cannot index boolean with string id"); jq 1.7 did not.
+  all(.capabilities[]; . as $requirement |
     exact(["id", "obligation"]) and (.id | ident) and
     (.obligation == "required" or .obligation == "advisory") and
-    . as $requirement |
     ([$catalogue.capabilities[] | select(.id == $requirement.id)] | length == 1) and
     ([$catalogue.capabilities[] | select(.id == $requirement.id)][0] |
       .status != "stub" and

@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: CC-BY-SA-4.0
+= Estate master schedule (F2: proven-cicd-and-workflows)
+:toc:
+
+Kept current as F2 works, so the direction is visible at a glance. Updated: 2026-11-27 (04:30Z).
+
+== Where this is going
+
+Every estate repo calls ONE reusable workflow (`proven.yml`) from ONE small file,
+and requires ONE check (`proven / verdict`). New categories, aspects and checks
+are added here once and reach about 320 repos on the next pin bump. Nothing is
+hand-wired per repo, and nothing passes on absence.
+
+== Now
+
+[cols="2,1,3"]
+|===
+| Item | State | Note
+
+| proven-lock-gate as a gate inside the umbrella | in PR | job `lock`; stamped copy still required (SR-005)
+| ER-A8 workflow integrity | in PR | `proven-gate integrity` (Rust)
+| Umbrella `proven.yml` + caller template + `.proven.toml` schema | in PR | release v0.1.0 after merge
+| Sweep 1 runners: unit, smoke, build, P2P | in PR | rust, elixir, go, node, python, zig, shell
+| Six Sigma bench gate | in PR | baseline = mean of last 10 main runs; review round 1 fixed (non-finite, negative baseline, rounding, approval survives merge)
+| Dogfood (DOG-01) | in PR | `proven-self.yml` calls the local umbrella
+| Review round 1 (15 CodeRabbit findings) | fixed, awaiting CI | multi-root Go, declared languages, caller filters, waivers in verdict, `labeled` trigger, `pull-requests: read`
+| Python-to-Rust port (estate doctrine: no Python implementation source) | in PR | `tools/proven-gate`: detect, integrity, bench-gate in one locked crate; hygiene was red on the `.py` tools
+| Adoption doc, check names, org allow-list | in PR | `docs/PROVEN-ADOPTION.adoc`
+|===
+
+== Hub rulings (round 2)
+
+* Org allow-list is applied from the owner's laptop after v0.1.0 is tagged; the tag message carries the caller snippet, a minimal `.proven.toml` and the final list.
+* This file is the canonical estate master schedule; F1 and echidna point here.
+* `main` here requires signed commits. A GitHub squash merge is signed by GitHub, so no owner-signed commit is needed for #168.
+* v0.2 priorities: `just`, julia, deno, idris2, gleam, ocaml, setup-beam on ubuntu-24.04, the `invalid lockfile pin` fix, and the SPDX-versus-actions-lock first-line clash in lint-workflows.
+
+== Next
+
+. v0.2 asks from the C11 batch (hub): language ignores need a reason and an expiry; bench extraction for BenchmarkTools and criterion median, p99 (hcg 250 ms) and a fixed-workload harness (polyglot); configurable Rust smoke/p2p targets (git-reticulator has none); Elixir version read from mix.exs or the manifest (no-nonsense-nntps pins ~> 1.19); root-shape checks must allow `.proven.toml` centrally (with the rsr+standards thread); SPDX multi-line first-line clash.
+. F1 (proven-tests-and-benches), 26 Nov: kit check-coverage.sh shell-injection fix is on its #121 at ef82b13, selftest all pass; #121 and #122 are green and ready. Waiting on the v0.1.0 tag, then its proven-caller PR, then merges of #114, #122, #121, #119, then kit-v0.1.0. Items for this repo: the verdict treats kit exit 2 ("no check performed") as not-pass unless waived or N/A; provision just, ijson-jcs, nickel, asciidoctor; proof-language keys in the `.proven.toml` schema (F1 supplies the category ids in kit/ids.tsv); an extractions/setup-crate allow-list note if `just` is set up with setup-just.
+. Review round on #168 (CodeRabbit, 10 findings, all fixed): traversal errors fail the plan; non-string `na`/reason is an error; a command under a category that is N/A or waived is an `exemption-conflict` error; go.work no longer hides module roots; non-finite bench baselines are rejected; the gate binary is always rebuilt into a fixed target dir; merge-queue runs read the queued PR's `bench-approved` label; the caller may not use `needs:` and `pull_request.types` must keep opened, synchronize and reopened.
+. Fail-closed on justfile recipes that swallow a missing toolchain (`|| echo "SKIP: ..."` exiting 0): scan recipe output for SKIP lines or require a test-count per declared language (hub C13 gap).
+. 27 Nov: #168 MERGED as ee40ae1ad4b14ed20392a382612ee92b41fdeace (34 checks green, no bypass). The v0.1.0 tag cannot be created from the F2 session (tag and release writes return 403); the owner must cut it on that SHA. Callers pin the SHA with "# v0.1.0 (tag pending)". The hub, F1 and the five waiting repo threads have the pin, `proven / verdict` and the caller.
+. F1 (proven-tests-and-benches), 27 Nov: proven caller PR open as draft #124 (head 345f1c7), pinned to ee40ae1 with the stamped lock gate, actions.lock entries and `.proven.toml` (unit=just test, smoke=just test-spec, build=just build, p2p N/A with reason, idris2 ignored with reason); commands unverified until `proven / verdict` runs. Earlier: #121 all checks green on cca3a47, CR 19 findings fixed, 4 CR threads await re-review, #122 green and ready. Merges #114, #122, #121, #119 then kit-v0.1.0 once #124 is green.
+. 27 Nov: #171 MERGED as 95db2ad72d4886b53973859d9343940d66e4dccc (Rust-workspace fix, loud gate-build failure, proven-lock-gate 0.3.3 with merge_group). New pin for every caller: 95db2ad "# v0.1.1 (tag pending)"; sent to echidna, verisimdb, verisimdb-data, F1 and the hub. Owner must cut tags v0.1.0 (ee40ae1) and v0.1.1 (95db2ad). Next: the ci-gate caller PRs 141, 148, 151, 163, 166, then 153, 136, 140, 134, 143, 159, 162, 167. Detail of the fix: PR #171 adds an empty `[workspace]` table to the gate crate, makes the plan, integrity and bench steps fail loudly when the gate does not build, and ships proven-lock-gate 0.3.3 (adds `merge_group`). A new SHA goes to echidna, verisimdb, verisimdb-data and proven-tests-and-benches once it merges; callers then pin it with "# v0.1.1 (tag pending)".
+. verisimdb (#362) and verisimdb-data (#179), 27 Nov: `proven / plan` fails on the workspace defect (fixed by #171); the lock-sync check and governance lockfile verify require `proven-lock-gate.yml` and `proven.yml` as lock keys with the umbrella ref locked, so the lock must be regenerated with `gh actions-lock` (not hand-edited); verisimdb-data's unit, build and smoke-zig fail only on its pre-0.15 build.zig (its #177 fixes that). Open: whether a repo that leaves the umbrella call out of its lock starts the `Proven` job at all (proven-tests-and-benches#124 startup-fails; the owner has to read run 45915700375). Also open: verisimdb and verisimdb-data into the lock-recovery admitted set.
+. F1 (proven-tests-and-benches), 27 Nov ~01:00Z, merged 0: #114 is green and approved but blocked because its `Branch-Floor` ruleset needs `CI / gate` and 16 other checks that never report (a repo with no `CI / gate` caller never gets it; the caller is templates/ci-gate-caller.yml here and is reworked by this repo's open ci-gate PRs). #125 (draft) re-pins governance, hypatia-scan and secret-scanner to metadatastician/standards@eed16d3 and governance now reports; #126 (draft, stacked on #125) renews the Hypatia baseline (all 8 entries expired 2026-11-10) and ports the 4 banned `.py` files to Rust. Open: Actions lockfile verify fails on 5 pre-existing tag-keyed `actions.lock` records (owner tooling: `gh actions-lock`, relock-sha-keys.sh, close-lock.sh); #124 needs the owner's `gh actions-lock` for its `Proven` startup failure. F1 order: #125, #114, this repo's ci-gate caller when stable, #124, #122, #121, #119, then a signed kit-v0.1.0 tag (owner).
+. 27 Nov: rsr-template-repo findings triaged in one PR: suite moved out of the workspace, repo-wide commands run once (`<category>-all`), zero-test parsers for zig and shell and a fail-closed fallback; ci-gate group: #141 closed as superseded by #139, main merged into 134, 136, 140, 143, 153, 159, 162, 167; #148 being reconciled with main's rate-limit writer (151, 163, 166 stack on it).
+. 27 Nov: the owner merged #161 (counted shell coverage gate). Open PRs left from the clearing list: 13.
+. 27 Nov: echidna#531 hit `just: command not found` (runner has no just); #174 now provisions just via taiki-e/install-action for any category job whose command mentions just.
+. 27 Nov: #136 merged (697f559; 6 of the clearing list closed). Its squash orphaned the code-hygiene-check pin in main-estate-audit.yml, so Code Hygiene Self-Test failed every PR; #175 repins it (tree identical). #134 had silently lost main lines in an earlier merge (rollout filters, prover gate scripts, rollout detector test); restored. #174 p2p script now reports TAP (the shell zero-test parser rejected "p2p: ok"). Runner queue is the bottleneck; strict up-to-date means each merge forces the rest to update.
+. 27 Nov: #174 review round 3 (5 CodeRabbit majors, all valid, fixed in one push): merged jobs prep every language, Go "no tests to run" rejected by the shared parser, per-language manifest commands never merge, single-language repo-wide commands normalise to `-all`, root convention scripts reachable from `[languages.dir]`. Green and waiting to merge: 153, 140, 167, 159, 173, 148 (each needs update-branch after the one before).
+. 27 Nov: #174 review round 4 (CodeRabbit, 1 valid finding): the shared `all` parser no longer accepts a loose "test N" mention or a bare ok/PASS; it takes only anchored count forms (TAP, `N tests run`, cargo, Go package line with a duration, `--- PASS:`). A parser regression test (`tests/proven-run-parser.sh`, 10 checks, mutation-checked) is in the unit list. CodeRabbit allows about one review per hour, so re-reviews are sequenced one PR at a time; Codex is out of its usage limit.
+. 27 Nov: #174 review round 5 (CodeRabbit, 3 valid majors): the default zig unit command is `zig build test --summary all` (0.15 prints nothing on success otherwise); the shell parser takes only anchored count forms (no bare ok/PASS); the shared `all` parser accepts Bun `N pass` and `Ran N tests across`. Eight clearing-list PRs closed (#153, #173 merged this window). CodeRabbit re-review quota (about 1 an hour) and strict up-to-date are the bottlenecks; the Actions installation API rate limit also fails controls and gate-pr jobs without a code cause.
+. Release v0.1.0, send the hub the SHA, check name and allow-list.
+. Toolchains: deno, julia, gleam, idris2, ocaml, zig 0.15.2 and idris 0.8.0 version pins (asked by the proven thread), ada, just (extractions/setup-crate if setup-just is used) (needs pinned setup-action SHAs).
+. Sweep 2 runners: E2E, reflexive, contract, aspects (14), regression, proof-regression, type-safe, coupling/drift.
+. Clear the 14 open PRs: 134, 136, 140, 141, 143, 148, 151, 153, 159, 161, 162, 163, 166, 167.
+. Sweeps 3 and 4; DOG-01..08, CR-1..10, cold/warm start, pipeline-tail benches.
+
+== Later list
+
+Proof witnesses, full `--cubical`, B work, blocked or flaky items. Also: 24 repo-local
+tests not yet in `tests/unit.list` (they run nowhere in CI today; bring in as they pass on a runner).
+
+== Decisions taken (owner said "just go")
+
+* One required check, `proven / verdict`, so adding runners never changes the ruleset.
+* Waivers are explicit, expire, and show in the verdict (a transition tool, not a pass on absence).
+* The first bench run needs `baselining = true` in the manifest; otherwise no history fails.
+* Repo-wide N/A and language ignores need a written reason.

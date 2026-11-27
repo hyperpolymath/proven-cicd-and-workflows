@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MPL-2.0
+= Counted coverage for this repository
+
+`scripts/proven-coverage.sh OUT_DIR` is the whole-repository shell and workflow run. It needs
+`actionlint`, `jq` and mikefarah `yq` on PATH. The Rust crate under `actions/creusot-check` is measured separately.
+
+== What counts
+
+[cols="1,3"]
+|===
+| Shell (actions/, scripts/, root) | The firing and silence fixtures in `tests/*.sh` and `actions/*/test.sh`, run under bash tracing (`scripts/proven-shell-coverage.sh`). The unit is a statement.
+| Workflows | `actionlint` clean, with each ignore scoped and explained in `.github/actionlint.yaml`.
+| Idris2 (`src/**/*.idr`) | *Placeholder.* Not measured yet: whether a CI `idris2` typecheck of `%default total` modules counts as proof evidence is an open owner question. `src/Proven/Lock/Axioms.idr` is the declared trusted base and will be a written exclusion.
+|===
+
+== Exclusions
+
+`coverage-exclusions.tsv`:: written exclusions, `unreachable` or `environment`, each with a reason and pinned to the line text. A row excuses only the file it names: the same repo-relative path, or that path under ROOT as an absolute path. It is empty: there is no debt list and no ratchet. Every statement no counted evidence reaches is reported as UNCOVERED and fails the gate; that count is the true gap.
+
+== Limits of the shell measurement (no kcov)
+
+* Bash reports a multi-line command at one of its lines; the tracer groups lines into statements and credits the group.
+* A process started with `env -i`, `sh` or `bash -c` loses the trace hook, so its statements show as uncovered (never falsely covered).
+* Trace paths match scripts by suffix: an unmodified copy run from a temporary directory counts for the original. A test that runs a *modified* copy must give it a different file name.
+* Tests that exit 2 did not run (a missing toolchain such as `idris2`). They are listed as NOT RUN and fail the run, because a test that did not run is no evidence; their statements also stay UNCOVERED.
+* A here-document opens only at an unquoted `<<` outside arithmetic. A here-string (`<<<`) and a shift (`1<<n`) do not open one. Several here-documents on one line are read in order. A command after `fi;` or `done;` is still a statement.
