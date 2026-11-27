@@ -492,15 +492,25 @@ fn plan_benches(m: &Table, errors: &mut Vec<String>) -> Vec<Value> {
 }
 
 pub fn run(args: &[String]) -> i32 {
+    match compute(args) {
+        Ok((rc, plan)) => {
+            println!("{}", serde_json::to_string_pretty(&plan).unwrap_or_default());
+            rc
+        }
+        Err(rc) => rc,
+    }
+}
+
+fn compute(args: &[String]) -> Result<(i32, Value), i32> {
     let Some(first) = args.first() else {
         eprintln!("proven-gate detect: usage: detect REPO_DIR [--today YYYY-MM-DD] [--categories a,b]");
-        return 2;
+        return Err(2);
     };
     let root = match fs::canonicalize(first) {
         Ok(r) if r.is_dir() && !first.contains('\0') => r,
         _ => {
             eprintln!("proven-gate detect: {first} is not a directory");
-            return 2;
+            return Err(2);
         }
     };
     let mut today = date::today();
@@ -512,13 +522,13 @@ pub fn run(args: &[String]) -> i32 {
                 Some(d) => today = d,
                 None => {
                     eprintln!("proven-gate detect: --today needs YYYY-MM-DD, got {v}");
-                    return 2;
+                    return Err(2);
                 }
             },
             ("--categories", Some(v)) => cats = v.split(',').filter(|c| !c.is_empty()).map(String::from).collect(),
             (other, _) => {
                 eprintln!("proven-gate detect: unknown argument {other}");
-                return 2;
+                return Err(2);
             }
         }
         i += 2;
@@ -557,14 +567,44 @@ pub fn run(args: &[String]) -> i32 {
             na_list.extend(na);
         }
     }
+    // A command that is not per-language (manifest category-level, justfile recipe, tests/<category>.sh) is one
+    // command for the whole repository: run it once, labelled "all", not once per detected language.
+    let key_of = |j: &Value| (j["category"].as_str().unwrap_or("").to_string(), j["command"].as_str().unwrap_or("").to_string(), j["dir"].as_str().unwrap_or("").to_string());
+    let shared = |j: &Value| !matches!(j["source"].as_str().unwrap_or("default"), "default" | "");
+    let mut group: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    for j in &jobs {
+        if shared(j) {
+            group.entry(key_of(j)).or_default().push(j["lang"].as_str().unwrap_or("").to_string());
+        }
+    }
+    let mut emitted: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut merged: Vec<Value> = Vec::new();
+    for mut j in jobs {
+        let own = j["lang"].as_str().unwrap_or("").to_string();
+        j["langs"] = json!(own);
+        if shared(&j) {
+            let k = key_of(&j);
+            let langs = group.get(&k).cloned().unwrap_or_default();
+            if langs.len() > 1 {
+                if !emitted.insert(k) {
+                    continue;
+                }
+                let cat = j["category"].as_str().unwrap_or("").to_string();
+                j["lang"] = json!("all");
+                j["langs"] = json!(langs.join(","));
+                j["id"] = json!(format!("{cat}-all"));
+            }
+        }
+        merged.push(j);
+    }
+    let jobs = merged;
     let benches = plan_benches(&m, &mut ctx.errors);
     let ok = ctx.errors.is_empty();
     let plan = json!({
         "ok": ok, "errors": ctx.errors, "languages": langs.keys().collect::<Vec<_>>(), "jobs": jobs,
         "waivers": ctx.waivers, "na": na_list, "benches": benches, "categories": cats,
     });
-    println!("{}", serde_json::to_string_pretty(&plan).unwrap_or_default());
-    if ok { 0 } else { 1 }
+    Ok((if ok { 0 } else { 1 }, plan))
 }
 
 #[cfg(test)]
@@ -584,8 +624,10 @@ mod tests {
 
     fn plan(d: &Path, today: &str) -> (i32, Value) {
         // run() prints; re-plan through the same pieces for assertions
-        let code = run(&[d.to_string_lossy().into(), "--today".into(), today.into()]);
-        (code, Value::Null)
+        match compute(&[d.to_string_lossy().into(), "--today".into(), today.into()]) {
+            Ok(r) => r,
+            Err(c) => (c, Value::Null),
+        }
     }
 
     #[test]
@@ -616,6 +658,25 @@ mod tests {
             ],
         );
         assert_eq!(plan(&d, "2026-01-01").0, 0);
+    }
+
+    #[test]
+    fn repo_wide_command_runs_once_not_per_language() {
+        let d = tmp(
+            "polyglot",
+            &[
+                (".proven.toml", "schema = \"proven/manifest/v1\"\n[categories.p2p]\nna = \"no seam\"\n"),
+                ("justfile", "test:\n\techo t\nsmoke:\n\techo s\nbuild:\n\techo b\n"),
+                ("a.sh", ""),
+                ("src/main.rs", ""),
+                ("Cargo.toml", ""),
+            ],
+        );
+        let (rc, v) = plan(&d, "2026-01-01");
+        assert_eq!(rc, 0, "{v}");
+        let jobs = v["jobs"].as_array().unwrap();
+        assert_eq!(jobs.len(), 3, "one job per category, got {v}");
+        assert!(jobs.iter().all(|j| j["lang"] == "all" && j["langs"].as_str().unwrap().contains("rust") && j["langs"].as_str().unwrap().contains("shell")));
     }
 
     #[test]

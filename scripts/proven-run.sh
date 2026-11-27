@@ -29,7 +29,12 @@ fi
 # Build is not a test run; every other category must have executed something.
 [[ $cat == build ]] && exit 0
 ran=unknown
+zero_re_rust='^running [1-9][0-9]* tests?'
 case $lang in
+  zig)    grep -qE 'All [1-9][0-9]* tests? passed|[1-9][0-9]*/[1-9][0-9]* .*(OK|passed)' "$out" && ran=yes || ran=no ;;
+  shell)  grep -qE '^(ok|PASS|ok:)([ :]|$)|^1\.\.[1-9]|[1-9][0-9]* tests? (run|passed)' "$out" && ran=yes || ran=no ;;
+  all)    # one repo-wide command (justfile recipe, convention file or manifest): any recognised test-count line counts
+          grep -qE "$zero_re_rust|[1-9][0-9]* tests?, 0 failures|^(ok|PASS)([ :]|$)|^1\.\.[1-9]|[1-9][0-9]* (passed|passing)|All [1-9][0-9]* tests? passed|tests? [1-9][0-9]*|# pass [1-9]" "$out" && ran=yes || ran=no ;;
   rust)   grep -qE '^running [1-9][0-9]* tests?' "$out" && ran=yes || ran=no ;;
   elixir) grep -qE '^[0-9]+ (doctests?, )?[1-9][0-9]* tests?,|[1-9][0-9]* tests?, 0 failures' "$out" && ran=yes || ran=no ;;
   go)     grep -E '^(ok|PASS)' "$out" | grep -qv 'no tests to run' && ran=yes || ran=no ;;
@@ -40,5 +45,7 @@ esac
 if [[ $ran == no ]]; then
   echo "::error::proven $cat/$lang: the command passed but ran zero tests; that is not a pass"; exit 1
 fi
-[[ $ran == unknown ]] && echo "::notice::proven $cat/$lang: zero-test detection has no parser for $lang; exit status only"
+if [[ $ran == unknown ]]; then
+  echo "::error::proven $cat/$lang: no zero-test parser for $lang, so a vacuous pass cannot be ruled out. Fail closed: add a parser here or give the command a test-count line"; exit 1
+fi
 exit 0

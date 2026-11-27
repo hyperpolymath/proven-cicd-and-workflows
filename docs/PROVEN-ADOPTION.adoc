@@ -156,3 +156,9 @@ build, P2P) for rust, elixir, go, node, python, zig and shell, and the Six
 Sigma bench gate. Toolchains for deno, julia, gleam, idris2 and ocaml, and
 sweeps 2 to 4, follow as releases; a repository that needs one before then
 declares it N/A with a reason, or a time-boxed waiver.
+
+== 6. Behaviour notes (rsr-template-repo findings)
+
+* The suite is checked out into `.cicd-suite`, then moved to `$RUNNER_TEMP/cicd-suite` before anything else runs, so repo-root shape checks never see it. (`actions/checkout` cannot write outside the workspace, hence checkout then move.)
+* A command that is not per-language (a category-level manifest command, a justfile recipe, `tests/<category>.sh`) runs once per category, as job `<category>-all`, not once per detected language. Language defaults and per-language manifest commands still run per language and root.
+* Zero-test detection covers rust, elixir, go, python, node, zig and shell, and `all` accepts any recognised count line (cargo `running N tests`, ExUnit, TAP `1..N`/`ok`, `N passed`, zig `All N tests passed`). A language with no parser fails closed instead of passing on exit status.
