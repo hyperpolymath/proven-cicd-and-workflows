@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: MPL-2.0
+# CodeQL as a committed workflow, replacing GitHub's default setup (same languages, actions and
+# rust; same default query suite; weekly schedule). Committed, the analysis is reviewed, pinned
+# and versioned like every other control here.
+#
+# GitHub refuses uploads from a committed CodeQL workflow while default setup is on, so the
+# owner turns default setup off (Settings, Code security, CodeQL analysis) when this merges.
+# Both languages need no build: actions is YAML, and rust uses build-mode none.
+name: CodeQL
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 3 * * 2"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - name: Analyze
+        uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          category: /language:${{ matrix.language }}
