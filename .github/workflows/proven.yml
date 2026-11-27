@@ -40,6 +40,10 @@ on:
         description: OTP version when a mix project is detected
         type: string
         default: "27"
+      bun_version:
+        description: Bun version installed (npm install -g) when a node project has a bun.lock
+        type: string
+        default: "1.4.5"
 
 permissions: {}
 
@@ -216,6 +220,7 @@ jobs:
           CATEGORY: ${{ matrix.category }}
           LANGUAGE: ${{ matrix.lang }}
           WORKDIR: ${{ matrix.dir }}
+          BUN_VERSION: ${{ inputs.bun_version }}
           COMMAND: ${{ matrix.command }}
         run: bash "$SUITE/scripts/proven-run.sh" "$CATEGORY" "$LANGUAGE" "$WORKDIR" "$COMMAND"
 

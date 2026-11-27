@@ -12,7 +12,12 @@ out=$(mktemp); trap 'rm -f "$out"' EXIT
 prep=""
 case $lang in
   elixir) prep="mix local.hex --force >/dev/null && mix local.rebar --force >/dev/null && mix deps.get" ;;
-  node)   prep="npm ci" ;;
+  node)   if   [[ -f $dir/bun.lock || -f $dir/bun.lockb ]]; then prep="command -v bun >/dev/null || npm install -g \"bun@${BUN_VERSION:?BUN_VERSION is not set}\"; bun install --frozen-lockfile"
+          elif [[ -f $dir/pnpm-lock.yaml ]]; then prep="corepack enable pnpm && pnpm install --frozen-lockfile"
+          elif [[ -f $dir/yarn.lock ]]; then prep="corepack enable yarn && yarn install --immutable"
+          elif [[ -f $dir/package-lock.json ]]; then prep="npm ci"
+          else echo "::error::proven $cat/$lang: no lockfile (bun.lock, pnpm-lock.yaml, yarn.lock or package-lock.json) in $dir; a reproducible install is required"; exit 1
+          fi ;;
   go)     prep="go mod download" ;;
   python) prep="python -m pip install -q -e . 2>/dev/null || python -m pip install -q -r requirements.txt 2>/dev/null || true; python -m pip install -q pytest" ;;
   *) ;;

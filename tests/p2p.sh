@@ -18,6 +18,11 @@ while IFS=$'\t' read -r cat lang dir cmd; do
   if bash "$ROOT/scripts/proven-run.sh" "$cat" "$lang" "$W/r/$dir" "$cmd" >/dev/null 2>&1; then passed=$((passed+1)); else failed=$((failed+1)); fi
 done < <(jq -r '.jobs[]|[.category,.lang,.dir,.command]|@tsv' <<<"$plan")
 [[ $passed -eq 3 && $failed -eq 1 ]] || { echo "p2p: expected 3 pass, 1 fail; got $passed, $failed"; fail=1; }
+# node prep is lockfile-aware and fails closed without a lockfile; a bun.lock needs BUN_VERSION
+mkdir -p "$W/n"
+bash "$ROOT/scripts/proven-run.sh" unit node "$W/n" "echo ok: x" >/dev/null 2>&1 && { echo "p2p: node with no lockfile passed"; fail=1; }
+: > "$W/n/bun.lock"
+( unset BUN_VERSION; PATH=/usr/bin:/bin bash "$ROOT/scripts/proven-run.sh" unit node "$W/n" "echo ok: x" >/dev/null 2>&1 ) && { echo "p2p: bun lane ran without BUN_VERSION or bun"; fail=1; }
 # zero-test parsers beyond the original five: a silent zig or shell run is not a pass, a counted one is
 bash "$ROOT/scripts/proven-run.sh" unit zig "$W/r" "echo hi" >/dev/null 2>&1 && { echo "p2p: a zig run with no test count passed"; fail=1; }
 bash "$ROOT/scripts/proven-run.sh" unit zig "$W/r" "echo All 3 tests passed." >/dev/null 2>&1 || { echo "p2p: a counted zig run failed"; fail=1; }
