@@ -215,6 +215,10 @@ jobs:
         if: contains(matrix.langs, 'zig')
         with:
           version: ${{ inputs.zig_version }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        if: contains(matrix.command, 'just')
+        with:
+          tool: just
       - name: Run ${{ matrix.category }} for ${{ matrix.lang }} (${{ matrix.source }})
         env:
           CATEGORY: ${{ matrix.category }}
